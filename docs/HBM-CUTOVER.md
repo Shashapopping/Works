@@ -73,8 +73,25 @@ pm2 show hbm-dashboard | grep -E 'status|exec cwd|script path'
 
 Hard-refresh the browser after deploy (new `dist/` hashes).
 
+## Also stacked: make GitHub repo private
+
+Repo is still **public**. Flipping private will break droplet `git fetch` until auth is fixed.
+
+Droplet today: `https://github.com/ipinnu/Larfarge-Dashboard.git` with **no** token/deploy key.
+
+**Before private:**
+
+1. On droplet, create a read-only deploy key and add it under GitHub → repo → Settings → Deploy keys  
+2. Switch remote: `git remote set-url origin git@github.com:ipinnu/Larfarge-Dashboard.git`  
+3. Test: `git fetch origin`  
+4. Then set visibility to private  
+5. Run one Actions deploy to confirm
+
+(Or use a fine-grained PAT in the HTTPS remote — deploy key is cleaner.)
+
 ## Do not
 
 - Rebuild Vite on the droplet (OOM on ~1GB box)
 - Put `MIX_*` / private keys in GitHub — only `VITE_*` + SSH
 - Expect `pm2 restart` alone to fix a bad frontend bake
+- Make the repo private before droplet git auth is fixed
