@@ -4,6 +4,9 @@ name: Deploy HBM Dashboard
 #   SSH_HOST, SSH_PORT, SSH_USER, SSH_PRIVATE_KEY
 #   VITE_API_SECRET, VITE_ANTHROPIC_API_KEY  (build-time only)
 # Runtime MIX_*/API_SECRET/PORT stay on droplet .env — never rebuild frontend there.
+#
+# HBM is intentionally left STOPPED on the droplet (only cnl + jmg run).
+# Deploy still refreshes code/dist under /var/www/hbm-dashboard for next week.
 
 on:
   push:
@@ -55,7 +58,13 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
-            cd /var/www/larfarge-dashboard
+            # Prefer new path; fall back if rename not done yet
+            if [ -d /var/www/hbm-dashboard ]; then
+              APP_DIR=/var/www/hbm-dashboard
+            else
+              APP_DIR=/var/www/larfarge-dashboard
+            fi
+            cd "$APP_DIR"
             git fetch origin main
             git reset --hard origin/main
             if ! swapon --show | grep -q .; then
@@ -66,11 +75,11 @@ jobs:
               fi
               swapon /swapfile || true
             fi
-            # Ensure nginx port + heap for 1GB droplet
             grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=3003/' .env || echo 'PORT=3003' >> .env
             npm ci --omit=dev --no-audit --no-fund
             mkdir -p dist
             rm -rf dist/assets dist/index.html
+            echo "APP_DIR=$APP_DIR"
 
       - name: Upload dist to droplet
         uses: appleboy/scp-action@v0.1.7
@@ -80,11 +89,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
           source: "dist/*"
-          target: /var/www/larfarge-dashboard/dist
+          target: /var/www/hbm-dashboard/dist
           overwrite: true
           strip_components: 1
 
-      - name: Restart app
+      - name: Keep HBM registered but stopped
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -93,24 +102,15 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             set -e
-            cd /var/www/larfarge-dashboard
-            # Recreate process with capped heap if needed
-            if ! pm2 describe larfarge-dashboard >/dev/null 2>&1; then
-              PORT=3003 pm2 start server.js --name larfarge-dashboard --node-args='--max-old-space-size=768'
-            else
-              pm2 restart larfarge-dashboard --update-env
+            APP_DIR=/var/www/hbm-dashboard
+            [ -d "$APP_DIR" ] || APP_DIR=/var/www/larfarge-dashboard
+            cd "$APP_DIR"
+            # Drop legacy name
+            pm2 delete larfarge-dashboard 2>/dev/null || true
+            if ! pm2 describe HBM-Dashboard >/dev/null 2>&1; then
+              PORT=3003 pm2 start server.js --name HBM-Dashboard --node-args='--max-old-space-size=768'
             fi
+            # Only cnl + jmg should be online
+            pm2 stop HBM-Dashboard
             pm2 save
-            # Seed/MiX boot can take >30s on this droplet
-            ok=0
-            for i in $(seq 1 24); do
-              code=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:3003/ || echo 000)
-              if [ "$code" = "200" ]; then
-                echo "ready after ${i} attempts ($code)"
-                ok=1
-                break
-              fi
-              echo "waiting boot attempt=$i code=$code"
-              sleep 5
-            done
-            [ "$ok" = "1" ] || { pm2 logs larfarge-dashboard --lines 40 --nostream; exit 1; }
+            pm2 list
