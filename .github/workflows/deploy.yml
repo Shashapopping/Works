@@ -77,6 +77,8 @@ jobs:
             fi
             grep -q '^PORT=' .env && sed -i 's/^PORT=.*/PORT=3003/' .env || echo 'PORT=3003' >> .env
             npm ci --omit=dev --no-audit --no-fund
+            # Native module can fail silently on lean install — force present for SQLite
+            npm install better-sqlite3@^11.10.0 --omit=dev --no-audit --no-fund
             mkdir -p dist
             rm -rf dist/assets dist/index.html
             echo "APP_DIR=$APP_DIR"
