@@ -1,10 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, ClipboardCheck } from 'lucide-react';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
-} from 'recharts';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
@@ -17,6 +13,8 @@ import {
   type OccurrenceStore,
   type ConsequenceCategory,
 } from '../lib/consequenceScore';
+import MixEventInsightsGrid from '../components/MixEventInsightsGrid';
+import { brandLabel, eventLocationLabel } from '../lib/branding';
 
 type Tab = 'events' | 'by-driver' | 'trends' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -159,9 +157,9 @@ function EventsTab({ events }: { events: LogEntry[] }) {
                   </td>
                   <td style={{ fontWeight: 500 }}>{displayDriverName(e.driverName)}</td>
                   <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{e.regNo || e.assetId}</td>
-                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{e.transporter || '—'}</td>
-                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {e.address || '—'}
+                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{brandLabel(e.transporter) || '—'}</td>
+                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={eventLocationLabel(e)}>
+                    {eventLocationLabel(e)}
                   </td>
                 </tr>
               );
@@ -243,49 +241,7 @@ function ByDriverTab({ events }: { events: LogEntry[] }) {
 }
 
 function TrendsTab({ events }: { events: LogEntry[] }) {
-  const trendData = useMemo(() => {
-    const days: Record<string, Record<string, number>> = {};
-    events.forEach(e => {
-      if (e.type === 'panic') return;
-      const label = getLabel(e);
-      if (HIDDEN_LABELS.includes(label)) return;
-      const date = new Date(e.eventTime || e.timestamp)
-        .toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short' });
-      if (!days[date]) days[date] = { 'Harsh Braking': 0, 'Overspeeding': 0, 'Harsh Accel.': 0 };
-      if (label === 'Harsh Braking') days[date]['Harsh Braking']++;
-      else if (label === 'Overspeeding' || label === 'Overspeed Tiered') days[date]['Overspeeding']++;
-      else if (label === 'Harsh Acceleration') days[date]['Harsh Accel.']++;
-    });
-    return Object.entries(days)
-      .map(([date, counts]) => ({ date, ...counts }))
-      .slice(-14);
-  }, [events]);
-
-  return (
-    <div className="bpl-card" style={{ padding: 24 }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 20, fontFamily: 'var(--cd-font-display)' }}>
-        Incident Trends — Last 14 Days
-      </div>
-      {trendData.length < 2 ? (
-        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--cd-text-muted)' }}>
-          Not enough data for trend analysis
-        </div>
-      ) : (
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={trendData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }} />
-            <YAxis tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }} />
-            <Tooltip contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }} />
-            <Legend />
-            <Line type="monotone" dataKey="Harsh Braking" stroke="#CC0000" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="Overspeeding" stroke="#9333ea" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="Harsh Accel." stroke="#0078D4" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      )}
-    </div>
-  );
+  return <MixEventInsightsGrid events={events} />;
 }
 
 function PatternsTab({ events }: { events: LogEntry[] }) {
@@ -309,10 +265,11 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
             const key = d.driverId || d.driverName;
             if (!key) continue;
             const prev = map.get(key);
-            if (!prev) map.set(key, { ...d });
+            if (!prev) map.set(key, { ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 });
             else {
               prev.totalDistanceKm += d.totalDistanceKm;
               prev.journeyCount += d.journeyCount;
+              prev.totalDrivingTimeSeconds = (prev.totalDrivingTimeSeconds || 0) + (d.totalDrivingTimeSeconds || 0);
               prev.vehicles = Array.from(new Set([...prev.vehicles, ...d.vehicles]));
             }
           }
@@ -474,7 +431,32 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
   const [dateRange, setDateRange] = useState<DateRange>('7days');
   const { events } = useFleet();
 
-  const filtered = events.filter(e => getDateFilter(e, dateRange));
+  const filtered = useMemo(
+    () => events.filter(e => getDateFilter(e, dateRange)),
+    [events, dateRange],
+  );
+
+  const summaryKpis = useMemo(() => {
+    let total = 0;
+    let harshBraking = 0;
+    let overspeeding = 0;
+    let harshAccel = 0;
+    for (const e of filtered) {
+      if (e.type === 'panic') continue;
+      const label = getLabel(e);
+      if (HIDDEN_LABELS.includes(label)) continue;
+      total++;
+      if (label === 'Harsh Braking') harshBraking++;
+      else if (label === 'Overspeeding' || label === 'Overspeed Tiered') overspeeding++;
+      else if (label === 'Harsh Acceleration') harshAccel++;
+    }
+    return [
+      { label: 'Total Events', value: total, color: 'var(--cd-text)' },
+      { label: 'Harsh Braking', value: harshBraking, color: '#CC0000' },
+      { label: 'Overspeeding', value: overspeeding, color: '#9333ea' },
+      { label: 'Harsh Accel.', value: harshAccel, color: '#0078D4' },
+    ];
+  }, [filtered]);
 
   const TAB_TITLES: Record<Tab, string> = {
     'events': 'Event Explorer',
@@ -512,12 +494,7 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
 
       {/* Summary KPIs */}
       <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-        {[
-          { label: 'Total Events', value: filtered.filter(e => e.type !== 'panic' && !HIDDEN_LABELS.includes(getLabel(e))).length, color: 'var(--cd-text)' },
-          { label: 'Harsh Braking', value: filtered.filter(e => e.label === 'Harsh Braking').length, color: '#CC0000' },
-          { label: 'Overspeeding', value: filtered.filter(e => e.label?.includes('Overspeed')).length, color: '#9333ea' },
-          { label: 'Harsh Accel.', value: filtered.filter(e => e.label === 'Harsh Acceleration').length, color: '#0078D4' },
-        ].map(s => (
+        {summaryKpis.map(s => (
           <div key={s.label} className="bpl-kpi-card">
             <div className="bpl-kpi-label">{s.label}</div>
             <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>{s.value}</div>
@@ -527,7 +504,7 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
 
       {tab === 'events' && <EventsTab events={filtered} />}
       {tab === 'by-driver' && <ByDriverTab events={filtered} />}
-      {tab === 'trends' && <TrendsTab events={events} />}
+      {tab === 'trends' && <TrendsTab events={filtered} />}
       {tab === 'patterns' && <PatternsTab events={filtered} />}
     </div>
   );

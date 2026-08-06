@@ -1,522 +1,243 @@
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import {
-  Truck, Navigation, Clock, MapPin, Activity,
-  TrendingUp, TrendingDown, Minus, AlertTriangle, Route, LayoutGrid, Map, Table,
-  Gauge, OctagonAlert, Zap, CornerDownRight,
+  Shield, Truck, Gauge, OctagonAlert, Navigation, AlertTriangle,
+  TrendingUp, TrendingDown, Minus, Info,
 } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
-import type { Vehicle, LogEntry } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
 import { scoreFromEvents, scoreBandColor, scoreBandLabel } from '../lib/fleetSafetyScore';
-
-const TANKER_ZONES = ['bulk tanker', 'bulk tankers'];
-
-function isTanker(v: Vehicle) {
-  const zone = (v.zone || '').toLowerCase();
-  return TANKER_ZONES.some(z => zone.includes(z));
-}
-
-type StatusFilter = 'All' | 'Moving' | 'Idle' | 'Stationary' | 'Parked' | 'Inactive';
-
-// ── KPI Card ────────────────────────────────────────────────────────────────
-
-function StatCard({
-  label, value, sub, color, icon: Icon, active, onClick, tooltip,
-}: {
-  label: string; value: string | number; sub?: string; color: string;
-  icon: React.ElementType; active?: boolean; onClick?: () => void; tooltip?: string;
-}) {
-  return (
-    <button
-      title={tooltip}
-      onClick={onClick}
-      className="bpl-card"
-      style={{
-        padding: '12px 14px', cursor: onClick ? 'pointer' : 'default', textAlign: 'left',
-        borderTopColor: color, borderTopWidth: 3,
-        background: active ? `${color}10` : undefined,
-        outline: active ? `1.5px solid ${color}40` : 'none',
-        transition: 'all 0.15s ease',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
-        <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--cd-text-muted)' }}>
-          {label}
-        </span>
-        <Icon size={13} style={{ color, opacity: 0.6 }} />
-      </div>
-      <div style={{ fontSize: 24, fontWeight: 700, color, lineHeight: 1, fontFamily: 'var(--cd-font-display)' }}>
-        {value}
-      </div>
-      {sub && <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 5 }}>{sub}</div>}
-    </button>
-  );
-}
-
-// ── Safety Score ─────────────────────────────────────────────────────────────
-
-function TankerSafetyScore({ events, vehicleCount }: { events: LogEntry[]; vehicleCount: number }) {
-  const { scoreConfig } = useFleet();
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-
-  const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-  const prev   = events.filter(e => { const t = new Date(e.eventTime || e.timestamp).getTime(); return t >= sixtyDaysAgo && t < thirtyDaysAgo; });
-  const score  = scoreFromEvents(recent, vehicleCount, scoreConfig);
-  const delta  = score - scoreFromEvents(prev, vehicleCount, scoreConfig);
-
-  const color = scoreBandColor(score, scoreConfig);
-  const label = scoreBandLabel(score, scoreConfig);
-
-  return (
-    <div className="bpl-card" style={{ padding: '20px 22px' }}>
-      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 14 }}>
-        Tanker Safety Score
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
-        <div style={{ position: 'relative', width: 72, height: 72, flexShrink: 0 }}>
-          <svg width="72" height="72" viewBox="0 0 72 72" style={{ transform: 'rotate(-90deg)' }}>
-            <circle cx="36" cy="36" r="30" fill="none" stroke="var(--cd-border)" strokeWidth="6" />
-            <circle cx="36" cy="36" r="30" fill="none" stroke={color} strokeWidth="6"
-              strokeDasharray={`${2 * Math.PI * 30}`}
-              strokeDashoffset={`${2 * Math.PI * 30 * (1 - score / 100)}`}
-              strokeLinecap="round" style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
-          </svg>
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ fontSize: 18, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>{score}</span>
-            <span style={{ fontSize: 9, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/100</span>
-          </div>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', marginBottom: 3 }}>{label}</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, marginBottom: 8 }}>
-            {delta > 0
-              ? <><TrendingUp size={12} color="#16a34a" /><span style={{ color: '#16a34a', fontWeight: 600 }}>+{delta} pts vs last month</span></>
-              : delta < 0
-              ? <><TrendingDown size={12} color="#CC0000" /><span style={{ color: '#CC0000', fontWeight: 600 }}>{delta} pts vs last month</span></>
-              : <><Minus size={12} color="var(--cd-text-muted)" /><span style={{ color: 'var(--cd-text-muted)' }}>No change vs last month</span></>}
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>{recent.length}</div>
-              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>incidents / 30d</div>
-            </div>
-            <div style={{ width: 1, background: 'var(--cd-border)' }} />
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
-                {vehicleCount > 0 ? ((recent.length / vehicleCount) * 100).toFixed(1) : '0.0'}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>per 100 vehicles</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Zone Breakdown ────────────────────────────────────────────────────────────
-
-function ZoneBreakdown({ tankers }: { tankers: Vehicle[] }) {
-  const zones: Record<string, Vehicle[]> = {};
-  tankers.forEach(v => {
-    const z = v.zone || 'Unknown';
-    if (!zones[z]) zones[z] = [];
-    zones[z].push(v);
-  });
-
-  const colors = ['#0078D4', '#7C3AED'];
-
-  return (
-    <div className="bpl-card" style={{ padding: '18px 20px' }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', marginBottom: 14 }}>
-        By Zone
-      </div>
-      {Object.entries(zones).map(([zone, vehicles], i) => {
-        const moving = vehicles.filter(v => v.status === 'Moving').length;
-        const pct = Math.round((vehicles.length / tankers.length) * 100);
-        const color = colors[i % colors.length];
-        return (
-          <div key={zone} style={{ marginBottom: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5, fontSize: 12 }}>
-              <span style={{ fontWeight: 600, color: 'var(--cd-text)' }}>{zone}</span>
-              <span style={{ color: 'var(--cd-text-muted)' }}>{vehicles.length} assets · <span style={{ color: '#16a34a', fontWeight: 600 }}>{moving} moving</span></span>
-            </div>
-            <div style={{ height: 6, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 99, transition: 'width 0.4s ease' }} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── Recent Incidents ──────────────────────────────────────────────────────────
-
-function TankerIncidents({ events }: { events: LogEntry[] }) {
-  const visible = events.filter(e => e.type !== 'panic').slice(0, 8);
-  return (
-    <div className="bpl-card">
-      <div className="bpl-card-header">
-        <span className="bpl-card-title">Recent Incidents</span>
-        <span style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{events.length} total</span>
-      </div>
-      {visible.length === 0 ? (
-        <div style={{ padding: '20px', textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>No incidents recorded</div>
-      ) : visible.map((e, i) => (
-        <div key={i} style={{
-          padding: '11px 20px',
-          borderBottom: i < visible.length - 1 ? '1px solid var(--cd-border)' : 'none',
-          display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 10, alignItems: 'center',
-        }}>
-          <div style={{
-            width: 7, height: 7, borderRadius: '50%',
-            background: e.label === 'Harsh Braking' ? '#CC0000' : '#d97706',
-          }} />
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)' }}>{e.label || 'Unknown'}{displayDriverName(e.driverName) !== '—' ? ` — ${displayDriverName(e.driverName)}` : ''}</div>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{e.regNo || e.assetId} · {e.address || 'Location unknown'}</div>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', flexShrink: 0 }}>
-            {e.eventTime ? new Date(e.eventTime).toLocaleTimeString('en-GB', { timeZone: 'Africa/Lagos', hour: '2-digit', minute: '2-digit' }) : '—'}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Incident Breakdown ────────────────────────────────────────────────────────
-
-const BREAKDOWN_TYPES = [
-  { key: 'overspeed', label: 'Overspeeding', short: 'Speed', color: '#d97706', icon: Gauge, match: (e: LogEntry) => !!e.label?.includes('Overspeed') },
-  { key: 'brake', label: 'Harsh Braking', short: 'Brake', color: '#CC0000', icon: OctagonAlert, match: (e: LogEntry) => e.label === 'Harsh Braking' },
-  { key: 'accel', label: 'Harsh Accel.', short: 'Accel', color: '#c27803', icon: Zap, match: (e: LogEntry) => e.label === 'Harsh Acceleration' },
-  { key: 'corner', label: 'Harsh Cornering', short: 'Corner', color: '#0d9488', icon: CornerDownRight, match: (e: LogEntry) => e.type !== 'panic' && e.label === 'Harsh Cornering' },
-] as const;
-
-function TankerIncidentBreakdown({ events }: { events: LogEntry[] }) {
-  const { rows, total } = useMemo(() => {
-    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-    const counted = BREAKDOWN_TYPES.map(t => ({
-      ...t,
-      n: recent.filter(t.match).length,
-    })).sort((a, b) => b.n - a.n);
-    return { rows: counted, total: counted.reduce((s, r) => s + r.n, 0) };
-  }, [events]);
-
-  const max = Math.max(...rows.map(r => r.n), 1);
-  const lead = rows[0];
-
-  return (
-    <div className="bpl-card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 100 }}>
-      <div style={{
-        padding: '16px 18px 14px',
-        borderBottom: '1px solid var(--cd-border)',
-        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12,
-      }}>
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 4 }}>
-            Incident Breakdown
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Last 30 days</div>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
-            {total}
-          </div>
-          <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 3, fontWeight: 600 }}>events</div>
-        </div>
-      </div>
-
-      {total === 0 ? (
-        <div style={{ padding: '28px 18px', textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
-          No tanker incidents in this window
-        </div>
-      ) : (
-        <div style={{ padding: '14px 18px 16px', display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
-          {/* Mix strip */}
-          <div>
-            <div style={{ display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', background: 'var(--cd-border)' }}>
-              {rows.filter(r => r.n > 0).map(r => (
-                <div
-                  key={r.key}
-                  title={`${r.label}: ${r.n}`}
-                  style={{
-                    width: `${(r.n / total) * 100}%`,
-                    background: r.color,
-                    minWidth: r.n > 0 ? 4 : 0,
-                  }}
-                />
-              ))}
-            </div>
-            {lead && lead.n > 0 && (
-              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--cd-text-muted)' }}>
-                Leading type{' '}
-                <span style={{ color: lead.color, fontWeight: 700 }}>{lead.label}</span>
-                {' · '}
-                {Math.round((lead.n / total) * 100)}% of tanker incidents
-              </div>
-            )}
-          </div>
-
-          {/* Ranked rows */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {rows.map(r => {
-              const Icon = r.icon;
-              const pct = total > 0 ? Math.round((r.n / total) * 100) : 0;
-              return (
-                <div key={r.key} style={{ display: 'grid', gridTemplateColumns: '28px 1fr auto', gap: 10, alignItems: 'center' }}>
-                  <div style={{
-                    width: 28, height: 28, borderRadius: 8,
-                    background: `${r.color}14`, color: r.color,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
-                    <Icon size={14} strokeWidth={2.25} />
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 5 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {r.label}
-                      </span>
-                      <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', fontWeight: 600, flexShrink: 0 }}>
-                        {pct}%
-                      </span>
-                    </div>
-                    <div style={{ height: 4, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden' }}>
-                      <div style={{
-                        height: '100%',
-                        width: `${(r.n / max) * 100}%`,
-                        background: r.color,
-                        borderRadius: 99,
-                        transition: 'width 0.35s ease',
-                        opacity: r.n === 0 ? 0.35 : 1,
-                      }} />
-                    </div>
-                  </div>
-                  <div style={{
-                    minWidth: 36, textAlign: 'right',
-                    fontSize: 18, fontWeight: 700, lineHeight: 1,
-                    color: r.n > 0 ? r.color : 'var(--cd-text-muted)',
-                    fontFamily: 'var(--cd-font-display)',
-                  }}>
-                    {r.n}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Vehicle Table ─────────────────────────────────────────────────────────────
-
-const STATUS_COLOR: Record<string, string> = {
-  Moving: '#16a34a', Idle: '#d97706', 'Excessive Idle': '#CC0000',
-  Stationary: '#0d9488', Parked: '#7C3AED', Offline: '#6B7A8D', Inactive: '#6878A0',
-};
-
-function TankerTable({ tankers, statusFilter }: { tankers: Vehicle[]; statusFilter: StatusFilter }) {
-  const filtered = statusFilter === 'All' ? tankers : tankers.filter(v =>
-    statusFilter === 'Inactive' ? (v.status === 'Inactive' || v.status === 'Offline') : v.status === statusFilter
-  );
-
-  return (
-    <div className="bpl-card" style={{ overflow: 'hidden' }}>
-      <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--cd-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
-          Tanker Fleet {statusFilter !== 'All' ? `— ${statusFilter}` : ''}
-        </span>
-        <span style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{filtered.length} vehicles</span>
-      </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: 'var(--cd-surface-2)' }}>
-              {['Reg No', 'Asset Name', 'Zone', 'Status', 'Speed', 'Location'].map(h => (
-                <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr><td colSpan={6} style={{ padding: 32, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No tankers match this filter</td></tr>
-            ) : filtered.map((v, i) => {
-              const color = STATUS_COLOR[v.status] ?? '#6B7A8D';
-              return (
-                <tr key={v.id} style={{ borderTop: '1px solid var(--cd-border)', background: i % 2 === 0 ? 'transparent' : 'var(--cd-surface-2)' }}>
-                  <td style={{ padding: '10px 16px', fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', whiteSpace: 'nowrap' }}>{v.regNo}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--cd-text-muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.assetName}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{v.zone}</td>
-                  <td style={{ padding: '10px 16px' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 99, background: `${color}18`, color }}>
-                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor', display: 'inline-block' }} />
-                      {v.status}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px 16px', color: 'var(--cd-text-muted)', textAlign: 'right' }}>
-                    {v.position?.speed != null && v.position.speed > 0 ? `${Math.round(v.position.speed)} km/h` : '—'}
-                  </td>
-                  <td style={{ padding: '10px 16px', color: 'var(--cd-text-muted)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {v.position?.address || '—'}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ── Page ──────────────────────────────────────────────────────────────────────
+import { KpiCard } from '../components/KpiCard';
+import {
+  segmentVehicles, segmentTripAssets, segmentEvents, overspeedCount,
+  tankerCorridor, utilizationPct, STATUS_COLOR,
+} from '../lib/segmentMetrics';
 
 export default function Tankers() {
-  const { vehicles, events, driverDistance } = useFleet();
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
-  const [viewMode, setViewMode] = useState<'table' | 'grouped'>('table');
+  const { vehicles, events, driverDistance, scoreConfig } = useFleet();
+  const fleet = useMemo(() => segmentVehicles(vehicles, 'tankers'), [vehicles]);
+  const segEvents = useMemo(() => segmentEvents(fleet, events), [fleet, events]);
+  const assets = useMemo(() => segmentTripAssets(fleet, driverDistance?.assets ?? []), [fleet, driverDistance]);
 
-  const tankers = vehicles.filter(isTanker);
-  const tankerIds = new Set(tankers.map(v => v.id));
-  const tankerRegNos = new Set(tankers.map(v => v.regNo));
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+  const recent = segEvents.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
+  const prev = segEvents.filter(e => {
+    const t = new Date(e.eventTime || e.timestamp).getTime();
+    return t >= sixtyDaysAgo && t < thirtyDaysAgo;
+  });
+  const score = scoreFromEvents(recent, fleet.length, scoreConfig);
+  const delta = score - scoreFromEvents(prev, fleet.length, scoreConfig);
+  const scoreColor = scoreBandColor(score, scoreConfig);
+  const scoreLabel = scoreBandLabel(score, scoreConfig);
 
-  // Events that belong to tanker assets
-  const tankerEvents = events.filter(e => tankerIds.has(e.assetId?.toString() || '') || tankerRegNos.has(e.regNo || ''));
+  const util = utilizationPct(fleet);
+  const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
+  const overspeeds = overspeedCount(segEvents, 30);
+  const harshBrakes = recent.filter(e => e.label === 'Harsh Braking').length;
 
-  // Distance data filtered to tankers
-  const tankerAssets = (driverDistance?.assets || []).filter(a => tankerIds.has(a.assetId));
-  const tankerDistanceKm = tankerAssets.reduce((s, a) => s + a.totalDistanceKm, 0);
-  const tankerJourneys = tankerAssets.reduce((s, a) => s + a.journeyCount, 0);
+  const corridors = useMemo(() => {
+    const east: typeof fleet = [];
+    const west: typeof fleet = [];
+    const other: typeof fleet = [];
+    for (const v of fleet) {
+      const c = tankerCorridor(v.zone);
+      if (c === 'East') east.push(v);
+      else if (c === 'West') west.push(v);
+      else other.push(v);
+    }
+    return { east, west, other };
+  }, [fleet]);
 
-  const total   = tankers.length;
-  const moving  = tankers.filter(v => v.status === 'Moving').length;
-  const idle    = tankers.filter(v => v.status === 'Idle' || v.status === 'Excessive Idle').length;
-  const parked  = tankers.filter(v => v.status === 'Parked' || v.status === 'Stationary').length;
-  const offline = tankers.filter(v => v.status === 'Inactive' || v.status === 'Offline').length;
+  const longHaul = useMemo(() =>
+    [...assets].sort((a, b) => b.totalDistanceKm - a.totalDistanceKm).slice(0, 10).map(a => ({
+      ...a,
+      vehicle: fleet.find(f => f.id?.toString() === a.assetId?.toString()),
+    })),
+  [assets, fleet]);
 
-  const stats = [
-    { label: 'Total Tankers',  value: total,   color: '#0078D4', icon: Truck,       filter: 'All' as StatusFilter,      tooltip: 'All bulk tanker assets' },
-    { label: 'Moving',         value: moving,  color: '#16a34a', icon: Navigation,  filter: 'Moving' as StatusFilter,   tooltip: 'Currently on road above 5 km/h' },
-    { label: 'Idle',           value: idle,    color: '#d97706', icon: Clock,       filter: 'Idle' as StatusFilter,     tooltip: 'Engine on, not moving' },
-    { label: 'Parked',         value: parked,  color: '#7C3AED', icon: MapPin,      filter: 'Parked' as StatusFilter,   tooltip: 'Stationary or parked' },
-    { label: 'Temp Inactive',  value: offline, color: '#6B7A8D', icon: Activity,    filter: 'Inactive' as StatusFilter, tooltip: 'Offline or inactive 24h+' },
-  ];
+  const recentIncidents = segEvents.filter(e => e.type !== 'panic').slice(0, 8);
 
   return (
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Bulk Tankers</h1>
-        <p className="bpl-page-subtitle">East & West zones — {total} assets tracked</p>
+        <p className="bpl-page-subtitle">
+          East & West pneumatic bulk cement — long-haul safety, utilization, and corridor performance.
+        </p>
       </div>
 
-      {/* Top row: score + KPI cards */}
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 14, marginBottom: 20 }}>
-        <TankerSafetyScore events={tankerEvents} vehicleCount={total} />
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-            {stats.map(s => (
-              <StatCard
-                key={s.label} label={s.label} value={s.value}
-                color={s.color} icon={s.icon} tooltip={s.tooltip}
-                active={statusFilter === s.filter}
-                onClick={() => setStatusFilter(s.filter)}
-                sub={s.filter !== 'All' && total > 0 ? `${Math.round((s.value / total) * 100)}% of fleet` : 'total assets'}
-              />
-            ))}
-          </div>
-
-          {/* Distance row */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-            <StatCard label="Distance Today" value={`${tankerDistanceKm.toFixed(0)} km`} color="#0078D4" icon={Route}
-              sub={`${tankerJourneys} journeys recorded`} />
-            <ZoneBreakdown tankers={tankers} />
-          </div>
-        </div>
-      </div>
-
-      {/* Incidents + breakdown */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(280px, 0.9fr)', gap: 14, marginBottom: 20, alignItems: 'stretch' }}>
-        <TankerIncidents events={tankerEvents} />
-        <TankerIncidentBreakdown events={tankerEvents} />
-      </div>
-
-      {/* Fleet table */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['All', 'Moving', 'Idle', 'Parked', 'Inactive'] as StatusFilter[]).map(f => (
-            <button key={f} onClick={() => setStatusFilter(f)} className="bpl-btn-secondary"
+        <div className="bpl-card" style={{ padding: '22px 24px' }} title="Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (30d vs prior 30d) and Settings score weights. Not based on trip counts.">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)' }}>
+              Tanker HSE Score
+            </div>
+            <span
+              title="Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (30d vs prior 30d) and Settings score weights. Not based on trip counts."
+              aria-label="Score explanation"
               style={{
-                padding: '5px 12px', fontSize: 12,
-                background: statusFilter === f ? 'var(--bpl-blue-soft)' : undefined,
-                borderColor: statusFilter === f ? 'var(--bpl-blue)' : undefined,
-                color: statusFilter === f ? 'var(--bpl-blue)' : undefined,
-              }}>
-              {f}
-            </button>
-          ))}
+                display: 'inline-flex', width: 14, height: 14, borderRadius: '50%',
+                border: '1px solid var(--cd-border)', color: 'var(--cd-text-muted)',
+                alignItems: 'center', justifyContent: 'center', cursor: 'help',
+              }}
+            >
+              <Info size={9} strokeWidth={2.5} />
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{ position: 'relative', width: 80, height: 80, flexShrink: 0 }}>
+              <svg width="80" height="80" viewBox="0 0 80 80" style={{ transform: 'rotate(-90deg)' }}>
+                <circle cx="40" cy="40" r="34" fill="none" stroke="var(--cd-border)" strokeWidth="6" />
+                <circle cx="40" cy="40" r="34" fill="none" stroke={scoreColor} strokeWidth="6"
+                  strokeDasharray={`${2 * Math.PI * 34}`}
+                  strokeDashoffset={`${2 * Math.PI * 34 * (1 - score / 100)}`}
+                  strokeLinecap="round" />
+              </svg>
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>{score}</span>
+                <span style={{ fontSize: 9, color: 'var(--cd-text-muted)' }}>/100</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: scoreColor, fontFamily: 'var(--cd-font-display)' }}>{scoreLabel}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, marginTop: 4 }}>
+                {delta > 0
+                  ? <><TrendingUp size={12} color="#16a34a" /><span style={{ color: '#16a34a', fontWeight: 600 }}>+{delta} vs last month</span></>
+                  : delta < 0
+                  ? <><TrendingDown size={12} color="#CC0000" /><span style={{ color: '#CC0000', fontWeight: 600 }}>{delta} vs last month</span></>
+                  : <><Minus size={12} color="var(--cd-text-muted)" /><span style={{ color: 'var(--cd-text-muted)' }}>No change</span></>}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 8 }}>
+                {recent.length} incidents / 30d · {overspeeds} overspeed
+              </div>
+            </div>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['table', 'grouped'] as const).map(v => (
-            <button key={v} onClick={() => setViewMode(v)} className="bpl-btn-secondary"
-              style={{
-                padding: '5px 12px', fontSize: 12,
-                background: viewMode === v ? 'var(--bpl-blue-soft)' : undefined,
-                borderColor: viewMode === v ? 'var(--bpl-blue)' : undefined,
-                color: viewMode === v ? 'var(--bpl-blue)' : undefined,
-              }}>
-              {v === 'table' ? <><Table size={12} /> Table</> : <><LayoutGrid size={12} /> Grouped</>}
-            </button>
-          ))}
+
+        <div className="bpl-kpi-grid" style={{ marginBottom: 0 }}>
+          <KpiCard
+            label="Utilization"
+            value={`${util}%`}
+            sub={`${fleet.filter(v => v.status === 'Moving').length} tankers moving`}
+            color="#0078D4"
+            icon={Truck}
+            tip="Share of bulk-tanker vehicles currently Moving. Formula: Moving ÷ tanker fleet size × 100."
+          />
+          <KpiCard
+            label="Fleet Size"
+            value={fleet.length}
+            sub="East & West bulk tankers"
+            color="#0284c7"
+            icon={Truck}
+            tip="Count of MiX assets whose zone matches Bulk Tankers (East/West pneumatic bulk)."
+          />
+          <KpiCard
+            label="Distance Today"
+            value={`${distanceKm.toLocaleString()} km`}
+            sub="Long-haul total"
+            color="#0369a1"
+            icon={Navigation}
+            tip="Sum of MiX trip distance today for bulk-tanker assets only."
+          />
+          <KpiCard
+            label="Overspeed (30d)"
+            value={overspeeds}
+            sub={`${harshBrakes} harsh braking events`}
+            color={overspeeds > 5 ? '#CC0000' : '#d97706'}
+            icon={Gauge}
+            tip="Count of overspeed events on tanker assets in the last 30 days (MiX events filtered to this segment). Sub-line = harsh braking in the same window."
+          />
         </div>
       </div>
 
-      {viewMode === 'table' ? (
-        <TankerTable tankers={tankers} statusFilter={statusFilter} />
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
-          {Object.entries(
-            tankers.reduce((acc, v) => {
-              const z = v.zone || 'Unknown'; if (!acc[z]) acc[z] = []; acc[z].push(v); return acc;
-            }, {} as Record<string, Vehicle[]>)
-          ).sort(([a], [b]) => a.localeCompare(b)).map(([zone, zvehicles]) => {
-            const filtered = statusFilter === 'All' ? zvehicles : zvehicles.filter(v =>
-              statusFilter === 'Inactive' ? (v.status === 'Inactive' || v.status === 'Offline') : v.status === statusFilter
-            );
-            return (
-              <div key={zone} className="bpl-card" style={{ overflow: 'hidden' }}>
-                <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--cd-border)', display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>{zone}</span>
-                  <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{filtered.length} / {zvehicles.length}</span>
-                </div>
-                {filtered.slice(0, 12).map((v, i) => {
-                  const color = STATUS_COLOR[v.status] ?? '#6B7A8D';
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
+        {([
+          { label: 'East Corridor', list: corridors.east, color: '#0078D4' },
+          { label: 'West Corridor', list: corridors.west, color: '#0284c7' },
+        ] as const).map(({ label, list, color }) => {
+          const corridorAssets = segmentTripAssets(list, driverDistance?.assets ?? []);
+          const km = Math.round(corridorAssets.reduce((s, a) => s + a.totalDistanceKm, 0));
+          const moving = list.filter(v => v.status === 'Moving').length;
+          return (
+            <div key={label} className="bpl-card" style={{ padding: 20, borderTop: `3px solid ${color}` }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--cd-text)', marginBottom: 12, fontFamily: 'var(--cd-font-display)' }}>{label}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, textAlign: 'center' }}>
+                <div><div style={{ fontSize: 22, fontWeight: 700, color }}>{list.length}</div><div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Tankers</div></div>
+                <div><div style={{ fontSize: 22, fontWeight: 700, color: '#16a34a' }}>{moving}</div><div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Moving</div></div>
+                <div><div style={{ fontSize: 22, fontWeight: 700, color }}>{km.toLocaleString()}</div><div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>km today</div></div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(280px, 0.8fr)', gap: 14 }}>
+        <div className="bpl-card" style={{ overflow: 'hidden' }}>
+          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cd-border)' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Long-Haul Leaderboard</div>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Highest distance today — monitor fatigue & overspeed risk</div>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: 'var(--cd-surface-2)' }}>
+                  {['Reg No', 'Corridor', 'Distance', 'Avg Speed', 'Status'].map(h => (
+                    <th key={h} style={{ padding: '9px 14px', textAlign: 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {longHaul.length === 0 ? (
+                  <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data today</td></tr>
+                ) : longHaul.map((row, i) => {
+                  const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
                   return (
-                    <div key={v.id} style={{ padding: '9px 18px', borderTop: i === 0 ? 'none' : '1px solid var(--cd-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>{v.regNo}</div>
-                        <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 1 }}>{v.assetName?.trim()}</div>
-                      </div>
-                      <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99, background: `${color}18`, color }}>{v.status}</span>
-                    </div>
+                    <tr key={row.assetId} style={{ borderTop: '1px solid var(--cd-border)', background: i % 2 ? 'var(--cd-surface-2)' : undefined }}>
+                      <td style={{ padding: '9px 14px', fontWeight: 700, fontFamily: 'var(--cd-font-display)' }}>{row.regNo}</td>
+                      <td style={{ padding: '9px 14px' }}>{tankerCorridor(row.vehicle?.zone)}</td>
+                      <td style={{ padding: '9px 14px', fontWeight: 700, color: '#0078D4' }}>{row.totalDistanceKm.toFixed(0)} km</td>
+                      <td style={{ padding: '9px 14px' }}>{row.avgSpeedKph != null ? `${Math.round(row.avgSpeedKph)} km/h` : '—'}</td>
+                      <td style={{ padding: '9px 14px' }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 99, background: `${color}18`, color }}>
+                          {row.vehicle?.status ?? '—'}
+                        </span>
+                      </td>
+                    </tr>
                   );
                 })}
-                {filtered.length > 12 && (
-                  <div style={{ padding: '8px 18px', fontSize: 11, color: 'var(--cd-text-muted)', borderTop: '1px solid var(--cd-border)' }}>
-                    +{filtered.length - 12} more
-                  </div>
-                )}
-              </div>
-            );
-          })}
+              </tbody>
+            </table>
+          </div>
         </div>
-      )}
+
+        <div className="bpl-card">
+          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cd-border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Shield size={16} color="#CC0000" />
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Recent HSE Events</div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Bulk tanker incidents — long haul focus</div>
+            </div>
+          </div>
+          {recentIncidents.length === 0 ? (
+            <div style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>No recent incidents</div>
+          ) : recentIncidents.map((e, i) => (
+            <div key={i} style={{
+              padding: '11px 18px', borderBottom: i < recentIncidents.length - 1 ? '1px solid var(--cd-border)' : 'none',
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+            }}>
+              {e.label === 'Harsh Braking' || e.label?.includes('Overspeed')
+                ? <OctagonAlert size={14} color="#CC0000" style={{ flexShrink: 0, marginTop: 2 }} />
+                : <AlertTriangle size={14} color="#d97706" style={{ flexShrink: 0, marginTop: 2 }} />}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)' }}>
+                  {e.label}{displayDriverName(e.driverName) !== '—' ? ` — ${displayDriverName(e.driverName)}` : ''}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{e.regNo} · {e.address || '—'}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

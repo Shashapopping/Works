@@ -6,6 +6,19 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { KPI_EVENT_IDS, serializeKpiLogEntry } from "./kpi-constants.js";
+import {
+  getDb,
+  insertEvent,
+  insertPanic,
+  updateEventAddress,
+  upsertTrips,
+  getTripsInRange,
+  countTrips,
+  insertFuelReadings,
+  insertKpiEvents,
+  pruneFleetHistory,
+} from "./db.js";
+import { fuelEventTypeFromId } from "./fuel-constants.js";
 
 const IDENTITY_URL = "https://identity.za.mixtelematics.com/core/connect/token";
 const API_BASE = "https://integrate.za.mixtelematics.com/api";
@@ -19,11 +32,24 @@ const CREDENTIALS = {
 
 const LAFARGE_ORG_ID = process.env.LAFARGE_ORG_ID;
 
-const POLL_INTERVAL_MS = 10 * 1000;
+/** 30s poll — positions + active events. Trips are on a slower cadence below. */
+const POLL_INTERVAL_MS = 30 * 1000;
+/** Aggressive RAM/API relief: trips are heavy — poll every 30 minutes, smaller pages. */
+const TRIPS_POLL_INTERVAL_MS = 30 * 60 * 1000;
+const TRIPS_PAGE_SIZE = 250;
 const MAX_RUNS = 1200;
 const DRIVER_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const VEHICLE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const SITE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+/** SQLite retention — keep history bounded on 1GB droplets.
+ *  Trips/fuel retain ~Jan–Jun window (≥7 months); events/KPI stay short (RAM). */
+const DB_RETENTION_DAYS = {
+  trips: 220,
+  events: 45,
+  fuel: 220,
+  kpi: 45,
+};
+const DB_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let runCount = 0;
 let inFlight = null;
@@ -32,15 +58,32 @@ let pollingMaxRuns = MAX_RUNS;
 let lastDriverFetch = 0;
 let lastVehicleFetch = 0;
 let lastSiteFetch = 0;
+let lastTripsFetch = 0;
+let lastDbPrune = 0;
 
-// Trips state
+// Trips state — history lives in fleet.db (not RAM)
 const TRIPS_SESSION_FILE = path.join(process.cwd(), 'public', 'trips-session.json');
-const TRIPS_LOG_FILE     = path.join(process.cwd(), 'public', 'trips.log');
 const TRIP_MERGE_GAP_MS  = 5 * 60 * 1000;
 const TRIPS_MAX_LOOKBACK_DAYS = 6; // MiX rejects sinceTokens older than 7 days
-const TRIPS_RETENTION_DAYS = 30;   // keep enough for monthly distance reports
 
-const tripCache = new Map();
+/** Unknown EventTypeIds already sampled this process — avoid unbounded unknown-events.log growth. */
+const unknownEventTypesLogged = new Set();
+
+/** Keep only fields needed for KPI / distance / fuel — drop fat position blobs. */
+function slimTrip(trip) {
+  if (!trip || typeof trip !== 'object') return trip;
+  return {
+    TripId: trip.TripId ?? trip.TripID ?? trip.Id ?? trip.tripId ?? null,
+    AssetId: (trip.AssetId ?? trip.AssetID ?? trip.assetId)?.toString?.() ?? trip.AssetId ?? null,
+    DriverId: (trip.DriverId ?? trip.driverId)?.toString?.() ?? trip.DriverId ?? null,
+    TripStart: trip.TripStart || trip.tripStart || trip.StartDateTime || null,
+    TripEnd: trip.TripEnd || trip.tripEnd || trip.EndDateTime || null,
+    DistanceKilometers: Number(trip.DistanceKilometers ?? trip.distanceKm ?? 0),
+    DrivingTime: trip.DrivingTime ?? trip.drivingTimeSeconds ?? null,
+    Duration: trip.Duration ?? trip.durationSeconds ?? null,
+    MaxSpeedKilometersPerHour: trip.MaxSpeedKilometersPerHour ?? trip.maxSpeedKph ?? null,
+  };
+}
 
 function getSinceToken(date) {
   const pad = (n, len = 2) => String(n).padStart(len, '0');
@@ -94,35 +137,6 @@ function getTripTime(trip) {
   return Number.isFinite(time) ? time : 0;
 }
 
-function getTripRetentionCutoff() {
-  const now = new Date();
-  const rollingCutoff = Date.now() - TRIPS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  // Always keep full previous calendar month so "last month" distance stays accurate
-  const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).getTime();
-  return Math.min(rollingCutoff, lastMonthStart);
-}
-
-function pruneTripCache() {
-  const cutoff = getTripRetentionCutoff();
-  let removed = 0;
-  for (const [key, trip] of tripCache) {
-    if (getTripTime(trip) < cutoff) {
-      tripCache.delete(key);
-      removed++;
-    }
-  }
-  if (removed > 0) {
-    console.log(`🛣️ Pruned ${removed} trips older than ${TRIPS_RETENTION_DAYS} days — cache: ${tripCache.size}`);
-    rewriteTripsLog();
-  }
-  return removed;
-}
-
-function rewriteTripsLog() {
-  const lines = Array.from(tripCache.values()).map(t => JSON.stringify(t));
-  fs.writeFileSync(TRIPS_LOG_FILE, lines.length ? lines.join('\n') + '\n' : '');
-}
-
 function normalizeTripForDistance(trip) {
   const driverId = (trip.DriverId ?? trip.driverId)?.toString() || null;
   const assetId  = (trip.AssetId  ?? trip.AssetID ?? trip.assetId)?.toString() || null;
@@ -172,7 +186,8 @@ function mergeTrips(sortedTrips) {
   return journeys;
 }
 
-function loadTripCache() {
+function loadTripSession() {
+  getDb(); // ensure fleet.db schema exists
   try {
     if (fs.existsSync(TRIPS_SESSION_FILE)) {
       const session = JSON.parse(fs.readFileSync(TRIPS_SESSION_FILE, 'utf8'));
@@ -184,24 +199,7 @@ function loadTripCache() {
   } catch {
     console.log('⚠️ Could not load trips-session.json — using fresh sinceToken');
   }
-
-  try {
-    if (fs.existsSync(TRIPS_LOG_FILE)) {
-      const lines = fs.readFileSync(TRIPS_LOG_FILE, 'utf8').trim().split('\n').filter(Boolean);
-      const cutoff = getTripRetentionCutoff();
-      tripCache.clear();
-      lines.forEach(line => {
-        try {
-          const trip = JSON.parse(line);
-          if (getTripTime(trip) >= cutoff) tripCache.set(getTripKey(trip), trip);
-        } catch {}
-      });
-      console.log(`🛣️ Trip cache loaded — ${tripCache.size} trips`);
-      pruneTripCache();
-    }
-  } catch {
-    console.log('⚠️ Could not load trips.log');
-  }
+  console.log(`🛣️ Trips from SQLite — ${countTrips()} row(s) on disk (no RAM cache)`);
 }
 
 function getCurrentSinceToken() {
@@ -433,23 +431,10 @@ async function reverseGeocode(lat, lon) {
   }
 }
 
-async function enrichEntryWithAddress(logPath, eventId, lat, lon) {
+async function enrichEntryWithAddress(_logPath, eventId, lat, lon) {
   try {
     const address = await reverseGeocode(lat, lon);
-    if (!address) return;
-    const content = fs.readFileSync(logPath, 'utf8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    const updated = lines.map(line => {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.eventId?.toString() === eventId?.toString()) {
-          entry.address = address;
-          return JSON.stringify(entry);
-        }
-        return line;
-      } catch { return line; }
-    });
-    fs.writeFileSync(logPath, updated.join('\n') + '\n');
+    if (address) updateEventAddress(eventId, address);
   } catch {
     // silent fail
   }
@@ -614,20 +599,15 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
   activeParseRetryDone = false;
   if (newToken) { activeSinceToken = newToken; console.log(`📌 Updated activeSinceToken: ${activeSinceToken}`); }
 
-  const eventsLogPath = path.join(process.cwd(), 'events.log');
-
   // Handle panic events
   const panicEvents = parsed.filter(e => e.EventTypeId === PANIC_EVENT_TYPE_ID);
   if (panicEvents.length > 0) {
     console.log(`🔎 Active Panic found: ${panicEvents.length}`);
     panicEvents.forEach(e => {
       console.log(`🔎 Active Panic - AssetId: ${e.AssetId} | EventTime: ${e.EventDateTime}`);
-    });
-    const logPath = path.join(process.cwd(), 'panic.log');
-    const logEntries = panicEvents.map(e => {
       const driver = getDriverInfo(e.DriverId);
       const formattedAddress = e.Position?.FormattedAddress;
-      return JSON.stringify({
+      insertPanic({
         timestamp: new Date().toISOString(),
         assetId: e.AssetId,
         driverId: e.DriverId,
@@ -640,14 +620,11 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
         longitude: e.Position?.Longitude || null,
         address: formattedAddress || null,
       });
-    }).join('\n') + '\n';
-    fs.appendFileSync(logPath, logEntries);
-    console.log(`📝 Panic logged to panic.log`);
-    panicEvents.forEach(e => {
-      if (!e.Position?.FormattedAddress && e.Position?.Latitude && e.Position?.Longitude) {
-        enrichEntryWithAddress(logPath, e.EventId, e.Position.Latitude, e.Position.Longitude);
+      if (!formattedAddress && e.Position?.Latitude && e.Position?.Longitude) {
+        enrichEntryWithAddress(null, e.EventId, e.Position.Latitude, e.Position.Longitude);
       }
     });
+    console.log(`📝 Panic saved to SQLite`);
   }
 
   // Handle idle events
@@ -676,10 +653,10 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
   const warningEvents = parsed.filter(e => WARNING_EVENT_TYPES[e.EventTypeId]);
   if (warningEvents.length > 0) {
     console.log(`⚠️ Warning events found: ${warningEvents.length}`);
-    const logEntries = warningEvents.map(e => {
+    warningEvents.forEach(e => {
       const driver = getDriverInfo(e.DriverId);
       const formattedAddress = e.Position?.FormattedAddress;
-      return JSON.stringify({
+      insertEvent({
         timestamp: new Date().toISOString(),
         assetId: e.AssetId,
         driverId: e.DriverId,
@@ -693,18 +670,12 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
         latitude: e.Position?.Latitude || null,
         longitude: e.Position?.Longitude || null,
         address: formattedAddress || null,
-        speed: e.Speed ?? e.SpeedKilometresPerHour ?? e.Position?.SpeedKilometresPerHour ?? speedByAsset.get(e.AssetId?.toString()) ?? null,
-        speedLimit: e.SpeedLimit ?? e.ZoneSpeedLimit ?? e.SpeedLimitKilometresPerHour ?? null,
       });
-    }).join('\n') + '\n';
-    fs.appendFileSync(eventsLogPath, logEntries);
-    console.log(`📝 Warning logged to events.log`);
-
-    warningEvents.forEach(e => {
-      if (!e.Position?.FormattedAddress && e.Position?.Latitude && e.Position?.Longitude) {
-        enrichEntryWithAddress(eventsLogPath, e.EventId, e.Position.Latitude, e.Position.Longitude);
+      if (!formattedAddress && e.Position?.Latitude && e.Position?.Longitude) {
+        enrichEntryWithAddress(null, e.EventId, e.Position.Latitude, e.Position.Longitude);
       }
     });
+    console.log(`📝 Warning events saved to SQLite`);
 
     warningEvents.forEach(e => {
       const assetId = e.AssetId?.toString();
@@ -729,18 +700,24 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
   // Handle fuel probe events (1min ticker, 5min ticker, trip start/end fuel levels)
   const fuelProbeEvents = parsed.filter(e => FUEL_PROBE_EVENT_IDS.has(e.EventTypeId));
   if (fuelProbeEvents.length > 0) {
-    const fuelHistoryPath = path.join(process.cwd(), 'fuel-history.log');
-    const historyLines = [];
+    const historyRows = [];
     fuelProbeEvents.forEach(e => {
       const assetId = e.AssetId?.toString();
       if (!assetId) return;
       const level = e.Value ?? e.EventValue ?? e.FuelLevel ?? e.FuelLevelPercentage ?? e.ValueNumber ?? null;
       const ts = e.EventDateTime ?? new Date().toISOString();
       if (level !== null && level !== undefined) {
-        const parsed = Math.max(0, parseFloat(level));
-        fuelLevels.set(assetId, { level: parsed, timestamp: ts });
-        historyLines.push(JSON.stringify({ assetId, level: parsed, timestamp: ts }));
-        console.log(`⛽ Fuel Probe — AssetId: ${assetId} | Level: ${parsed}`);
+        const parsedLevel = Math.max(0, parseFloat(level));
+        fuelLevels.set(assetId, { level: parsedLevel, timestamp: ts });
+        historyRows.push({
+          assetId,
+          level: parsedLevel,
+          timestamp: ts,
+          eventType: fuelEventTypeFromId(e.EventTypeId) || '5min_ticker',
+          eventId: e.EventId?.toString() || null,
+          driverId: e.DriverId?.toString() || null,
+        });
+        console.log(`⛽ Fuel Probe — AssetId: ${assetId} | Level: ${parsedLevel}`);
       }
       if (!fuelProbeRawLogged) {
         fuelProbeRawLogged = true;
@@ -749,21 +726,25 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
         console.log(`📝 Raw fuel probe event saved to fuel-probe-raw.log`);
       }
     });
-    if (historyLines.length > 0) {
-      fs.appendFileSync(fuelHistoryPath, historyLines.join('\n') + '\n');
+    if (historyRows.length > 0) {
+      insertFuelReadings(historyRows);
     }
   }
 
   // Handle KPI events (loaded truck, load duration, fatigue/DMS, overspeed variants)
   const kpiEvents = parsed.filter(e => KPI_EVENT_IDS.has(e.EventTypeId));
   if (kpiEvents.length > 0) {
-    const kpiLogPath = path.join(process.cwd(), 'kpi-events.log');
-    const kpiLines = kpiEvents
-      .map(e => serializeKpiLogEntry(e, getDriverInfo(e.DriverId)))
-      .filter(Boolean);
-    if (kpiLines.length > 0) {
-      fs.appendFileSync(kpiLogPath, kpiLines.join('\n') + '\n');
-      console.log(`📈 KPI events logged: ${kpiLines.length} (kpi-events.log)`);
+    const rows = [];
+    for (const e of kpiEvents) {
+      const line = serializeKpiLogEntry(e, getDriverInfo(e.DriverId));
+      if (!line) continue;
+      try {
+        rows.push(JSON.parse(line));
+      } catch { /* skip */ }
+    }
+    if (rows.length > 0) {
+      insertKpiEvents(rows);
+      console.log(`📈 KPI events saved to SQLite: ${rows.length}`);
     }
   }
 
@@ -786,6 +767,8 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
     const unknownLogPath = path.join(process.cwd(), 'unknown-events.log');
     unknownMap.forEach(({ name, count, sample }, id) => {
       console.log(`🔍 Unknown EventTypeId: ${id} | Name: ${name} | Count: ${count}`);
+      if (unknownEventTypesLogged.has(id)) return;
+      unknownEventTypesLogged.add(id);
       fs.appendFileSync(unknownLogPath, JSON.stringify({
         timestamp: new Date().toISOString(),
         eventTypeId: id,
@@ -851,7 +834,7 @@ function mergeData(positions) {
     return {
       id: assetId || 'unknown',
       regNo: vehicle.RegistrationNumber || 'N/A',
-      transporter: vehicle.SiteName || 'Lafarge',
+      transporter: vehicle.SiteName || 'HBM',
       site: siteInfo?.name || 'Unknown Site',
       zone: siteInfo?.zoneName || 'Unknown Zone',
       siteId: vehicle.SiteId?.toString() || null,
@@ -875,23 +858,17 @@ function mergeData(positions) {
   });
 }
 
-function appendTripsToLog(newTrips) {
-  if (!newTrips.length) return;
-  const lines = newTrips.map(t => JSON.stringify(t)).join('\n') + '\n';
-  fs.appendFileSync(TRIPS_LOG_FILE, lines);
-}
-
 function saveSessionTrips() {
   const payload = {
     sinceToken: tripSinceToken,
     lastUpdate: new Date().toISOString(),
-    count: tripCache.size,
+    count: countTrips(),
   };
   fs.writeFileSync(TRIPS_SESSION_FILE, JSON.stringify(payload, null, 2));
 }
 
 async function getLatestTrips(token) {
-  const url = `${API_BASE}/trips/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/${tripSinceToken}/quantity/1000`;
+  const url = `${API_BASE}/trips/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/${tripSinceToken}/quantity/${TRIPS_PAGE_SIZE}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
@@ -899,7 +876,7 @@ async function getLatestTrips(token) {
   if (res.status === 401) {
     cachedToken = null; tokenExpiresAt = 0;
     console.log('⚠️ Token rejected by trips endpoint — will re-auth next poll');
-    return [];
+    return { fetched: 0, inserted: 0 };
   }
 
   const newToken = res.headers.get('GetSinceToken');
@@ -907,7 +884,7 @@ async function getLatestTrips(token) {
   if (res.status === 204) {
     if (newToken) tripSinceToken = newToken;
     saveSessionTrips();
-    return [];
+    return { fetched: 0, inserted: 0 };
   }
 
   if (!res.ok) {
@@ -917,7 +894,7 @@ async function getLatestTrips(token) {
       resetTripSinceToken('stale token rejected by MiX');
       saveSessionTrips();
     }
-    return [];
+    return { fetched: 0, inserted: 0 };
   }
 
   const text = await res.text();
@@ -925,7 +902,7 @@ async function getLatestTrips(token) {
   let trips;
   try { trips = JSON.parse(safe); } catch (e) {
     console.log(`⚠️ Failed to parse trips response: ${e.message}`);
-    return [];
+    return { fetched: 0, inserted: 0 };
   }
 
   if (newToken) {
@@ -933,25 +910,24 @@ async function getLatestTrips(token) {
     console.log(`📌 Updated tripSinceToken: ${tripSinceToken}`);
   }
 
-  if (Array.isArray(trips)) {
-    const newTrips = [];
-    trips.forEach(trip => {
-      const key = getTripKey(trip);
-      if (!tripCache.has(key)) newTrips.push(trip);
-      tripCache.set(key, trip);
-    });
-    appendTripsToLog(newTrips);
-    pruneTripCache();
-    console.log(`🛣️ Trips: ${trips.length} received, ${newTrips.length} new — cache: ${tripCache.size}`);
+  let inserted = 0;
+  if (Array.isArray(trips) && trips.length) {
+    const slimList = trips.map(slimTrip);
+    // Drop the fat MiX array ASAP — only slim rows go to SQLite
+    trips = null;
+    inserted = upsertTrips(slimList, 'mix');
+    console.log(`🛣️ Trips: ${slimList.length} received, ${inserted} upserted — db: ${countTrips()}`);
   }
 
   saveSessionTrips();
-  return Array.isArray(trips) ? trips : [];
+  return { fetched: inserted ? inserted : 0, inserted };
 }
 
+/** Session API — recent window only (avoid loading a full week into RAM). */
 export function getSessionTrips() {
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  return Array.from(tripCache.values()).filter(trip => getTripTime(trip) >= cutoff);
+  const end = new Date();
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  return getTripsInRange(start.toISOString(), end.toISOString());
 }
 
 function getMonthBounds(monthValue) {
@@ -964,7 +940,14 @@ function getMonthBounds(monthValue) {
   };
 }
 
-function getDistanceRangeBounds(range = '24h', monthValue = null) {
+function getDistanceRangeBounds(range = '24h', monthValue = null, fromIso = null, toIso = null) {
+  if (fromIso && toIso) {
+    const start = new Date(fromIso);
+    const end = new Date(toIso);
+    if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && end > start) {
+      return { start, end };
+    }
+  }
   const now = new Date();
   if (range === 'currentMonth') {
     const m = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -981,14 +964,10 @@ function getDistanceRangeBounds(range = '24h', monthValue = null) {
   return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end: now };
 }
 
-export function getDriverDistanceSummary({ range = '24h', month = null } = {}) {
-  const { start, end } = getDistanceRangeBounds(range, month);
+export function getDriverDistanceSummary({ range = '24h', month = null, from = null, to = null } = {}) {
+  const { start, end } = getDistanceRangeBounds(range, month, from, to);
 
-  const allTrips = Array.from(tripCache.values())
-    .filter(trip => {
-      const time = getTripTime(trip);
-      return time >= start.getTime() && time < end.getTime();
-    })
+  const allTrips = getTripsInRange(start.toISOString(), end.toISOString())
     .map(normalizeTripForDistance)
     .filter(trip => {
       if (!(trip.distanceKm >= 0.5)) return false;
@@ -1049,18 +1028,25 @@ export function getDriverDistanceSummary({ range = '24h', month = null } = {}) {
           driverPhone: journey.driverPhone,
           totalDistanceKm: 0,
           journeyCount: 0,
+          totalDrivingTimeSeconds: 0,
           vehicles: new Set(),
         });
       }
       const d = byDriver.get(key);
       d.totalDistanceKm += journey.distanceKm;
       d.journeyCount += 1;
+      d.totalDrivingTimeSeconds += journey.drivingTimeSeconds || journey.durationSeconds || 0;
       if (asset.regNo && asset.regNo !== 'N/A') d.vehicles.add(asset.regNo);
     });
   });
 
   const drivers = Array.from(byDriver.values())
-    .map(d => ({ ...d, totalDistanceKm: Number(d.totalDistanceKm.toFixed(2)), vehicles: Array.from(d.vehicles) }))
+    .map(d => ({
+      ...d,
+      totalDistanceKm: Number(d.totalDistanceKm.toFixed(2)),
+      totalDrivingTimeSeconds: Math.round(d.totalDrivingTimeSeconds),
+      vehicles: Array.from(d.vehicles),
+    }))
     .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm);
 
   return {
@@ -1073,7 +1059,7 @@ export function getDriverDistanceSummary({ range = '24h', month = null } = {}) {
     journeyCount: assets.reduce((s, a) => s + a.journeyCount, 0),
     driverCount: drivers.length,
     assetCount: assets.length,
-    cachedTripCount: tripCache.size,
+    cachedTripCount: countTrips(),
     assets,
     drivers,
   };
@@ -1106,11 +1092,22 @@ export async function pollOnce() {
         await fetchAndCacheSites(token);
       }
 
-      // Positions first so we can pass speed into event logging
-      const [positions] = await Promise.all([
-        getLatestPositions(token),
-        getLatestTrips(token),
-      ]);
+      // Positions every poll; trips only on the slow cadence (RAM + MiX quota)
+      const positions = await getLatestPositions(token);
+      if (Date.now() - lastTripsFetch >= TRIPS_POLL_INTERVAL_MS || lastTripsFetch === 0) {
+        await getLatestTrips(token);
+        lastTripsFetch = Date.now();
+      }
+
+      if (Date.now() - lastDbPrune >= DB_PRUNE_INTERVAL_MS || lastDbPrune === 0) {
+        try {
+          const pruned = pruneFleetHistory(DB_RETENTION_DAYS);
+          console.log(`🧹 SQLite prune: trips−${pruned.trips} events−${pruned.events} fuel−${pruned.fuel} kpi−${pruned.kpi}`);
+        } catch (e) {
+          console.log('⚠️ SQLite prune skipped:', e?.message || e);
+        }
+        lastDbPrune = Date.now();
+      }
 
       const speedByAsset = new Map(
         positions.map(p => [p.AssetId?.toString(), p.SpeedKilometresPerHour ?? null])
@@ -1153,7 +1150,8 @@ export async function pollOnce() {
 
       const dataPath = path.join(process.cwd(), 'public', 'data.json');
       const metadataPath = path.join(process.cwd(), 'public', 'metadata.json');
-      fs.writeFileSync(dataPath, JSON.stringify(merged, null, 2));
+      // Compact JSON — pretty-print doubled disk IO every poll on ~2MB fleet dumps
+      fs.writeFileSync(dataPath, JSON.stringify(merged));
 
       const metadata = {
         lastUpdate: new Date().toISOString(),
@@ -1161,7 +1159,7 @@ export async function pollOnce() {
         totalVehicles: merged.length,
         ...stats
       };
-      fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+      fs.writeFileSync(metadataPath, JSON.stringify(metadata));
 
       console.log(`📊 Panic: ${stats.panic} | Warnings: ${stats.warnings} | Moving: ${stats.moving} | Idle: ${stats.idle} | Excessive Idle: ${stats.excessiveIdle} | Stationary: ${stats.stationary} | Parked: ${stats.parked} | Inactive: ${stats.inactive} | Offline: ${stats.offline}`);
       console.log("💾 Saved to data.json");
@@ -1201,11 +1199,13 @@ export function startPolling(options = {}) {
   loadDriverLookup();
   loadVehicleLookup();
   loadSiteLookup();
-  loadTripCache();
+  loadTripSession();
 
   console.log("🚀 MiX Auto-Polling Started");
   console.log("=".repeat(70));
-  console.log(`Polling interval: ${intervalMs / 1000} seconds`);
+  console.log(`Polling interval: ${intervalMs / 1000} seconds (positions/events)`);
+  console.log(`Trips cadence: every ${TRIPS_POLL_INTERVAL_MS / 60000} min · page ${TRIPS_PAGE_SIZE}`);
+  console.log(`SQLite retention: ${DB_RETENTION_DAYS.trips}d · prune every ${DB_PRUNE_INTERVAL_MS / 3600000}h`);
   console.log(`Total runs: ${pollingMaxRuns ?? "∞"}`);
   if (pollingMaxRuns) {
     console.log(`Estimated duration: ${(pollingMaxRuns * intervalMs) / 1000}s (~${((pollingMaxRuns * intervalMs) / 60000).toFixed(1)} min)`);

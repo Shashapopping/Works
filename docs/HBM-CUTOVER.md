@@ -49,11 +49,13 @@ ln -sfn /var/www/hbm-dashboard /var/www/larfarge-dashboard
 
 In `.github/workflows/deploy.yml`, replace:
 
-| Today | Next week |
-|-------|-----------|
+
+| Today                         | Next week                |
+| ----------------------------- | ------------------------ |
 | `/var/www/larfarge-dashboard` | `/var/www/hbm-dashboard` |
-| `pm2 … larfarge-dashboard` | `pm2 … hbm-dashboard` |
-| artifact `hbm-dist` | keep |
+| `pm2 … larfarge-dashboard`    | `pm2 … hbm-dashboard`    |
+| artifact `hbm-dist`           | keep                     |
+
 
 Push to `main` after path edit so the next deploy targets HBM only.
 
@@ -63,12 +65,31 @@ Push to `main` after path edit so the next deploy targets HBM only.
 - UI copy: Lafarge → HBM (Settings client name, Safety subtitle, SafeIQ prompt, etc.)
 - Env alias: accept `HBM_ORG_ID` with fallback to `LAFARGE_ORG_ID` in scripts/`mix-test.js`
 
-### 5. Verify
+### 5. Auth go-live (before first users)
+
+Login UI is already in the SPA (`/#/login`). On the droplet `.env` (not GitHub):
+
+```bash
+NODE_ENV=production
+AUTH_COOKIE_SECURE=1
+AUTH_BOOTSTRAP_EMAIL=you@bestpracticesltd.com.ng
+AUTH_BOOTSTRAP_PASSWORD='strong-unique-password'
+AUTH_BOOTSTRAP_NAME='Platform Admin'
+```
+
+- Bootstrap admin is created **only if** `fleet.db` has zero users (file is gitignored — survives deploys).
+- Sequence: deploy → open `https://hbm…/#/login` → sign in with bootstrap → forced password change → Settings → Users to provision staff.
+- nginx must forward cookies / HTTPS (`proxy_set_header X-Forwarded-Proto $scheme;` and `Host`).
+- After first login, remove or rotate `AUTH_BOOTSTRAP_PASSWORD` from `.env` (it is unused once users exist).
+
+### 6. Verify
 
 ```bash
 curl -sf -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3003/
 curl -skI https://hbm.bestpracticesltd.com.ng | head -5
-pm2 show hbm-dashboard | grep -E 'status|exec cwd|script path'
+# Auth smoke (expect 401 without cookie)
+curl -s -o /dev/null -w "%{http_code}\n" https://hbm.bestpracticesltd.com.ng/api/auth/me
+pm2 show HBM-Dashboard | grep -E 'status|exec cwd|script path'
 ```
 
 Hard-refresh the browser after deploy (new `dist/` hashes).
@@ -81,10 +102,10 @@ Droplet today: `https://github.com/ipinnu/Larfarge-Dashboard.git` with **no** to
 
 **Before private:**
 
-1. On droplet, create a read-only deploy key and add it under GitHub → repo → Settings → Deploy keys  
-2. Switch remote: `git remote set-url origin git@github.com:ipinnu/Larfarge-Dashboard.git`  
-3. Test: `git fetch origin`  
-4. Then set visibility to private  
+1. On droplet, create a read-only deploy key and add it under GitHub → repo → Settings → Deploy keys
+2. Switch remote: `git remote set-url origin git@github.com:ipinnu/Larfarge-Dashboard.git`
+3. Test: `git fetch origin`
+4. Then set visibility to private
 5. Run one Actions deploy to confirm
 
 (Or use a fine-grained PAT in the HTTPS remote — deploy key is cleaner.)
@@ -95,3 +116,4 @@ Droplet today: `https://github.com/ipinnu/Larfarge-Dashboard.git` with **no** to
 - Put `MIX_*` / private keys in GitHub — only `VITE_*` + SSH
 - Expect `pm2 restart` alone to fix a bad frontend bake
 - Make the repo private before droplet git auth is fixed
+

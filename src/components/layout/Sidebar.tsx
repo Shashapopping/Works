@@ -2,18 +2,20 @@ import { useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users,
-  AlertTriangle, Search, ListChecks,
+  AlertTriangle, Search, ListChecks, TrendingUp,
   Shield, Wrench, FileBarChart2, Folder, BarChart3, Fuel,
-  Truck, Map, Navigation, Route, Brain, Lock, Sparkles, Gauge,
-  Settings, ChevronDown, Sun, Moon, LogOut,
+  Truck, Map, Navigation, Route, Brain, Lock, Gauge,
+  Mountain, Package, Droplets, Settings, ChevronDown, Sun, Moon, LogOut,
 } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
-import { UPCOMING_FEATURES } from '../../config/lockedFeatures';
+import { useAuth } from '../../context/AuthContext';
+import { permissionForPath } from '../../lib/authApi';
 
 interface SubItem {
   path: string;
   label: string;
   icon: React.ElementType;
+  locked?: boolean;
 }
 
 interface NavGroup {
@@ -22,6 +24,9 @@ interface NavGroup {
   label: string;
   children?: SubItem[];
   pinned?: boolean;
+  locked?: boolean;
+  /** Accent color for fleet-segment icon badge */
+  accent?: string;
 }
 
 const NAV: NavGroup[] = [
@@ -32,12 +37,21 @@ const NAV: NavGroup[] = [
     path: '/incidents', icon: AlertTriangle, label: 'Incident Intelligence',
     children: [
       { path: '/incidents', label: 'Event Explorer', icon: Search },
+      { path: '/incidents/trends', label: 'Trends', icon: TrendingUp },
       { path: '/incidents/response', label: 'Response Tracking', icon: ListChecks },
     ],
   },
-  { path: '/tankers', icon: Truck, label: 'Bulk Tankers' },
+  { path: '/tankers', icon: Truck, label: 'Bulk Tankers', accent: '#f59e0b' },
+  {
+    path: '/quarry', icon: Mountain, label: 'Quarry', accent: '#84cc16',
+    children: [
+      { path: '/quarry', label: 'Overview', icon: Mountain },
+      { path: '/quarry/kpi', label: 'Utilization & KPIs', icon: Gauge },
+    ],
+  },
+  { path: '/cement', icon: Package, label: 'Cement', accent: '#94a3b8' },
+  { path: '/ready-mix', icon: Droplets, label: 'Ready Mix', accent: '#22d3ee' },
   { path: '/safety', icon: Shield, label: 'Safety' },
-  { path: '/kpi', icon: Gauge, label: 'Utilization & KPIs' },
   {
     path: '/fuel', icon: Fuel, label: 'Fuel',
     children: [
@@ -45,16 +59,59 @@ const NAV: NavGroup[] = [
       { path: '/fuel/consumption', label: 'Consumption', icon: BarChart3 },
     ],
   },
+  {
+    path: '/reports', icon: FileBarChart2, label: 'Reports',
+    children: [
+      { path: '/reports', label: 'Reports', icon: FileBarChart2 },
+      { path: '/reports/documents', label: 'Documents', icon: Folder },
+    ],
+  },
+  { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
+  // Locked / upcoming — keep at bottom of nav
+  {
+    path: '/trips', icon: Route, label: 'Journey Management', locked: true,
+    children: [
+      { path: '/trips', label: 'Journeys', icon: Route, locked: true },
+      { path: '/trips/dispatch', label: 'Dispatch', icon: Navigation, locked: true },
+    ],
+  },
+  { path: '/aria', icon: Brain, label: 'AI Insights', locked: true },
 ];
 
-const UPCOMING_ICONS: Record<string, React.ElementType> = {
-  '/trips': Route,
-  '/trips/dispatch': Navigation,
-  '/reports': FileBarChart2,
-  '/reports/documents': Folder,
-  '/maintenance': Wrench,
-  '/aria': Brain,
-};
+function NavIcon({
+  Icon,
+  accent,
+  active,
+  size = 15,
+}: {
+  Icon: React.ElementType;
+  accent?: string;
+  active?: boolean;
+  size?: number;
+}) {
+  if (!accent) {
+    return <Icon size={size} style={{ flexShrink: 0 }} />;
+  }
+  return (
+    <span
+      style={{
+        width: 22,
+        height: 22,
+        borderRadius: 6,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        background: active ? `${accent}33` : `${accent}22`,
+        border: `1px solid ${accent}${active ? '99' : '55'}`,
+        color: accent,
+        boxShadow: active ? `0 0 10px ${accent}33` : 'none',
+      }}
+    >
+      <Icon size={12} strokeWidth={2.25} />
+    </span>
+  );
+}
 
 interface Props {
   mobileOpen?: boolean;
@@ -63,11 +120,23 @@ interface Props {
 
 export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
   const { theme, setTheme, redAlertCount, fleetSafetyScore, scoreConfig } = useFleet();
+  const { user, hasPermission, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
+  const canSeePath = (path: string) => {
+    const perm = permissionForPath(path);
+    if (!perm) return true;
+    return hasPermission(perm);
+  };
+
+  const visibleNav = NAV.filter(g => canSeePath(g.path)).map(g => ({
+    ...g,
+    children: g.children?.filter(c => canSeePath(c.path)),
+  }));
+
   const getParentPath = (pathname: string) => {
-    const match = NAV.find(g =>
+    const match = visibleNav.find(g =>
       g.children
         ? g.children.some(c => c.path === pathname) || pathname.startsWith(g.path + '/')
         : g.path === pathname
@@ -75,12 +144,7 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
     return match?.path ?? null;
   };
 
-  const upcomingActive = UPCOMING_FEATURES.some(
-    f => location.pathname === f.path || location.pathname.startsWith(f.path + '/'),
-  );
-
   const [openGroup, setOpenGroup] = useState<string | null>(() => getParentPath(location.pathname));
-  const [upcomingOpen, setUpcomingOpen] = useState(() => upcomingActive);
 
   const toggleGroup = (path: string, defaultChild?: string) => {
     if (openGroup === path) {
@@ -157,14 +221,14 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
         flex: 1, overflowY: 'auto', padding: '8px 0',
         scrollbarWidth: 'none',
       }}>
-        {NAV.map(group => {
+        {visibleNav.map(group => {
           const Icon = group.icon;
           const isOpen = openGroup === group.path;
           const isActive = group.path === '/'
             ? location.pathname === '/'
             : location.pathname === group.path || location.pathname.startsWith(group.path + '/');
 
-          if (!group.children) {
+          if (!group.children?.length) {
             return (
               <NavLink
                 key={group.path}
@@ -174,23 +238,29 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                 style={({ isActive: navActive }) => ({
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '8px 14px', cursor: 'pointer',
-                  color: navActive ? '#0078D4' : 'rgba(255,255,255,0.55)',
-                  background: navActive ? 'rgba(0,120,212,0.18)' : 'transparent',
+                  color: navActive ? (group.accent || '#0078D4') : 'rgba(255,255,255,0.55)',
+                  background: navActive ? (group.accent ? `${group.accent}22` : 'rgba(0,120,212,0.18)') : 'transparent',
                   fontSize: 12.5, textDecoration: 'none',
                   transition: 'background 0.15s, color 0.15s',
                 })}
                 onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-                onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                onMouseLeave={e => {
+                  if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent';
+                  else if (group.accent) (e.currentTarget as HTMLElement).style.background = `${group.accent}22`;
+                }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <Icon size={15} />
+                  <NavIcon Icon={Icon} accent={group.accent} active={isActive} />
                   {group.label}
                 </div>
-                {group.path === '/' && redAlertCount > 0 && (
-                  <span style={{ background: '#CC0000', color: '#fff', fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 9999 }}>
-                    {redAlertCount}
-                  </span>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {group.locked && <Lock size={11} style={{ opacity: 0.4, flexShrink: 0 }} />}
+                  {group.path === '/' && redAlertCount > 0 && (
+                    <span style={{ background: '#CC0000', color: '#fff', fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 9999 }}>
+                      {redAlertCount}
+                    </span>
+                  )}
+                </div>
               </NavLink>
             );
           }
@@ -202,28 +272,36 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '8px 14px', cursor: 'pointer',
-                  color: isActive ? '#0078D4' : 'rgba(255,255,255,0.55)',
-                  background: isActive && !isOpen ? 'rgba(0,120,212,0.18)' : 'transparent',
+                  color: isActive ? (group.accent || '#0078D4') : 'rgba(255,255,255,0.55)',
+                  background: isActive && !isOpen
+                    ? (group.accent ? `${group.accent}22` : 'rgba(0,120,212,0.18)')
+                    : 'transparent',
                   fontSize: 12.5,
                   transition: 'background 0.15s, color 0.15s',
                   userSelect: 'none',
                 }}
                 onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-                onMouseLeave={e => { if (!isActive || isOpen) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                onMouseLeave={e => {
+                  if (!isActive || isOpen) (e.currentTarget as HTMLElement).style.background = 'transparent';
+                  else if (group.accent) (e.currentTarget as HTMLElement).style.background = `${group.accent}22`;
+                }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <Icon size={15} />
+                  <NavIcon Icon={Icon} accent={group.accent} active={isActive} />
                   {group.label}
                 </div>
-                <ChevronDown
-                  size={13}
-                  style={{
-                    color: 'rgba(255,255,255,0.25)',
-                    transition: 'transform 0.2s ease',
-                    transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                    flexShrink: 0,
-                  }}
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {group.locked && <Lock size={11} style={{ opacity: 0.4, flexShrink: 0 }} />}
+                  <ChevronDown
+                    size={13}
+                    style={{
+                      color: 'rgba(255,255,255,0.25)',
+                      transition: 'transform 0.2s ease',
+                      transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                      flexShrink: 0,
+                    }}
+                  />
+                </div>
               </div>
 
               <div style={{
@@ -244,16 +322,19 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                         display: 'flex', alignItems: 'center', gap: 8,
                         padding: '6px 14px 6px 38px',
                         fontSize: 12,
-                        color: childActive ? '#0078D4' : 'rgba(255,255,255,0.4)',
+                        color: childActive ? (group.accent || '#0078D4') : 'rgba(255,255,255,0.4)',
                         textDecoration: 'none',
                         transition: 'background 0.15s, color 0.15s',
-                        background: childActive ? 'rgba(0,120,212,0.1)' : 'transparent',
+                        background: childActive
+                          ? (group.accent ? `${group.accent}18` : 'rgba(0,120,212,0.1)')
+                          : 'transparent',
                       }}
                       onMouseEnter={e => { if (!childActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
                       onMouseLeave={e => { if (!childActive) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                     >
                       <SubIcon size={13} style={{ flexShrink: 0 }} />
-                      {child.label}
+                      <span style={{ flex: 1 }}>{child.label}</span>
+                      {child.locked && <Lock size={11} style={{ opacity: 0.4, flexShrink: 0 }} />}
                     </NavLink>
                   );
                 })}
@@ -261,86 +342,30 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             </div>
           );
         })}
-
-        <div style={{ marginTop: 10, borderTop: '0.5px solid rgba(255,255,255,0.08)', paddingTop: 8 }}>
-          <div
-            onClick={() => setUpcomingOpen(o => !o)}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '8px 14px', cursor: 'pointer',
-              color: upcomingActive ? '#0078D4' : 'rgba(255,255,255,0.45)',
-              fontSize: 12.5,
-              userSelect: 'none',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-              <Sparkles size={15} />
-              Upcoming features
-            </div>
-            <ChevronDown
-              size={13}
-              style={{
-                color: 'rgba(255,255,255,0.25)',
-                transition: 'transform 0.2s ease',
-                transform: upcomingOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                flexShrink: 0,
-              }}
-            />
-          </div>
-          <div style={{
-            overflow: 'hidden',
-            maxHeight: upcomingOpen ? `${UPCOMING_FEATURES.length * 34}px` : '0',
-            transition: 'max-height 0.25s ease',
-          }}>
-            {UPCOMING_FEATURES.map(item => {
-              const Icon = UPCOMING_ICONS[item.path] ?? Lock;
-              const active = location.pathname === item.path;
-              return (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  end
-                  onClick={onCloseMobile}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '6px 14px 6px 38px',
-                    fontSize: 12,
-                    color: active ? '#0078D4' : 'rgba(255,255,255,0.35)',
-                    textDecoration: 'none',
-                    background: active ? 'rgba(0,120,212,0.1)' : 'transparent',
-                    transition: 'background 0.15s, color 0.15s',
-                  }}
-                >
-                  <Icon size={13} style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1 }}>{item.label}</span>
-                  <Lock size={11} style={{ opacity: 0.45, flexShrink: 0 }} />
-                </NavLink>
-              );
-            })}
-          </div>
-        </div>
       </div>
 
       <div style={{ borderTop: '0.5px solid rgba(255,255,255,0.08)', paddingBottom: 12 }}>
-        <NavLink
-          to="/settings/general"
-          style={({ isActive }) => ({
-            display: 'flex', alignItems: 'center', gap: 9,
-            padding: '8px 14px', fontSize: 12.5,
-            color: isActive ? '#0078D4' : 'rgba(255,255,255,0.55)',
-            background: isActive ? 'rgba(0,120,212,0.18)' : 'transparent',
-            textDecoration: 'none',
-            transition: 'background 0.15s, color 0.15s',
-          })}
-          onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'}
-          onMouseLeave={e => {
-            const active = location.pathname.startsWith('/settings');
-            (e.currentTarget as HTMLElement).style.background = active ? 'rgba(0,120,212,0.18)' : 'transparent';
-          }}
-        >
-          <Settings size={15} />
-          Settings
-        </NavLink>
+        {hasPermission('settings') && (
+          <NavLink
+            to="/settings/general"
+            style={({ isActive }) => ({
+              display: 'flex', alignItems: 'center', gap: 9,
+              padding: '8px 14px', fontSize: 12.5,
+              color: isActive ? '#0078D4' : 'rgba(255,255,255,0.55)',
+              background: isActive ? 'rgba(0,120,212,0.18)' : 'transparent',
+              textDecoration: 'none',
+              transition: 'background 0.15s, color 0.15s',
+            })}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'}
+            onMouseLeave={e => {
+              const active = location.pathname.startsWith('/settings');
+              (e.currentTarget as HTMLElement).style.background = active ? 'rgba(0,120,212,0.18)' : 'transparent';
+            }}
+          >
+            <Settings size={15} />
+            Settings
+          </NavLink>
+        )}
 
         <div style={{
           margin: '8px 10px 0',
@@ -355,7 +380,9 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             animation: 'aria-pulse 2s ease-in-out infinite',
             flexShrink: 0,
           }} />
-          <span style={{ fontSize: 11, color: 'rgba(0,120,212,0.9)', fontWeight: 500 }}>BPL Analyst online</span>
+          <span style={{ fontSize: 11, color: 'rgba(0,120,212,0.9)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {user?.name || 'Signed in'}
+          </span>
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             style={{
@@ -368,6 +395,10 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
           </button>
           <button
+            onClick={async () => {
+              await logout();
+              navigate('/login');
+            }}
             style={{
               background: 'none', border: 'none', cursor: 'pointer',
               color: 'rgba(255,255,255,0.3)', padding: 2,

@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts';
 import FeatureGate from '../components/FeatureGate';
+import ReportAutomate from '../components/ReportAutomate';
 import { authFetch, useFleet } from '../context/FleetContext';
 import {
   exportReport,
@@ -635,6 +636,8 @@ export default function ReportsPage() {
               {downloading ? 'Preparing…' : 'Download report'}
             </button>
           </div>
+
+          <ReportAutomate />
 
           <div className="bpl-reports-filters-foot">
             Auto-refreshes every 10s

@@ -1,5 +1,6 @@
 import type { LogEntry, Vehicle } from '../context/FleetContext';
 import { displayDriverName, isKnownDriver } from './driverUtils';
+import { brandLabel } from './branding';
 
 export type StatusFilter =
   | 'All'
@@ -166,6 +167,7 @@ export function deriveInsights(events: LogEntry[], vehicles: Vehicle[]): AiInsig
 export function normalizeVehicle(v: Vehicle) {
   return {
     ...v,
+    transporter: brandLabel(v.transporter) || v.transporter,
     address: v.position?.address || '—',
     site: v.site || 'Unknown',
     zone: v.zone,

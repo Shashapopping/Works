@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Check, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import {
   DEFAULT_FLEET_SCORE_CONFIG,
@@ -12,8 +12,36 @@ import {
   DEFAULT_CONSEQUENCE_CONFIG,
   type ConsequenceScoreConfig,
 } from '../lib/consequenceScore';
+import {
+  ACCESS_CATALOG,
+  accessLabel,
+  createRoleId,
+  DEFAULT_ROLES,
+  type RoleDefinition,
+  type RolesConfig,
+} from '../lib/roleConfig';
+import {
+  createUserApi,
+  fetchRoles,
+  fetchUsers,
+  patchUserApi,
+  putRoles,
+  type AuthUser,
+} from '../lib/authApi';
+import { useAuth } from '../context/AuthContext';
 
-type Tab = 'general' | 'thresholds' | 'api' | 'roles';
+type Tab = 'general' | 'thresholds' | 'roles' | 'users' | 'dev';
+
+const DEV_PASSWORD = 'BplAnalyst26';
+const DEV_UNLOCK_KEY = 'bpl-dev-unlocked';
+
+function isDevUnlocked() {
+  try {
+    return sessionStorage.getItem(DEV_UNLOCK_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 const fieldStyle: React.CSSProperties = {
   width: '100%', padding: '8px 12px',
@@ -32,7 +60,7 @@ function GeneralSettings() {
   const { theme, setTheme } = useFleet();
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState({
-    clientName: 'Lafarge Nigeria',
+    clientName: 'HBM Nigeria',
     platform: 'BPL Fleet Intelligence Platform',
     timezone: 'Africa/Lagos',
     currency: 'NGN',
@@ -309,7 +337,7 @@ function ThresholdSettings() {
               <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>points deducted each time</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              Raise this to punish violations harder. Lafarge policy default is 2.
+              Raise this to punish violations harder. HBM policy default is 2.
             </div>
           </div>
           <div>
@@ -409,65 +437,740 @@ function APISettings() {
           </div>
         </div>
       ))}
-
     </div>
   );
 }
 
-function RoleSettings() {
-  const roles = [
-    { role: 'Admin', desc: 'Full platform access, user management, API configuration', permissions: ['All sections', 'User management', 'Settings', 'Reset'] },
-    { role: 'HSE Officer', desc: 'Safety Vault, BPL Analyst Intelligence, Driver Management, Incident Intelligence', permissions: ['Safety Vault', 'BPL Analyst Intelligence', 'Driver Management', 'Incidents', 'Reports'] },
-    { role: 'Operations Manager', desc: 'Dashboard, Fleet view, Operations, limited Safety access', permissions: ['Dashboard', 'Operations', 'Driver Management (read)', 'Incidents (read)'] },
-    { role: 'View Only', desc: 'Read-only access to Dashboard and Reports', permissions: ['Dashboard (read)', 'Reports (read)'] },
-  ];
+function DevGate({ children }: { children: React.ReactNode }) {
+  const [unlocked, setUnlocked] = useState(isDevUnlocked);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(false);
+
+  const unlock = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password === DEV_PASSWORD) {
+      try { sessionStorage.setItem(DEV_UNLOCK_KEY, '1'); } catch { /* ignore */ }
+      setUnlocked(true);
+      setError(false);
+      setPassword('');
+      return;
+    }
+    setError(true);
+  };
+
+  const lock = () => {
+    try { sessionStorage.removeItem(DEV_UNLOCK_KEY); } catch { /* ignore */ }
+    setUnlocked(false);
+    setPassword('');
+  };
+
+  if (!unlocked) {
+    return (
+      <div className="bpl-card" style={{ padding: 28, maxWidth: 420 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <Lock size={18} color="var(--bpl-blue)" />
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+            Developer access
+          </div>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+          Enter the developer password to view API connection status. Frontend-only gate for this session.
+        </p>
+        <form onSubmit={unlock} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Password</label>
+            <input
+              type="password"
+              autoComplete="off"
+              style={fieldStyle}
+              value={password}
+              onChange={e => { setPassword(e.target.value); setError(false); }}
+              placeholder="Developer password"
+            />
+            {error && (
+              <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6 }}>Incorrect password</div>
+            )}
+          </div>
+          <button type="submit" className="bpl-btn-primary" style={{ alignSelf: 'flex-start' }}>
+            Unlock
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {roles.map(r => (
-        <div key={r.role} className="bpl-card" style={{ padding: '16px 20px' }}>
-          <div style={{ fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontSize: 14 }}>{r.role}</div>
-          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 10 }}>{r.desc}</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {r.permissions.map(p => (
-              <span key={p} style={{
-                padding: '2px 8px', borderRadius: 9999, fontSize: 11,
-                background: 'var(--cd-surface-2)', color: 'var(--cd-text-muted)',
-                border: '1px solid var(--cd-border)',
-              }}>
-                {p}
-              </span>
-            ))}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          type="button"
+          onClick={lock}
+          style={{
+            padding: '6px 12px', borderRadius: 7, fontSize: 12, cursor: 'pointer',
+            border: '1px solid var(--cd-border)', background: 'var(--cd-surface)',
+            color: 'var(--cd-text-muted)',
+          }}
+        >
+          Lock again
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+type DragPayload = { permissionId: string; fromRoleId: string | null };
+
+const chipStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 4,
+  padding: '4px 10px', borderRadius: 9999, fontSize: 11, fontWeight: 500,
+  background: 'var(--cd-surface-2)', color: 'var(--cd-text)',
+  border: '1px solid var(--cd-border)', cursor: 'grab', userSelect: 'none',
+};
+
+function PermissionChip({
+  permissionId,
+  fromRoleId,
+  onRemove,
+}: {
+  permissionId: string;
+  fromRoleId: string | null;
+  onRemove?: () => void;
+}) {
+  const onDragStart = (e: React.DragEvent) => {
+    const payload: DragPayload = { permissionId, fromRoleId };
+    e.dataTransfer.setData('application/json', JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  return (
+    <span draggable onDragStart={onDragStart} style={chipStyle}>
+      <GripVertical size={10} style={{ opacity: 0.35, flexShrink: 0 }} />
+      {accessLabel(permissionId)}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onRemove(); }}
+          style={{
+            marginLeft: 2, padding: 0, border: 'none', background: 'none',
+            cursor: 'pointer', color: 'var(--cd-text-muted)', display: 'flex', alignItems: 'center',
+          }}
+          title="Remove from role"
+        >
+          <XCircle size={12} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+function RoleSettings() {
+  const [config, setConfig] = useState<RolesConfig>({ roles: [] });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [dragOverRoleId, setDragOverRoleId] = useState<string | null>(null);
+  const [dragOverPool, setDragOverPool] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState({ name: '', desc: '' });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchRoles();
+        if (!cancelled) {
+          setConfig({
+            roles: data.roles.map(r => ({
+              id: r.id,
+              name: r.name,
+              desc: r.desc,
+              permissions: r.permissions,
+            })),
+          });
+        }
+      } catch (e) {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load roles');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const assignPermission = (roleId: string, permissionId: string, fromRoleId: string | null) => {
+    setConfig(prev => ({
+      roles: prev.roles.map(role => {
+        if (role.id === roleId) {
+          if (role.permissions.includes(permissionId)) return role;
+          return { ...role, permissions: [...role.permissions, permissionId] };
+        }
+        if (fromRoleId === role.id) {
+          return { ...role, permissions: role.permissions.filter(p => p !== permissionId) };
+        }
+        return role;
+      }),
+    }));
+  };
+
+  const removePermission = (roleId: string, permissionId: string) => {
+    setConfig(prev => ({
+      roles: prev.roles.map(role =>
+        role.id === roleId
+          ? { ...role, permissions: role.permissions.filter(p => p !== permissionId) }
+          : role,
+      ),
+    }));
+  };
+
+  const handleDropOnRole = (roleId: string, e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOverRoleId(null);
+    try {
+      const payload = JSON.parse(e.dataTransfer.getData('application/json')) as DragPayload;
+      if (payload?.permissionId) assignPermission(roleId, payload.permissionId, payload.fromRoleId);
+    } catch { /* ignore invalid drag */ }
+  };
+
+  const startEdit = (role: RoleDefinition) => {
+    setEditingId(role.id);
+    setEditDraft({ name: role.name, desc: role.desc });
+  };
+
+  const commitEdit = () => {
+    if (!editingId) return;
+    setConfig(prev => ({
+      roles: prev.roles.map(r =>
+        r.id === editingId
+          ? { ...r, name: editDraft.name.trim() || r.name, desc: editDraft.desc.trim() }
+          : r,
+      ),
+    }));
+    setEditingId(null);
+  };
+
+  const addRole = () => {
+    const id = createRoleId('new-role');
+    setConfig(prev => ({
+      roles: [...prev.roles, { id, name: 'New Role', desc: 'Describe what this role can do', permissions: [] }],
+    }));
+    setEditingId(id);
+    setEditDraft({ name: 'New Role', desc: 'Describe what this role can do' });
+  };
+
+  const deleteRole = (id: string) => {
+    if (config.roles.length <= 1) return;
+    setConfig(prev => ({ roles: prev.roles.filter(r => r.id !== id) }));
+    if (editingId === id) setEditingId(null);
+  };
+
+  const save = async () => {
+    setSaveError('');
+    try {
+      const data = await putRoles(config.roles);
+      setConfig({
+        roles: data.roles.map(r => ({
+          id: r.id,
+          name: r.name,
+          desc: r.desc,
+          permissions: r.permissions,
+        })),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Save failed');
+    }
+  };
+
+  const resetDefaults = () => {
+    setConfig({
+      roles: DEFAULT_ROLES.map(r => ({ ...r, permissions: [...r.permissions] })),
+    });
+    setEditingId(null);
+  };
+
+  const handleDropOnPool = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOverPool(false);
+    try {
+      const payload = JSON.parse(e.dataTransfer.getData('application/json')) as DragPayload;
+      if (payload?.fromRoleId && payload.permissionId) {
+        removePermission(payload.fromRoleId, payload.permissionId);
+      }
+    } catch { /* ignore invalid drag */ }
+  };
+
+  const groups = [...new Set(ACCESS_CATALOG.map(a => a.group))];
+
+  if (loading) {
+    return <div style={{ fontSize: 13, color: 'var(--cd-text-muted)' }}>Loading roles…</div>;
+  }
+
+  if (loadError) {
+    return <div style={{ fontSize: 13, color: '#dc2626' }}>{loadError}</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {saveError && (
+        <div style={{ fontSize: 12, color: '#dc2626', padding: '10px 12px', borderRadius: 8, background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)' }}>
+          {saveError}
+        </div>
+      )}
+      <div className="bpl-roles-layout">
+        {/* Left — access pool (fixed column, scrolls internally if needed) */}
+        <div
+          className="bpl-card bpl-roles-access-panel"
+          onDragOver={e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            setDragOverPool(true);
+          }}
+          onDragLeave={() => setDragOverPool(false)}
+          onDrop={handleDropOnPool}
+          style={{
+            padding: 20,
+            border: dragOverPool ? '2px dashed var(--bpl-blue)' : undefined,
+            background: dragOverPool ? 'var(--bpl-blue-soft)' : undefined,
+            transition: 'border-color 0.15s, background 0.15s',
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
+            Available access
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+            Drag onto a role →. Drop here ← to remove from a role.
+          </div>
+          {groups.map((group, i) => (
+            <div key={group} style={{ marginBottom: i < groups.length - 1 ? 16 : 0 }}>
+              <div style={{ ...labelStyle, marginBottom: 8 }}>{group}</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {ACCESS_CATALOG.filter(a => a.group === group).map(item => (
+                  <PermissionChip key={item.id} permissionId={item.id} fromRoleId={null} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Right — roles (scrolls independently) */}
+        <div className="bpl-roles-list-panel">
+          <div style={{ padding: '0 4px 4px' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+              Roles
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+              Define each role’s name, description, and assigned permissions.
+            </div>
+          </div>
+
+          {config.roles.map(role => {
+            const isOver = dragOverRoleId === role.id;
+            const isEditing = editingId === role.id;
+            const nameFieldId = `role-name-${role.id}`;
+            const descFieldId = `role-desc-${role.id}`;
+
+            return (
+              <div key={role.id} className="bpl-card" style={{ padding: '16px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div>
+                      <label htmlFor={isEditing ? nameFieldId : undefined} style={labelStyle}>Role name</label>
+                      {isEditing ? (
+                        <input
+                          id={nameFieldId}
+                          style={fieldStyle}
+                          value={editDraft.name}
+                          onChange={e => setEditDraft(p => ({ ...p, name: e.target.value }))}
+                        />
+                      ) : (
+                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)' }}>{role.name}</div>
+                      )}
+                    </div>
+                    <div>
+                      <label htmlFor={isEditing ? descFieldId : undefined} style={labelStyle}>Description</label>
+                      {isEditing ? (
+                        <input
+                          id={descFieldId}
+                          style={fieldStyle}
+                          value={editDraft.desc}
+                          onChange={e => setEditDraft(p => ({ ...p, desc: e.target.value }))}
+                        />
+                      ) : (
+                        <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.5 }}>
+                          {role.desc || 'No description'}
+                        </div>
+                      )}
+                    </div>
+                    {isEditing && (
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button type="button" className="bpl-btn-primary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={commitEdit}>
+                          Done
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          style={{
+                            padding: '6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+                            border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: 'var(--cd-text-muted)',
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {!isEditing && (
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(role)}
+                        title="Edit role"
+                        style={{
+                          padding: 6, borderRadius: 7, cursor: 'pointer',
+                          border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: 'var(--cd-text-muted)',
+                          display: 'flex', alignItems: 'center',
+                        }}
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteRole(role.id)}
+                        disabled={config.roles.length <= 1}
+                        title="Delete role"
+                        style={{
+                          padding: 6, borderRadius: 7, cursor: config.roles.length <= 1 ? 'not-allowed' : 'pointer',
+                          border: '1px solid var(--cd-border)', background: 'var(--cd-surface)',
+                          color: config.roles.length <= 1 ? 'var(--cd-border)' : '#dc2626',
+                          display: 'flex', alignItems: 'center', opacity: config.roles.length <= 1 ? 0.4 : 1,
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label style={{ ...labelStyle, marginBottom: 8 }}>Permissions</label>
+                  <div
+                    onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverRoleId(role.id); }}
+                    onDragLeave={() => setDragOverRoleId(prev => (prev === role.id ? null : prev))}
+                    onDrop={e => handleDropOnRole(role.id, e)}
+                    style={{
+                      minHeight: 48, padding: 12, borderRadius: 10,
+                      border: `2px dashed ${isOver ? 'var(--bpl-blue)' : 'var(--cd-border)'}`,
+                      background: isOver ? 'var(--bpl-blue-soft)' : 'var(--cd-surface-2)',
+                      transition: 'border-color 0.15s, background 0.15s',
+                    }}
+                  >
+                    {role.permissions.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', textAlign: 'center', padding: '4px 0' }}>
+                        Drop access here
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {role.permissions.map(pid => (
+                          <PermissionChip
+                            key={pid}
+                            permissionId={pid}
+                            fromRoleId={role.id}
+                            onRemove={() => removePermission(role.id, pid)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={addRole}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              padding: '12px 16px', borderRadius: 10, cursor: 'pointer',
+              border: '1px dashed var(--cd-border)', background: 'transparent', color: 'var(--cd-text-muted)', fontSize: 13,
+            }}
+          >
+            <Plus size={16} />
+            Add role
+          </button>
+
+          <div style={{ padding: '12px 16px', background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 10, fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.5 }}>
+            Roles are stored on the server and enforced for every signed-in user. Assign people to roles under Settings → Users.
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingBottom: 4 }}>
+            <button
+              type="button"
+              onClick={resetDefaults}
+              style={{
+                padding: '8px 14px', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+                border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: 'var(--cd-text-muted)',
+              }}
+            >
+              Reset defaults
+            </button>
+            <button className="bpl-btn-primary" onClick={save}>
+              {saved ? <><Check size={14} /> Saved</> : 'Save roles'}
+            </button>
           </div>
         </div>
-      ))}
-      <div style={{ padding: '12px 16px', background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 10, fontSize: 12, color: 'var(--cd-text-muted)' }}>
-        Role-based access control requires Clerk authentication integration. Configure user roles in your Clerk dashboard.
+      </div>
+    </div>
+  );
+}
+
+function UserSettings() {
+  const { user: me } = useAuth();
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [roles, setRoles] = useState<Array<{ id: string; name: string; desc: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({ name: '', email: '', password: '', roleId: 'view-only' });
+  const [creating, setCreating] = useState(false);
+  const [createdTemp, setCreatedTemp] = useState<{ email: string; password: string; emailSent?: boolean; emailError?: string | null } | null>(null);
+
+  const reload = async () => {
+    const data = await fetchUsers();
+    setUsers(data.users);
+    setRoles(data.roles);
+    if (!form.roleId && data.roles[0]) {
+      setForm(p => ({ ...p, roleId: data.roles[0].id }));
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await reload();
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load users');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const onCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setCreatedTemp(null);
+    setCreating(true);
+    try {
+      const result = await createUserApi(form);
+      setCreatedTemp({
+        email: form.email,
+        password: form.password,
+        emailSent: !!(result.user as AuthUser & { emailSent?: boolean }).emailSent,
+        emailError: (result.user as AuthUser & { emailError?: string | null }).emailError ?? null,
+      });
+      setForm({ name: '', email: '', password: '', roleId: form.roleId || 'view-only' });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Create failed');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const setStatus = async (u: AuthUser, status: 'active' | 'disabled') => {
+    setError('');
+    try {
+      await patchUserApi(u.id, { status });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed');
+    }
+  };
+
+  const setRole = async (u: AuthUser, roleId: string) => {
+    setError('');
+    try {
+      await patchUserApi(u.id, { roleId });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed');
+    }
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: 'var(--cd-text-muted)' }}>Loading users…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="bpl-card" style={{ padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
+          Create user
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.5 }}>
+          Admin creates the account and chooses a role. An invite email with the temporary password is sent when Resend is configured. The user must change the password on first sign-in.
+        </div>
+        <form onSubmit={onCreate} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Full name</label>
+            <input style={fieldStyle} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} required />
+          </div>
+          <div>
+            <label style={labelStyle}>Email</label>
+            <input type="email" style={fieldStyle} value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} required />
+          </div>
+          <div>
+            <label style={labelStyle}>Temporary password</label>
+            <input style={fieldStyle} value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} required minLength={8} />
+          </div>
+          <div>
+            <label style={labelStyle}>Role</label>
+            <select style={fieldStyle} value={form.roleId} onChange={e => setForm(p => ({ ...p, roleId: e.target.value }))}>
+              {roles.map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' }}>
+            <button type="submit" className="bpl-btn-primary" disabled={creating}>
+              {creating ? 'Creating…' : 'Create account'}
+            </button>
+          </div>
+        </form>
+        {createdTemp && (
+          <div style={{
+            marginTop: 14, padding: '10px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+            background: 'var(--bpl-blue-soft)', border: '1px solid var(--bpl-blue)', color: 'var(--cd-text)',
+          }}>
+            Account created for <strong>{createdTemp.email}</strong>.
+            {createdTemp.emailSent
+              ? ' Invite email sent with the temporary password.'
+              : ` Email not sent${createdTemp.emailError ? ` (${createdTemp.emailError})` : ''} — share the temporary password securely.`}
+            {' '}They will be prompted to change it on first sign-in.
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 12, color: '#dc2626', padding: '10px 12px', borderRadius: 8, background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)' }}>
+          {error}
+        </div>
+      )}
+
+      <div className="bpl-card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--cd-border)', fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+          People ({users.length})
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--cd-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Name</th>
+                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Email</th>
+                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Role</th>
+                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Status</th>
+                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id} style={{ borderTop: '1px solid var(--cd-border)' }}>
+                  <td style={{ padding: '12px 16px', color: 'var(--cd-text)', fontWeight: 500 }}>
+                    {u.name}{me?.id === u.id ? ' (you)' : ''}
+                  </td>
+                  <td style={{ padding: '12px 16px', color: 'var(--cd-text-muted)' }}>{u.email}</td>
+                  <td style={{ padding: '12px 16px' }}>
+                    <select
+                      style={{ ...fieldStyle, width: 'auto', minWidth: 140, padding: '6px 10px' }}
+                      value={u.roleId}
+                      onChange={e => setRole(u, e.target.value)}
+                    >
+                      {roles.map(r => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td style={{ padding: '12px 16px' }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 9999,
+                      background: u.status === 'active' ? 'rgba(22,163,74,0.12)' : 'rgba(220,38,38,0.1)',
+                      color: u.status === 'active' ? '#16a34a' : '#dc2626',
+                    }}>
+                      {u.status}{u.mustChangePassword ? ' · must change password' : ''}
+                    </span>
+                  </td>
+                  <td style={{ padding: '12px 16px' }}>
+                    {u.status === 'active' ? (
+                      <button
+                        type="button"
+                        disabled={me?.id === u.id}
+                        onClick={() => setStatus(u, 'disabled')}
+                        style={{
+                          padding: '5px 10px', borderRadius: 7, fontSize: 12, cursor: me?.id === u.id ? 'not-allowed' : 'pointer',
+                          border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: '#dc2626',
+                          opacity: me?.id === u.id ? 0.4 : 1,
+                        }}
+                      >
+                        Disable
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setStatus(u, 'active')}
+                        style={{
+                          padding: '5px 10px', borderRadius: 7, fontSize: 12, cursor: 'pointer',
+                          border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: '#16a34a',
+                        }}
+                      >
+                        Enable
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
 }
 
 export default function Settings({ tab }: { tab: Tab }) {
+  const { hasPermission } = useAuth();
+
   const TAB_TITLES: Record<Tab, string> = {
     general: 'General',
     thresholds: 'Safety Score',
-    api: 'API Connections',
     roles: 'Roles & Permissions',
+    users: 'Users',
+    dev: 'Developers',
+  };
+
+  const TAB_SUBTITLES: Record<Tab, string> = {
+    general: 'Client name, timezone, currency, and display preferences',
+    thresholds: 'Fleet safety score weights, status bands, and driver discipline thresholds',
+    roles: 'Define roles and drag access permissions onto each one',
+    users: 'Create accounts, assign roles, enable or disable access',
+    dev: 'Developer tools and API connection status',
   };
 
   const tabs: { id: Tab; path: string; label: string }[] = [
     { id: 'general', path: '/settings/general', label: 'General' },
     { id: 'thresholds', path: '/settings/thresholds', label: 'Safety Score' },
-    { id: 'api', path: '/settings/api', label: 'API' },
     { id: 'roles', path: '/settings/roles', label: 'Roles' },
+    ...(hasPermission('user-management') ? [{ id: 'users' as const, path: '/settings/users', label: 'Users' }] : []),
+    { id: 'dev', path: '/settings/dev', label: 'Dev' },
   ];
 
   return (
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Settings — {TAB_TITLES[tab]}</h1>
-        <p className="bpl-page-subtitle">Platform configuration, API connections, and user management</p>
+        <p className="bpl-page-subtitle">{TAB_SUBTITLES[tab]}</p>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -494,8 +1197,13 @@ export default function Settings({ tab }: { tab: Tab }) {
 
       {tab === 'general' && <GeneralSettings />}
       {tab === 'thresholds' && <ThresholdSettings />}
-      {tab === 'api' && <APISettings />}
       {tab === 'roles' && <RoleSettings />}
+      {tab === 'users' && <UserSettings />}
+      {tab === 'dev' && (
+        <DevGate>
+          <APISettings />
+        </DevGate>
+      )}
     </div>
   );
 }

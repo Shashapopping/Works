@@ -1866,6 +1866,31 @@ body {
   width: 100%;
 }
 
+/* Roles settings — split pane: access stays visible, roles scroll independently */
+.bpl-roles-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) 1fr;
+  gap: 32px;
+  align-items: stretch;
+  height: calc(100vh - 240px);
+  min-height: 420px;
+}
+
+.bpl-roles-access-panel {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.bpl-roles-list-panel {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 8px;
+  padding-right: 4px;
+}
+
 .bpl-page-header {
   margin-bottom: 24px;
 }
@@ -2463,6 +2488,255 @@ body {
   font-size: 12px;
   color: var(--cd-text-muted, #6b7a8d);
   line-height: 1.45;
+}
+
+/* ── Documents Explorer (Windows-style) ───────────────────── */
+.bpl-docs-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--cd-border);
+  background: var(--cd-surface);
+  color: var(--cd-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.bpl-docs-refresh:disabled { opacity: 0.6; cursor: default; }
+.bpl-docs-refresh .spin,
+.bpl-docs-empty .spin,
+.bpl-docs-dl .spin {
+  animation: bpl-docs-spin 0.8s linear infinite;
+}
+@keyframes bpl-docs-spin {
+  to { transform: rotate(360deg); }
+}
+
+.bpl-docs-explorer {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 520px;
+  border: 1px solid var(--cd-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--cd-surface);
+}
+
+.bpl-docs-sidebar {
+  border-right: 1px solid var(--cd-border);
+  background: var(--cd-surface-2);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.bpl-docs-sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--cd-text-muted);
+  border-bottom: 1px solid var(--cd-border);
+}
+.bpl-docs-tree {
+  overflow: auto;
+  padding: 6px 0 12px;
+  flex: 1;
+}
+.bpl-docs-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--cd-text);
+  font-size: 12.5px;
+  text-align: left;
+  padding: 5px 10px 5px 8px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.bpl-docs-tree-row:hover { background: rgba(0, 120, 212, 0.08); }
+.bpl-docs-tree-row.selected {
+  background: rgba(0, 120, 212, 0.16);
+  font-weight: 600;
+}
+.bpl-docs-tree-chevron {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.bpl-docs-tree-chevron.empty { visibility: hidden; }
+.bpl-docs-tree-chevron svg {
+  transition: transform 0.12s ease;
+}
+.bpl-docs-tree-chevron svg.rotated { transform: rotate(90deg); }
+.bpl-docs-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bpl-docs-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--cd-surface);
+}
+.bpl-docs-address {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--cd-border);
+  background: var(--cd-surface-2);
+}
+.bpl-docs-address-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--cd-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.bpl-docs-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.bpl-docs-breadcrumbs button,
+.bpl-docs-crumb button {
+  border: 0;
+  background: transparent;
+  color: var(--bpl-blue, #0078D4);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.bpl-docs-breadcrumbs button:hover,
+.bpl-docs-crumb button:hover {
+  background: rgba(0, 120, 212, 0.1);
+}
+.bpl-docs-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--cd-text-muted);
+}
+.bpl-docs-path-hint {
+  padding: 4px 14px 8px;
+  font-size: 11px;
+  color: var(--cd-text-soft);
+  border-bottom: 1px solid var(--cd-border);
+}
+.bpl-docs-error {
+  margin: 10px 14px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cd-danger-bg);
+  border: 1px solid var(--cd-danger-border);
+  color: var(--cd-danger);
+  font-size: 12px;
+}
+.bpl-docs-list-wrap {
+  flex: 1;
+  overflow: auto;
+  min-height: 360px;
+}
+.bpl-docs-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 320px;
+  color: var(--cd-text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+}
+.bpl-docs-empty-sub {
+  max-width: 360px;
+  font-size: 12px;
+  color: var(--cd-text-soft);
+  line-height: 1.45;
+}
+.bpl-docs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.bpl-docs-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--cd-text-muted);
+  border-bottom: 1px solid var(--cd-border);
+  background: var(--cd-surface);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.bpl-docs-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--cd-border);
+  color: var(--cd-text);
+  white-space: nowrap;
+}
+.bpl-docs-row:hover { background: rgba(0, 120, 212, 0.06); }
+.bpl-docs-name-btn,
+.bpl-docs-file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bpl-docs-dl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--cd-border);
+  background: var(--cd-surface);
+  color: var(--cd-text-muted);
+  cursor: pointer;
+}
+.bpl-docs-dl:hover { color: var(--bpl-blue, #0078D4); border-color: #93c5fd; }
+.bpl-docs-dl:disabled { opacity: 0.6; cursor: default; }
+
+@media (max-width: 900px) {
+  .bpl-docs-explorer {
+    grid-template-columns: 1fr;
+  }
+  .bpl-docs-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--cd-border);
+    max-height: 200px;
+  }
 }
 
 /* ── Mobile ───────────────────────────────────────────────── */

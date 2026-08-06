@@ -10,6 +10,13 @@ dist-ssr
 .env.local
 .env.*.local
 
+# Droplet SSH keys (never commit)
+.ssh_droplet_key
+.tmp_ssh_check.py
+.tmp-droplet-check.sh
+*.pem
+id_ed25519*
+
 # Logs
 logs
 *.log
@@ -48,6 +55,12 @@ public/vehicles.json
 public/sites.json
 public/trips.log
 public/trips-session.json
+fleet.db
+fleet.db-wal
+fleet.db-shm
+
+# Archived report documents (SQLite metadata + files)
+data/documents/
 
 # Claude Code memory
 .claude/
@@ -56,6 +69,12 @@ public/trips-session.json
 temp.js
 scripts/chevron.js
 scripts/panictest
+
+# Local scratch / extract artifacts
+.tmp_*
+.tmp-*
+public/Screenshot*
+public/trips.log.bak*
 
 #old code
 all-events.json

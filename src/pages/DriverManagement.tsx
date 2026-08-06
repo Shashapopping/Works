@@ -27,6 +27,8 @@ interface DriverProfile {
   cornering: number;
   total: number;
   distanceKm: number;
+  drivingTimeSeconds: number;
+  journeyCount: number;
   consequence: ConsequenceCard;
   events: LogEntry[];
 }
@@ -37,8 +39,23 @@ function emptyProfile(key: string, name: string, phone = 'N/A'): Omit<DriverProf
     assetName: '—', regNo: '—', transporter: '—',
     harshBraking: 0, harshAccel: 0, overspeeding: 0, cornering: 0, total: 0,
     distanceKm: 0,
+    drivingTimeSeconds: 0,
+    journeyCount: 0,
     events: [],
   };
+}
+
+function fmtDistanceKm(km: number) {
+  if (km <= 0) return '0';
+  if (km < 10) return km.toFixed(1);
+  return Math.round(km).toLocaleString();
+}
+
+function fmtHosHours(seconds: number) {
+  const h = seconds / 3600;
+  if (h <= 0) return '0h';
+  if (h < 10) return `${h.toFixed(1)}h`;
+  return `${Math.round(h)}h`;
 }
 
 function applyEvent(d: { harshBraking: number; harshAccel: number; overspeeding: number; cornering: number; total: number; events: LogEntry[]; assetName: string; regNo: string; transporter: string; phone: string }, e: LogEntry, label: string) {
@@ -77,6 +94,9 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
   const { consequence } = driver;
   const color = consequence.categoryColor;
   const recentEvents = driver.events.slice(0, 10);
+  const infractions = driver.total;
+  const distanceLabel = fmtDistanceKm(driver.distanceKm);
+  const hosLabel = fmtHosHours(driver.drivingTimeSeconds);
 
   return (
     <div className="bpl-card" style={{ overflow: 'hidden', borderLeft: `4px solid ${color}` }}>
@@ -85,6 +105,7 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
         style={{
           padding: '14px 20px', cursor: 'pointer',
           display: 'flex', alignItems: 'center', gap: 16,
+          flexWrap: 'wrap',
         }}
       >
         <div style={{
@@ -96,46 +117,85 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
           {driver.name.charAt(0)}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: '1 1 160px', minWidth: 140 }}>
           <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{driver.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', display: 'flex', gap: 8, marginTop: 2 }}>
+          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', display: 'flex', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
             <span>{driver.regNo}</span>
             <span>·</span>
             <span>{driver.assetName}</span>
             {driver.phone && driver.phone !== 'N/A' && <><span>·</span><span>{driver.phone}</span></>}
           </div>
+          <div style={{ width: 140, marginTop: 8 }}>
+            <ScoreBar score={consequence.displayScore} category={consequence.category} />
+          </div>
         </div>
 
-        <div style={{ width: 140, flexShrink: 0 }}>
-          <ScoreBar score={consequence.displayScore} category={consequence.category} />
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, minmax(72px, 1fr))',
+          gap: 8,
+          flex: '1 1 280px',
+          minWidth: 240,
+        }}>
+          {[
+            {
+              label: 'Infractions',
+              value: infractions,
+              sub: infractions === 1 ? 'event' : 'events',
+              valueColor: infractions > 0 ? '#CC0000' : 'var(--cd-text)',
+            },
+            {
+              label: 'Distance',
+              value: distanceLabel,
+              sub: 'km',
+              valueColor: 'var(--cd-text)',
+            },
+            {
+              label: 'HOS',
+              value: hosLabel,
+              sub: driver.journeyCount > 0
+                ? `${driver.journeyCount} trip${driver.journeyCount === 1 ? '' : 's'}`
+                : 'drive time',
+              valueColor: 'var(--cd-text)',
+            },
+          ].map(m => (
+            <div
+              key={m.label}
+              style={{
+                padding: '8px 10px',
+                borderRadius: 8,
+                background: 'var(--cd-surface-2)',
+                border: '1px solid var(--cd-border)',
+                textAlign: 'center',
+                minWidth: 0,
+              }}
+            >
+              <div style={{
+                fontSize: 10, fontWeight: 700, color: 'var(--cd-text-muted)',
+                textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2,
+              }}>
+                {m.label}
+              </div>
+              <div style={{
+                fontSize: 20, fontWeight: 700, color: m.valueColor,
+                fontFamily: 'var(--cd-font-display)', lineHeight: 1.1,
+              }}>
+                {m.value}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{m.sub}</div>
+            </div>
+          ))}
         </div>
 
-        <div style={{ flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, marginLeft: 'auto' }}>
           <span style={{
             padding: '3px 8px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
             background: `${color}15`, color,
           }}>
             {consequence.categoryLabel}
           </span>
+          {expanded ? <ChevronUp size={16} color="var(--cd-text-muted)" /> : <ChevronDown size={16} color="var(--cd-text-muted)" />}
         </div>
-
-        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-          {driver.harshBraking > 0 && (
-            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 9999, background: '#CC000015', color: '#CC0000', fontWeight: 600 }}>
-              HB {driver.harshBraking}
-            </span>
-          )}
-          {driver.overspeeding > 0 && (
-            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 9999, background: '#9333ea15', color: '#9333ea', fontWeight: 600 }}>
-              OS {driver.overspeeding}
-            </span>
-          )}
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--cd-text-muted)', minWidth: 24, textAlign: 'right' }}>
-            {driver.total}
-          </span>
-        </div>
-
-        {expanded ? <ChevronUp size={16} color="var(--cd-text-muted)" /> : <ChevronDown size={16} color="var(--cd-text-muted)" />}
       </div>
 
       {expanded && (
@@ -153,8 +213,8 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
             {[
               { label: 'Penalty points', value: consequence.penaltyPoints },
               { label: 'Distance (km)', value: Math.round(consequence.distanceKm).toLocaleString() },
+              { label: 'HOS (hours)', value: (driver.drivingTimeSeconds / 3600).toFixed(1) },
               { label: 'Score / 100 km', value: consequence.driverScore.toFixed(1) },
-              { label: 'Display /100', value: consequence.displayScore },
             ].map(s => (
               <div key={s.label} style={{ textAlign: 'center', padding: '10px 8px', background: 'var(--cd-surface)', borderRadius: 8, border: '1px solid var(--cd-border)' }}>
                 <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>{s.value}</div>
@@ -240,10 +300,11 @@ export default function DriverManagement() {
             const key = d.driverId || d.driverName;
             if (!key) continue;
             const prev = map.get(key);
-            if (!prev) map.set(key, { ...d });
+            if (!prev) map.set(key, { ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 });
             else {
               prev.totalDistanceKm += d.totalDistanceKm;
               prev.journeyCount += d.journeyCount;
+              prev.totalDrivingTimeSeconds = (prev.totalDrivingTimeSeconds || 0) + (d.totalDrivingTimeSeconds || 0);
               prev.vehicles = Array.from(new Set([...prev.vehicles, ...d.vehicles]));
             }
           }
@@ -268,6 +329,8 @@ export default function DriverManagement() {
   const drivers: DriverProfile[] = useMemo(() => {
     const map = new Map<string, ReturnType<typeof emptyProfile>>();
     const distanceByKey = new Map<string, number>();
+    const drivingByKey = new Map<string, number>();
+    const journeysByKey = new Map<string, number>();
 
     const ensure = (key: string, name: string, phone?: string) => {
       if (!map.has(key)) map.set(key, emptyProfile(key, name, phone || 'N/A'));
@@ -280,6 +343,8 @@ export default function DriverManagement() {
       const d = ensure(key, t.driverName, t.driverPhone);
       if (t.vehicles?.[0]) d.regNo = t.vehicles[0];
       distanceByKey.set(key, (distanceByKey.get(key) || 0) + (t.totalDistanceKm || 0));
+      drivingByKey.set(key, (drivingByKey.get(key) || 0) + (t.totalDrivingTimeSeconds || 0));
+      journeysByKey.set(key, (journeysByKey.get(key) || 0) + (t.journeyCount || 0));
     });
 
     events.forEach(e => {
@@ -308,6 +373,8 @@ export default function DriverManagement() {
     return Array.from(map.values())
       .map(d => {
         const distanceKm = distanceByKey.get(d.key) || 0;
+        const drivingTimeSeconds = drivingByKey.get(d.key) || 0;
+        const journeyCount = journeysByKey.get(d.key) || 0;
         const consequence = buildDriverConsequenceCard({
           events: d.events,
           distanceKm,
@@ -315,6 +382,8 @@ export default function DriverManagement() {
         return {
           ...d,
           distanceKm,
+          drivingTimeSeconds,
+          journeyCount,
           harshBraking: consequence.counts.harshBraking,
           harshAccel: consequence.counts.harshAccel,
           overspeeding: consequence.counts.overspeeding,

@@ -329,10 +329,10 @@ function SafetyRadar({ events }: { events: LogEntry[] }) {
   const total = Math.max(recent.length, 1);
 
   const data = [
-    { subject: 'Braking', value: Math.round((1 - recent.filter(e => e.label === 'Harsh Braking').length / total) * 100) },
-    { subject: 'Speed', value: Math.round((1 - recent.filter(e => e.label?.includes('Overspeed')).length / total) * 100) },
-    { subject: 'Acceleration', value: Math.round((1 - recent.filter(e => e.label === 'Harsh Acceleration').length / total) * 100) },
-    { subject: 'Cornering', value: Math.round((1 - recent.filter(e => e.label === 'Harsh Cornering').length / total) * 100) },
+    { subject: 'Braking', value: Math.round((recent.filter(e => e.label === 'Harsh Braking').length / total) * 100) },
+    { subject: 'Speed', value: Math.round((recent.filter(e => e.label?.includes('Overspeed')).length / total) * 100) },
+    { subject: 'Acceleration', value: Math.round((recent.filter(e => e.label === 'Harsh Acceleration').length / total) * 100) },
+    { subject: 'Cornering', value: Math.round((recent.filter(e => e.label === 'Harsh Cornering').length / total) * 100) },
   ];
 
   return (
@@ -348,7 +348,7 @@ function SafetyRadar({ events }: { events: LogEntry[] }) {
         </RadarChart>
       </ResponsiveContainer>
       <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', textAlign: 'center', marginTop: -4 }}>
-        Higher = cleaner · based on incident distribution (last 30d)
+        Higher = more of this offence · share of safety events (last 30d)
       </div>
     </div>
   );
@@ -566,7 +566,7 @@ export default function Safety() {
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Safety</h1>
-        <p className="bpl-page-subtitle">Fleet score vs leading fleets + driver consequence tiers · Lafarge Nigeria</p>
+        <p className="bpl-page-subtitle">Fleet score vs leading fleets + driver consequence tiers · HBM Nigeria</p>
       </div>
 
       {/* KPI strip */}

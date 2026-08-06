@@ -27,6 +27,7 @@ import {
   type FleetScoreConfig,
 } from '../lib/fleetSafetyScore';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { SAFEIQ_ENABLED } from '../config/safeIq';
 
 export type { StatusFilter, AlertItem, DriverScore, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
@@ -41,7 +42,7 @@ async function generateSafeIQAnalysis(
   environment: EnvironmentContext,
   safetyReference: string | null,
 ): Promise<SafeIQAnalysis | null> {
-  if (!ANTHROPIC_API_KEY) return null;
+  if (!SAFEIQ_ENABLED || !ANTHROPIC_API_KEY) return null;
 
   const eventType = e.label || 'Unknown';
   const driver = e.driverName || 'Unknown Driver';
@@ -49,7 +50,7 @@ async function generateSafeIQAnalysis(
   const location = e.address || 'Location not available';
   const time = new Date(e.eventTime).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
 
-  const prompt = `You are SafeIQ, a safety advisor for BPL Fleet Intelligence Platform (Lafarge Nigeria). Your tone is calm, observational, and advisory — you present findings and let the fleet manager decide. Never command. Suggest, reason, and reference policy as context not instruction.
+  const prompt = `You are SafeIQ, a safety advisor for BPL Fleet Intelligence Platform (HBM Nigeria). Your tone is calm, observational, and advisory — you present findings and let the fleet manager decide. Never command. Suggest, reason, and reference policy as context not instruction.
 
 Return a JSON object with exactly these fields:
 - severity: "RED", "YELLOW", or "GREEN"
@@ -174,6 +175,7 @@ export interface TripDriver {
   driverPhone: string;
   totalDistanceKm: number;
   journeyCount: number;
+  totalDrivingTimeSeconds: number;
   vehicles: string[];
 }
 
@@ -248,6 +250,42 @@ interface FleetContextType {
   reloadEvents: () => void;
   scoreConfig: FleetScoreConfig;
   updateScoreConfig: (config: FleetScoreConfig) => void;
+  /**
+   * Global site/location filter. Empty array = all sites.
+   * Multiple keys = OR match (vehicle included if its zone is in the set).
+   */
+  selectedSites: string[];
+  setSelectedSites: (sites: string[]) => void;
+  toggleSite: (siteKey: string) => void;
+  /** Distinct sites (fleet zones) derived from live data, with asset counts. */
+  siteOptions: { key: string; label: string; count: number }[];
+}
+
+/** @deprecated kept for any leftover imports — empty selectedSites means all */
+export const SITE_ALL = 'all';
+
+const SELECTED_SITES_KEY = 'bpl_selected_sites';
+
+/** Normalises a vehicle zone into the site key used by the global filter. */
+function siteKeyFor(zone?: string | null) {
+  const z = (zone || '').trim();
+  return z || 'Unknown';
+}
+
+function loadSelectedSites(): string[] {
+  try {
+    const raw = localStorage.getItem(SELECTED_SITES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((s): s is string => typeof s === 'string' && s !== SITE_ALL);
+      }
+    }
+    // Migrate old single-site key
+    const legacy = localStorage.getItem('bpl_selected_site');
+    if (legacy && legacy !== SITE_ALL) return [legacy];
+  } catch { /* ignore */ }
+  return [];
 }
 
 const defaultMeta: Metadata = {
@@ -288,6 +326,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   });
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 900);
   const [scoreConfig, setScoreConfig] = useState<FleetScoreConfig>(() => loadFleetScoreConfig());
+  const [selectedSites, setSelectedSitesState] = useState<string[]>(() => loadSelectedSites());
   const seenEventIds = useRef<Set<string>>(new Set());
   // Tracks the incident count at which we last fired a Claude analysis per driver
   const driverAnalysisRef = useRef<Map<string, { lastThreshold: number; notifId: string }>>(new Map());
@@ -298,6 +337,32 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   const setTheme = useCallback((t: 'light' | 'dark') => setThemeState(t), []);
+
+  const persistSites = useCallback((sites: string[]) => {
+    const cleaned = [...new Set(sites.filter(s => s && s !== SITE_ALL))];
+    setSelectedSitesState(cleaned);
+    try {
+      localStorage.setItem(SELECTED_SITES_KEY, JSON.stringify(cleaned));
+      localStorage.removeItem('bpl_selected_site');
+    } catch { /* ignore */ }
+  }, []);
+
+  const setSelectedSites = useCallback((sites: string[]) => {
+    persistSites(sites);
+  }, [persistSites]);
+
+  const toggleSite = useCallback((siteKey: string) => {
+    setSelectedSitesState(prev => {
+      const next = prev.includes(siteKey)
+        ? prev.filter(s => s !== siteKey)
+        : [...prev, siteKey];
+      try {
+        localStorage.setItem(SELECTED_SITES_KEY, JSON.stringify(next));
+        localStorage.removeItem('bpl_selected_site');
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
   const updateScoreConfig = useCallback((config: FleetScoreConfig) => {
     setScoreConfig(saveFleetScoreConfig(config));
@@ -365,13 +430,21 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         CACHE_KEYS.fleetEvents,
         CACHE_TTL.fleetEvents,
         async () => {
-          const res = await authFetch('/api/events/log');
+          const to = new Date().toISOString();
+          const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=5000`);
           if (!res.ok) return null;
           return res.json();
         },
       );
       if (!data) return;
       setEvents(data);
+
+      // SafeIQ shelved — no thresholds, Claude calls, or environment lookups
+      if (!SAFEIQ_ENABLED) {
+        setNotifications([]);
+        return;
+      }
 
         // Surface new safety events as notifications
         const SAFEIQ_LABELS = ['Harsh Braking', 'Harsh Acceleration', 'Overspeeding', 'Overspeed Tiered'];
@@ -600,23 +673,76 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     };
   }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadFuelSummary, loadEnvironment, prefetchKpi]);
 
+  // ── Global site/location filter ──────────────────────────────────────────
+  // Site options are always derived from the FULL fleet so the selector stays
+  // stable no matter which site is currently active.
+  const siteOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const v of vehicles) {
+      const key = siteKeyFor(v.zone);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([key, count]) => ({ key, label: key, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }, [vehicles]);
+
+  const siteFilterActive = selectedSites.length > 0;
+
+  const filteredVehicles = useMemo(() => {
+    if (!siteFilterActive) return vehicles;
+    const allowed = new Set(selectedSites);
+    return vehicles.filter(v => allowed.has(siteKeyFor(v.zone)));
+  }, [vehicles, selectedSites, siteFilterActive]);
+
+  const filteredEvents = useMemo(() => {
+    if (!siteFilterActive) return events;
+    const ids = new Set(filteredVehicles.map(v => v.id?.toString()));
+    const regs = new Set(filteredVehicles.map(v => v.regNo).filter(Boolean));
+    return events.filter(e =>
+      (e.assetId != null && ids.has(e.assetId.toString())) || (e.regNo != null && regs.has(e.regNo)),
+    );
+  }, [events, filteredVehicles, siteFilterActive]);
+
+  // When sites are selected, recompute the status rollup from filtered vehicles
+  // so Home status cards match; otherwise trust the server aggregate.
+  const effectiveMetadata = useMemo<Metadata>(() => {
+    if (!siteFilterActive) return metadata;
+    const m: Metadata = { ...defaultMeta, totalVehicles: filteredVehicles.length, lastUpdate: metadata.lastUpdate };
+    for (const v of filteredVehicles) {
+      switch (v.status) {
+        case 'Moving': m.moving++; break;
+        case 'Idle': m.idle++; break;
+        case 'Excessive Idle': m.excessiveIdle++; break;
+        case 'Stationary': m.stationary++; break;
+        case 'Parked': m.parked++; break;
+        case 'Inactive': m.inactive++; break;
+        case 'Offline': m.offline++; break;
+        default: break;
+      }
+    }
+    return m;
+  }, [metadata, filteredVehicles, siteFilterActive]);
+
   const { score: fleetSafetyScore, delta: fleetScoreDelta } = useMemo(
-    () => computeFleetScore(events, vehicles.length, scoreConfig),
-    [events, vehicles.length, scoreConfig],
+    () => computeFleetScore(filteredEvents, filteredVehicles.length, scoreConfig),
+    [filteredEvents, filteredVehicles.length, scoreConfig],
   );
-  const alerts = useMemo(() => deriveAlerts(events), [events]);
+  const alerts = useMemo(() => deriveAlerts(filteredEvents), [filteredEvents]);
   const drivers = useMemo(
-    () => deriveDriverScores(events, scoreConfig.driverPenaltyPerEvent).filter(d => isKnownDriver(d.name)),
-    [events, scoreConfig.driverPenaltyPerEvent],
+    () => deriveDriverScores(filteredEvents, scoreConfig.driverPenaltyPerEvent).filter(d => isKnownDriver(d.name)),
+    [filteredEvents, scoreConfig.driverPenaltyPerEvent],
   );
-  const insights = useMemo(() => deriveInsights(events, vehicles), [events, vehicles]);
+  const insights = useMemo(() => deriveInsights(filteredEvents, filteredVehicles), [filteredEvents, filteredVehicles]);
   const maintenance = DEFAULT_MAINTENANCE;
   const trips = DEMO_TRIPS;
   const totalDistanceKm = Math.round(driverDistance?.totalDistanceKm ?? 0);
 
-  const redAlertCount = notifications.filter(
-    n => n.analysis?.severity === 'RED' && isKnownDriver(n.driver.name),
-  ).length;
+  const redAlertCount = SAFEIQ_ENABLED
+    ? notifications.filter(
+        n => n.analysis?.severity === 'RED' && isKnownDriver(n.driver.name),
+      ).length
+    : 0;
 
   const dismissNotification = useCallback((id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
@@ -649,7 +775,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <FleetContext.Provider value={{
-      authFetch, metadata, vehicles, events, driverDistance,
+      authFetch, metadata: effectiveMetadata, vehicles: filteredVehicles, events: filteredEvents, driverDistance,
       fleetSafetyScore, fleetScoreDelta,
       safetyScore: fleetSafetyScore,
       safetyDelta: fleetScoreDelta,
@@ -661,6 +787,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       vaultRecords, addVaultRecord, updateVaultRecord,
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
+      selectedSites, setSelectedSites, toggleSite, siteOptions,
     }}>
       {children}
     </FleetContext.Provider>

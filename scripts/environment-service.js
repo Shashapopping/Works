@@ -63,7 +63,7 @@ async function geocodeWithNominatim(term) {
   url.searchParams.set('countrycodes', 'ng');
 
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'BPL-Lafarge-Dashboard/1.0 (fleet-safety)' },
+    headers: { 'User-Agent': 'BPL-HBM-Dashboard/1.0 (fleet-safety)' },
   });
   if (!res.ok) return null;
   const data = await res.json();

@@ -4,6 +4,10 @@ import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEven
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
+import { getFuelHistory, getAllEvents } from './scripts/db.js'
+import { bootstrapAdminIfNeeded } from './scripts/auth.js'
+import { authViteMiddleware } from './scripts/auth-http.js'
+import { startReportAutomateScheduler } from './scripts/report-automate.js'
 import * as dotenv from 'dotenv'
 import fs from 'fs'
 import path from 'path'
@@ -48,7 +52,18 @@ export default defineConfig({
         if (!pollingStarted) {
           startPolling({ maxRuns: null })
           pollingStarted = true
+          bootstrapAdminIfNeeded().catch((e: any) => {
+            console.log('⚠️ Auth bootstrap skipped:', e?.message || e)
+          })
+          try {
+            startReportAutomateScheduler()
+          } catch (e: any) {
+            console.log('⚠️ Report Automate scheduler skipped:', e?.message || e)
+          }
         }
+
+        // Auth / users / roles (session cookies)
+        server.middlewares.use(authViteMiddleware())
 
         // POST /api/refresh
         server.middlewares.use('/api/refresh', async (req, res) => {
@@ -126,11 +141,21 @@ export default defineConfig({
           res.end(JSON.stringify(getWarningEvents()))
         })
 
-        // GET /api/events/log — reads from events.log + panic.log
+        // GET /api/events/log — SQLite (same shape as production server.js)
         server.middlewares.use('/api/events/log', async (req, res) => {
           if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
           if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
           try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const typesRaw = params.get('types')
+            const filters = {
+              from: params.get('from') || null,
+              to: params.get('to') || null,
+              types: typesRaw ? typesRaw.split(',').map(t => t.trim()).filter(Boolean) : null,
+              limit: params.get('limit') || 5000,
+            }
+
             const vehicleLookup = new Map<string, any>()
             try {
               const dataPath = path.join(process.cwd(), 'public', 'data.json')
@@ -146,10 +171,23 @@ export default defineConfig({
               }
             } catch { }
 
-            const enrich = (entry: any) => {
-              const vehicle = vehicleLookup.get(entry.assetId?.toString()) || {}
+            const entries = getAllEvents(filters).map((entry: any) => {
+              const vehicle = vehicleLookup.get(entry.asset_id?.toString()) || {}
               const enriched = {
-                ...entry,
+                timestamp: entry.timestamp,
+                assetId: entry.asset_id,
+                driverId: entry.driver_id,
+                driverName: entry.driver_name,
+                driverPhone: entry.driver_phone,
+                eventId: entry.event_id,
+                eventType: entry.event_type,
+                label: entry.label,
+                eventTime: entry.event_time,
+                receivedAt: entry.received_at,
+                latitude: entry.latitude,
+                longitude: entry.longitude,
+                address: entry.address || vehicle.position?.address || null,
+                type: entry.type,
                 regNo: vehicle.regNo || 'N/A',
                 assetName: vehicle.assetName || 'Unknown Vehicle',
                 transporter: vehicle.transporter || 'N/A',
@@ -158,26 +196,19 @@ export default defineConfig({
                 enriched.latitude = vehicle.position.latitude
                 enriched.longitude = vehicle.position.longitude
               }
+              if (!enriched.address && vehicle.position?.address) {
+                enriched.address = vehicle.position.address
+              }
               return enriched
-            }
+            })
 
-            const entries: any[] = []
-            const panicLogPath = path.join(process.cwd(), 'panic.log')
-            if (fs.existsSync(panicLogPath)) {
-              fs.readFileSync(panicLogPath, 'utf8').trim().split('\n').filter(Boolean).forEach(line => {
-                try { entries.push(enrich({ ...JSON.parse(line), type: 'panic', label: 'Panic' })) } catch { }
-              })
-            }
-            const eventsLogPath = path.join(process.cwd(), 'events.log')
-            if (fs.existsSync(eventsLogPath)) {
-              fs.readFileSync(eventsLogPath, 'utf8').trim().split('\n').filter(Boolean).forEach(line => {
-                try { entries.push(enrich({ ...JSON.parse(line), type: 'warning' })) } catch { }
-              })
-            }
-            entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(entries))
-          } catch { res.statusCode = 500; res.end('Internal Server Error') }
+          } catch (err) {
+            console.error('events/log failed:', (err as Error)?.message || err)
+            res.statusCode = 500
+            res.end('Internal Server Error')
+          }
         })
 
         // GET /api/fuel/history?period=day|week|month OR ?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -210,22 +241,16 @@ export default defineConfig({
               cutoffStart = now - (cutoffs[period] || cutoffs.day)
             }
 
-            const historyPath = path.join(process.cwd(), 'fuel-history.log')
-            if (!fs.existsSync(historyPath)) {
-              res.setHeader('Content-Type', 'application/json'); res.end('[]'); return
-            }
+            const entries = getFuelHistory({
+              fromIso: new Date(cutoffStart).toISOString(),
+              toIso: new Date(cutoffEnd).toISOString(),
+              eventType: '5min_ticker',
+            })
 
             const seriesMap = new Map<string, { time: string; level: number }[]>()
-            fs.readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean).forEach(line => {
-              try {
-                const entry = JSON.parse(line)
-                const eventType = entry.eventType || '5min_ticker'
-                if (eventType !== '5min_ticker') return
-                const ts = new Date(entry.timestamp).getTime()
-                if (ts < cutoffStart || ts > cutoffEnd) return
-                if (!seriesMap.has(entry.assetId)) seriesMap.set(entry.assetId, [])
-                seriesMap.get(entry.assetId)!.push({ time: entry.timestamp, level: Math.max(0, entry.level) })
-              } catch { }
+            entries.forEach(entry => {
+              if (!seriesMap.has(entry.assetId)) seriesMap.set(entry.assetId, [])
+              seriesMap.get(entry.assetId)!.push({ time: entry.timestamp, level: Math.max(0, entry.level) })
             })
 
             const vehicleLookup = new Map<string, any>()
@@ -343,7 +368,12 @@ export default defineConfig({
           const params = new URLSearchParams(qs)
           // Strip journeys arrays — kept in-memory for per-asset detail route
           if ((req.originalUrl || req.url || '').includes('/journeys/')) { res.statusCode = 404; res.end('Not Found'); return }
-          const summary = getDriverDistanceSummary({ range: params.get('range') || '24h', month: params.get('month') || null })
+          const summary = getDriverDistanceSummary({
+            range: params.get('range') || '24h',
+            month: params.get('month') || null,
+            from: params.get('from') || null,
+            to: params.get('to') || null,
+          })
           const slim = { ...summary, assets: summary.assets.map(({ journeys, ...rest }: any) => rest) }
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(slim))

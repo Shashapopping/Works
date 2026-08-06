@@ -115,7 +115,7 @@ export default function ConsequenceExplainerModal({
               How safety scoring works
             </div>
             <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '4px 0 0', lineHeight: 1.45 }}>
-              Two scores, two jobs — fleet health overview vs Lafarge driver Consequence Management.
+              Two scores, two jobs — fleet health overview vs HBM driver Consequence Management.
               Tune values in Settings → Alert Thresholds.
             </p>
           </div>
@@ -214,7 +214,7 @@ export default function ConsequenceExplainerModal({
             </div>
 
             <p style={{ fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55, margin: '0 0 10px' }}>
-              Lafarge Consequence Management. Every scored IVMS violation costs{' '}
+              HBM Consequence Management. Every scored IVMS violation costs{' '}
               <strong>−{cm.penaltyPerEvent} points</strong> (no weighting). Totals are normalised by distance.
             </p>
 
@@ -304,7 +304,7 @@ export default function ConsequenceExplainerModal({
 
         <div style={{ padding: '16px 24px 20px' }}>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--cd-text-muted)', marginBottom: 10 }}>
-            What Lafarge monitors
+            What HBM monitors
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 12 }}
             className="bpl-consequence-checklist-grid"

@@ -44,7 +44,63 @@ function fileStamp() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function downloadCSV(entries: LogEntry[], reportTitle: string) {
+function slugTitle(reportTitle: string) {
+  return reportTitle.toLowerCase().replace(/\s+/g, '-');
+}
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/** Shelve a downloaded report into Documents (non-blocking on failure). */
+export async function archiveReportDownload(opts: {
+  filename: string;
+  mime: string;
+  blob: Blob;
+  type?: string;
+  meta?: Record<string, unknown>;
+}) {
+  try {
+    const buffer = await opts.blob.arrayBuffer();
+    const contentBase64 = arrayBufferToBase64(buffer);
+    const res = await fetch('/api/documents/archive', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: opts.filename,
+        mime: opts.mime,
+        contentBase64,
+        type: opts.type || 'Events',
+        source: 'reports-download',
+        meta: opts.meta || null,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.warn('Documents archive failed:', err?.error || res.status);
+    }
+  } catch (e) {
+    console.warn('Documents archive error:', (e as Error)?.message || e);
+  }
+}
+
+function buildCsvBlob(entries: LogEntry[]) {
   const headers = COLUMNS.map(c => `"${c.header}"`);
   const rows = entries.map(e =>
     COLUMNS.map(c => {
@@ -55,16 +111,10 @@ function downloadCSV(entries: LogEntry[], reportTitle: string) {
     }),
   );
   const csv = '\uFEFF' + [headers, ...rows].map(r => r.join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${reportTitle.toLowerCase().replace(/\s+/g, '-')}-${fileStamp()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  return new Blob([csv], { type: 'text/csv;charset=utf-8;' });
 }
 
-function downloadExcel(entries: LogEntry[], reportTitle: string, meta: string) {
+function buildExcelBlob(entries: LogEntry[], reportTitle: string, meta: string) {
   const wb = XLSX.utils.book_new();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ws: any = {};
@@ -78,25 +128,22 @@ function downloadExcel(entries: LogEntry[], reportTitle: string, meta: string) {
     font: { bold: true, color: { rgb: '0078D4' }, sz: 14 },
   });
   rowIdx++;
-  setCell('A', rowIdx, `Generated: ${new Date().toLocaleString('en-GB')}  ·  ${entries.length} event${entries.length !== 1 ? 's' : ''}`, {
+  setCell('A', rowIdx, meta, {
     font: { color: { rgb: '64748B' }, sz: 10 },
   });
-  rowIdx++;
-  setCell('A', rowIdx, meta, { font: { color: { rgb: '64748B' }, sz: 10 } });
   rowIdx += 2;
 
   COLUMNS.forEach((col, i) => {
     setCell(COL_KEYS[i], rowIdx, col.header, {
-      font: { bold: true, color: { rgb: 'FFFFFF' } },
-      fill: { fgColor: { rgb: '1E293B' } },
-      alignment: { horizontal: 'left' },
+      font: { bold: true, color: { rgb: '64748B' }, sz: 10 },
+      fill: { fgColor: { rgb: 'F1F5F9' } },
     });
   });
   rowIdx++;
 
   entries.forEach(e => {
     const isPanic = e.type === 'panic';
-    const bgColor = isPanic ? 'FFF1F2' : 'FFFBEB';
+    const bgColor = isPanic ? 'FEF2F2' : 'FFFBEB';
     const borderColor = isPanic ? 'FECDD3' : 'FDE68A';
     COLUMNS.forEach((col, i) => {
       setCell(COL_KEYS[i], rowIdx, String(col.get(e)), {
@@ -115,10 +162,13 @@ function downloadExcel(entries: LogEntry[], reportTitle: string, meta: string) {
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, 'Fleet Report');
-  XLSX.writeFile(wb, `${reportTitle.toLowerCase().replace(/\s+/g, '-')}-${fileStamp()}.xlsx`);
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  return new Blob([out], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
 }
 
-async function downloadPDF(entries: LogEntry[], reportTitle: string, meta: string) {
+async function buildPdfBlob(entries: LogEntry[], reportTitle: string, meta: string) {
   const { default: jsPDF } = await import('jspdf');
   const { default: autoTable } = await import('jspdf-autotable');
 
@@ -148,7 +198,7 @@ async function downloadPDF(entries: LogEntry[], reportTitle: string, meta: strin
     },
   });
 
-  doc.save(`${reportTitle.toLowerCase().replace(/\s+/g, '-')}-${fileStamp()}.pdf`);
+  return doc.output('blob');
 }
 
 export async function exportReport(
@@ -157,7 +207,32 @@ export async function exportReport(
   reportTitle: string,
   meta: string,
 ) {
-  if (format === 'csv') downloadCSV(entries, reportTitle);
-  else if (format === 'excel') downloadExcel(entries, reportTitle, meta);
-  else await downloadPDF(entries, reportTitle, meta);
+  const stamp = fileStamp();
+  const base = `${slugTitle(reportTitle)}-${stamp}`;
+  let blob: Blob;
+  let filename: string;
+  let mime: string;
+
+  if (format === 'csv') {
+    blob = buildCsvBlob(entries);
+    filename = `${base}.csv`;
+    mime = 'text/csv;charset=utf-8';
+  } else if (format === 'excel') {
+    blob = buildExcelBlob(entries, reportTitle, meta);
+    filename = `${base}.xlsx`;
+    mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  } else {
+    blob = await buildPdfBlob(entries, reportTitle, meta);
+    filename = `${base}.pdf`;
+    mime = 'application/pdf';
+  }
+
+  triggerBrowserDownload(blob, filename);
+  void archiveReportDownload({
+    filename,
+    mime,
+    blob,
+    type: 'Events',
+    meta: { reportTitle, filters: meta, format, eventCount: entries.length },
+  });
 }

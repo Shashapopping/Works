@@ -346,7 +346,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
               Fleet Status ({anomalies.length} vehicles)
             </h2>
             <p style={{ fontSize: isMobile ? '14px' : '17px', color: 'var(--cd-text-muted)' }}>
-              Lafarge fleet — Showing {filteredAnomalies.length === anomalies.length ? `${startIndex + 1}–${Math.min(endIndex, filteredAnomalies.length)} of ${filteredAnomalies.length}` : `${filteredAnomalies.length} of ${anomalies.length}`}
+              HBM fleet — Showing {filteredAnomalies.length === anomalies.length ? `${startIndex + 1}–${Math.min(endIndex, filteredAnomalies.length)} of ${filteredAnomalies.length}` : `${filteredAnomalies.length} of ${anomalies.length}`}
             </p>
             {!isStale && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--cd-text-muted)', fontSize: '13px', marginTop: '10px', paddingLeft: '4px' }}>

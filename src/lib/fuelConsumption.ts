@@ -50,7 +50,11 @@ export interface RefuelRow {
   deltaLiters: number;
 }
 
-export type SuspectDropRow = RefuelRow;
+export interface SuspectDropRow extends RefuelRow {
+  /** True when the next 5‑min probe tick rebounds ≥50% of the drop (probe noise / slosh). */
+  likelyNoise?: boolean;
+  nextLevel?: number | null;
+}
 
 export interface ConsumptionData {
   period: { start: string; end: string };

@@ -1,0 +1,493 @@
+/**
+ * Custom enterprise auth — users, sessions, roles, RBAC.
+ * Opaque session IDs in httpOnly cookies; permissions enforced server-side.
+ */
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
+import { getDb } from './db.js';
+
+export const SESSION_COOKIE = 'bpl_session';
+export const SESSION_DAYS = 7;
+const BCRYPT_ROUNDS = 10;
+
+/** Permission catalog — keep in sync with src/lib/roleConfig.ts ACCESS_CATALOG */
+export const ACCESS_CATALOG = [
+  { id: 'dashboard', label: 'Dashboard', group: 'Core' },
+  { id: 'fleet', label: 'Fleet', group: 'Core' },
+  { id: 'drivers', label: 'Driver Management', group: 'Core' },
+  { id: 'incidents', label: 'Incident Intelligence', group: 'Core' },
+  { id: 'tankers', label: 'Bulk Tankers', group: 'Fleet segments' },
+  { id: 'quarry', label: 'Quarry', group: 'Fleet segments' },
+  { id: 'cement', label: 'Cement', group: 'Fleet segments' },
+  { id: 'ready-mix', label: 'Ready Mix', group: 'Fleet segments' },
+  { id: 'safety', label: 'Safety Vault', group: 'Safety' },
+  { id: 'fuel-monitoring', label: 'Fuel Monitoring', group: 'Operations' },
+  { id: 'fuel-consumption', label: 'Fuel Consumption', group: 'Operations' },
+  { id: 'trips', label: 'Trips & Dispatch', group: 'Operations' },
+  { id: 'reports', label: 'Reports', group: 'Reporting' },
+  { id: 'documents', label: 'Documents', group: 'Reporting' },
+  { id: 'maintenance', label: 'Maintenance', group: 'Operations' },
+  { id: 'aria', label: 'BPL Analyst', group: 'AI Intelligence' },
+  { id: 'settings', label: 'Settings', group: 'Administration' },
+  { id: 'user-management', label: 'User Management', group: 'Administration' },
+  { id: 'reset-data', label: 'Reset Data', group: 'Administration' },
+];
+
+const ALL_PERMISSIONS = ACCESS_CATALOG.map(a => a.id);
+const VALID_PERMISSIONS = new Set(ALL_PERMISSIONS);
+
+const DEFAULT_ROLES = [
+  {
+    id: 'admin',
+    name: 'Admin',
+    description: 'Full platform access, user management, and settings',
+    permissions: [...ALL_PERMISSIONS],
+  },
+  {
+    id: 'hse-officer',
+    name: 'HSE Officer',
+    description: 'Safety Vault, BPL Analyst, Driver Management, Incident Intelligence',
+    permissions: ['safety', 'aria', 'drivers', 'incidents', 'reports', 'dashboard'],
+  },
+  {
+    id: 'operations-manager',
+    name: 'Operations Manager',
+    description: 'Dashboard, Fleet, Operations, limited Safety access',
+    permissions: ['dashboard', 'fleet', 'trips', 'fuel-monitoring', 'fuel-consumption', 'drivers', 'incidents', 'quarry', 'tankers', 'cement', 'ready-mix'],
+  },
+  {
+    id: 'view-only',
+    name: 'View Only',
+    description: 'Read-only access to Dashboard and Reports',
+    permissions: ['dashboard', 'reports'],
+  },
+];
+
+/** Simple in-memory IP rate limiter for auth routes */
+const rateBuckets = new Map();
+
+export function checkRateLimit(ip, { limit = 20, windowMs = 15 * 60 * 1000 } = {}) {
+  const key = String(ip || 'unknown');
+  const now = Date.now();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || now > bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + windowMs };
+    rateBuckets.set(key, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > limit) {
+    return { ok: false, retryAfterSec: Math.ceil((bucket.resetAt - now) / 1000) };
+  }
+  return { ok: true };
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function newId() {
+  return crypto.randomUUID();
+}
+
+function publicUser(row, permissions) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    roleId: row.role_id,
+    roleName: row.role_name || null,
+    status: row.status,
+    mustChangePassword: !!row.must_change_password,
+    permissions: permissions || [],
+    lastLoginAt: row.last_login_at || null,
+    createdAt: row.created_at,
+  };
+}
+
+export function seedRolesIfNeeded() {
+  const db = getDb();
+  const count = db.prepare('SELECT COUNT(*) AS c FROM roles').get().c;
+  if (count > 0) return;
+
+  const insertRole = db.prepare(
+    'INSERT INTO roles (id, name, description, created_at) VALUES (?, ?, ?, ?)',
+  );
+  const insertPerm = db.prepare(
+    'INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
+  );
+  const tx = db.transaction(() => {
+    const ts = nowIso();
+    for (const role of DEFAULT_ROLES) {
+      insertRole.run(role.id, role.name, role.description, ts);
+      for (const pid of role.permissions) {
+        if (VALID_PERMISSIONS.has(pid)) insertPerm.run(role.id, pid);
+      }
+    }
+  });
+  tx();
+  console.log('🔐 Seeded default roles');
+}
+
+export async function bootstrapAdminIfNeeded() {
+  seedRolesIfNeeded();
+  const db = getDb();
+  const users = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  if (users > 0) return;
+
+  const email = (process.env.AUTH_BOOTSTRAP_EMAIL || 'admin@hbm.local').trim().toLowerCase();
+  const password = process.env.AUTH_BOOTSTRAP_PASSWORD || 'ChangeMeNow!26';
+  const name = process.env.AUTH_BOOTSTRAP_NAME || 'Platform Admin';
+
+  const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  db.prepare(`
+    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, created_at)
+    VALUES (?, ?, ?, ?, 'admin', 'active', 1, ?)
+  `).run(newId(), email, name, hash, nowIso());
+
+  console.log(`🔐 Bootstrap admin created: ${email} (change password on first login)`);
+}
+
+export function getRolePermissions(roleId) {
+  const rows = getDb()
+    .prepare('SELECT permission_id FROM role_permissions WHERE role_id = ?')
+    .all(roleId);
+  return rows.map(r => r.permission_id);
+}
+
+export function listRoles() {
+  const db = getDb();
+  const roles = db.prepare('SELECT id, name, description, created_at FROM roles ORDER BY name').all();
+  return roles.map(r => ({
+    id: r.id,
+    name: r.name,
+    desc: r.description,
+    permissions: getRolePermissions(r.id),
+    createdAt: r.created_at,
+  }));
+}
+
+export function saveRoles(roles) {
+  if (!Array.isArray(roles) || roles.length === 0) {
+    throw Object.assign(new Error('At least one role is required'), { status: 400 });
+  }
+
+  const db = getDb();
+  const usedByUsers = new Set(
+    db.prepare('SELECT DISTINCT role_id FROM users').all().map(r => r.role_id),
+  );
+
+  const normalized = roles.map((r, i) => {
+    const id = String(r.id || '').trim() || `role-${i}-${Date.now().toString(36)}`;
+    const name = String(r.name || '').trim();
+    if (!name) throw Object.assign(new Error('Role name is required'), { status: 400 });
+    const permissions = Array.isArray(r.permissions)
+      ? r.permissions.filter(p => VALID_PERMISSIONS.has(p))
+      : [];
+    return {
+      id,
+      name,
+      description: typeof r.desc === 'string' ? r.desc : (r.description || ''),
+      permissions,
+    };
+  });
+
+  const nextIds = new Set(normalized.map(r => r.id));
+  for (const roleId of usedByUsers) {
+    if (!nextIds.has(roleId)) {
+      throw Object.assign(
+        new Error(`Cannot remove role "${roleId}" — users are still assigned to it`),
+        { status: 400 },
+      );
+    }
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM role_permissions').run();
+    db.prepare('DELETE FROM roles').run();
+    const insertRole = db.prepare(
+      'INSERT INTO roles (id, name, description, created_at) VALUES (?, ?, ?, ?)',
+    );
+    const insertPerm = db.prepare(
+      'INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
+    );
+    const ts = nowIso();
+    for (const role of normalized) {
+      insertRole.run(role.id, role.name, role.description, ts);
+      for (const pid of role.permissions) insertPerm.run(role.id, pid);
+    }
+  });
+  tx();
+  return listRoles();
+}
+
+export function listUsers() {
+  const rows = getDb().prepare(`
+    SELECT u.*, r.name AS role_name
+    FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id
+    ORDER BY u.created_at DESC
+  `).all();
+  return rows.map(r => publicUser(r, getRolePermissions(r.role_id)));
+}
+
+export async function createUser({ email, name, password, roleId, actorId }) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const displayName = String(name || '').trim();
+  const role = String(roleId || '').trim();
+  const pwd = String(password || '');
+
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    throw Object.assign(new Error('Valid email is required'), { status: 400 });
+  }
+  if (!displayName) throw Object.assign(new Error('Name is required'), { status: 400 });
+  if (pwd.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
+
+  const db = getDb();
+  const roleExists = db.prepare('SELECT id FROM roles WHERE id = ?').get(role);
+  if (!roleExists) throw Object.assign(new Error('Invalid role'), { status: 400 });
+
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+  if (existing) throw Object.assign(new Error('A user with that email already exists'), { status: 409 });
+
+  const id = newId();
+  const hash = await bcrypt.hash(pwd, BCRYPT_ROUNDS);
+  db.prepare(`
+    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', 1, ?)
+  `).run(id, normalizedEmail, displayName, hash, role, nowIso());
+
+  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role });
+  const row = db.prepare(`
+    SELECT u.*, r.name AS role_name FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
+  `).get(id);
+  const created = publicUser(row, getRolePermissions(role));
+
+  let emailResult = { sent: false };
+  try {
+    const { sendAccountInviteEmail } = await import('./email.js');
+    emailResult = await sendAccountInviteEmail({
+      to: normalizedEmail,
+      name: displayName,
+      password: pwd,
+      roleName: created.roleName,
+    });
+    if (emailResult.sent) {
+      writeAudit(actorId, 'user.invite_email', id, { email: normalizedEmail, resendId: emailResult.id });
+    }
+  } catch (e) {
+    emailResult = { sent: false, error: e?.message || 'Email send failed' };
+  }
+
+  return { ...created, emailSent: !!emailResult.sent, emailError: emailResult.error || null };
+}
+
+export async function updateUser(userId, { name, roleId, status, password }, actorId) {
+  const db = getDb();
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+
+  const nextName = name !== undefined ? String(name).trim() : user.name;
+  const nextRole = roleId !== undefined ? String(roleId).trim() : user.role_id;
+  const nextStatus = status !== undefined ? String(status).trim() : user.status;
+
+  if (!nextName) throw Object.assign(new Error('Name is required'), { status: 400 });
+  if (!['active', 'disabled'].includes(nextStatus)) {
+    throw Object.assign(new Error('Status must be active or disabled'), { status: 400 });
+  }
+  if (!db.prepare('SELECT id FROM roles WHERE id = ?').get(nextRole)) {
+    throw Object.assign(new Error('Invalid role'), { status: 400 });
+  }
+
+  // Don't allow disabling the last active admin with user-management
+  if (nextStatus === 'disabled' && user.status === 'active') {
+    assertNotLastAdmin(userId);
+  }
+
+  let hash = user.password_hash;
+  let mustChange = user.must_change_password;
+  if (password !== undefined && password !== null && String(password).length > 0) {
+    if (String(password).length < 8) {
+      throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
+    }
+    hash = await bcrypt.hash(String(password), BCRYPT_ROUNDS);
+    mustChange = 1;
+  }
+
+  db.prepare(`
+    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?
+    WHERE id = ?
+  `).run(nextName, nextRole, nextStatus, hash, mustChange, userId);
+
+  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus });
+  const row = db.prepare(`
+    SELECT u.*, r.name AS role_name FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
+  `).get(userId);
+  return publicUser(row, getRolePermissions(nextRole));
+}
+
+function assertNotLastAdmin(userId) {
+  const admins = getDb().prepare(`
+    SELECT u.id FROM users u
+    JOIN role_permissions rp ON rp.role_id = u.role_id
+    WHERE rp.permission_id = 'user-management' AND u.status = 'active'
+  `).all();
+  if (admins.length <= 1 && admins.some(a => a.id === userId)) {
+    throw Object.assign(new Error('Cannot disable the last admin'), { status: 400 });
+  }
+}
+
+export async function changePassword(userId, currentPassword, newPassword) {
+  if (String(newPassword || '').length < 8) {
+    throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
+  }
+  const db = getDb();
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+
+  const ok = await bcrypt.compare(String(currentPassword || ''), user.password_hash);
+  if (!ok) throw Object.assign(new Error('Current password is incorrect'), { status: 401 });
+
+  const hash = await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS);
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?')
+    .run(hash, userId);
+  writeAudit(userId, 'user.password_change', userId, null);
+  return { ok: true };
+}
+
+export async function login(email, password) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const db = getDb();
+  const user = db.prepare(`
+    SELECT u.*, r.name AS role_name FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id
+    WHERE u.email = ?
+  `).get(normalizedEmail);
+
+  // Constant-ish fail path
+  if (!user || user.status !== 'active') {
+    throw Object.assign(new Error('Invalid email or password'), { status: 401 });
+  }
+
+  const ok = await bcrypt.compare(String(password || ''), user.password_hash);
+  if (!ok) throw Object.assign(new Error('Invalid email or password'), { status: 401 });
+
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+    .run(sessionId, user.id, expires, nowIso());
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(nowIso(), user.id);
+  writeAudit(user.id, 'auth.login', user.id, null);
+
+  const permissions = getRolePermissions(user.role_id);
+  return {
+    sessionId,
+    expiresAt: expires,
+    user: publicUser({ ...user, last_login_at: nowIso() }, permissions),
+  };
+}
+
+export function logout(sessionId) {
+  if (!sessionId) return;
+  getDb().prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+}
+
+export function getSessionUser(sessionId) {
+  if (!sessionId) return null;
+  const db = getDb();
+  const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+  if (!session) return null;
+  if (new Date(session.expires_at).getTime() < Date.now()) {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+    return null;
+  }
+  const user = db.prepare(`
+    SELECT u.*, r.name AS role_name FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id
+    WHERE u.id = ?
+  `).get(session.user_id);
+  if (!user || user.status !== 'active') return null;
+  return publicUser(user, getRolePermissions(user.role_id));
+}
+
+export function parseCookies(header) {
+  const out = {};
+  if (!header) return out;
+  for (const part of String(header).split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    const val = decodeURIComponent(part.slice(idx + 1).trim());
+    out[key] = val;
+  }
+  return out;
+}
+
+/** Prefer Secure cookies on HTTPS (nginx TLS) so browsers keep the session. */
+export function shouldUseSecureCookie(req) {
+  if (process.env.AUTH_COOKIE_SECURE === '1') return true;
+  if (process.env.AUTH_COOKIE_SECURE === '0') return false;
+  if (process.env.NODE_ENV === 'production') return true;
+  const proto = req?.headers?.['x-forwarded-proto'];
+  if (typeof proto === 'string' && proto.split(',')[0].trim() === 'https') return true;
+  return false;
+}
+
+export function sessionCookieHeader(sessionId, { clear = false, req = null } = {}) {
+  const secure = shouldUseSecureCookie(req);
+  if (clear) {
+    return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`;
+  }
+  const maxAge = SESSION_DAYS * 24 * 60 * 60;
+  return `${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+}
+
+export function writeAudit(actorId, action, targetId, meta) {
+  try {
+    getDb().prepare(`
+      INSERT INTO auth_audit (id, actor_id, action, target_id, meta, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      newId(),
+      actorId || null,
+      action,
+      targetId || null,
+      meta ? JSON.stringify(meta) : null,
+      nowIso(),
+    );
+  } catch (e) {
+    console.warn('auth audit write failed:', e?.message || e);
+  }
+}
+
+export function userHasPermission(user, permissionId) {
+  return !!user?.permissions?.includes(permissionId);
+}
+
+/** Route path → required permission (first match wins for nested) */
+export const ROUTE_PERMISSIONS = {
+  '/': 'dashboard',
+  '/fleet': 'fleet',
+  '/drivers': 'drivers',
+  '/incidents': 'incidents',
+  '/tankers': 'tankers',
+  '/quarry': 'quarry',
+  '/cement': 'cement',
+  '/ready-mix': 'ready-mix',
+  '/safety': 'safety',
+  '/fuel/monitoring': 'fuel-monitoring',
+  '/fuel/consumption': 'fuel-consumption',
+  '/trips': 'trips',
+  '/reports': 'reports',
+  '/reports/documents': 'documents',
+  '/maintenance': 'maintenance',
+  '/aria': 'aria',
+  '/settings': 'settings',
+  '/settings/general': 'settings',
+  '/settings/thresholds': 'settings',
+  '/settings/roles': 'settings',
+  '/settings/users': 'user-management',
+  '/settings/dev': 'settings',
+};

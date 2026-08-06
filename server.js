@@ -4,10 +4,14 @@ import fs from 'fs'
 import { fileURLToPath } from 'url'
 import * as dotenv from 'dotenv'
 import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary } from './scripts/mix-test.js'
+import { getAcknowledged, addAcknowledged, clearAcknowledged, getAllEvents, getFuelHistory } from './scripts/db.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
 import { importWeekSeed } from './scripts/import-seed.js'
+import { bootstrapAdminIfNeeded } from './scripts/auth.js'
+import { authExpressMiddleware } from './scripts/auth-http.js'
+import { startReportAutomateScheduler } from './scripts/report-automate.js'
 
 dotenv.config()
 
@@ -21,12 +25,27 @@ try {
   console.log('⚠️ Seed import skipped:', e?.message || e)
 }
 
+try {
+  await bootstrapAdminIfNeeded()
+} catch (e) {
+  console.log('⚠️ Auth bootstrap skipped:', e?.message || e)
+}
+
+try {
+  startReportAutomateScheduler()
+} catch (e) {
+  console.log('⚠️ Report Automate scheduler skipped:', e?.message || e)
+}
+
 const app = express()
 const PORT = process.env.PORT || 3000
 const API_SECRET = process.env.API_SECRET
-const ACKNOWLEDGED_FILE = path.join(process.cwd(), 'public', 'acknowledged.json')
 
-app.use(express.json())
+// Behind nginx on DigitalOcean — real client IP for rate limits
+app.set('trust proxy', 1)
+
+app.use(express.json({ limit: '40mb' }))
+app.use(authExpressMiddleware())
 
 function isAuthorized(req) {
   return req.headers['x-api-secret'] === API_SECRET
@@ -34,19 +53,6 @@ function isAuthorized(req) {
 
 function unauthorized(res) {
   res.status(401).end('Unauthorized')
-}
-
-function loadAcknowledged() {
-  try {
-    if (fs.existsSync(ACKNOWLEDGED_FILE)) {
-      return JSON.parse(fs.readFileSync(ACKNOWLEDGED_FILE, 'utf8'))
-    }
-  } catch { }
-  return []
-}
-
-function saveAcknowledged(ids) {
-  fs.writeFileSync(ACKNOWLEDGED_FILE, JSON.stringify(ids, null, 2))
 }
 
 // Block direct access to sensitive JSON files
@@ -68,7 +74,7 @@ app.post('/api/refresh', async (req, res) => {
 // Acknowledged GET
 app.get('/api/acknowledged', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
-  res.json(loadAcknowledged())
+  res.json(getAcknowledged())
 })
 
 // Acknowledged POST
@@ -76,11 +82,7 @@ app.post('/api/acknowledged', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
     const { id } = req.body
-    const ids = loadAcknowledged()
-    if (!ids.includes(id)) {
-      ids.push(id)
-      saveAcknowledged(ids)
-    }
+    addAcknowledged(id)
     clearTriggeredEvent(id)
     res.json({ ok: true })
   } catch {
@@ -92,7 +94,7 @@ app.post('/api/acknowledged', (req, res) => {
 app.post('/api/reset', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   resetState()
-  saveAcknowledged([])
+  clearAcknowledged()
   res.json({ ok: true })
 })
 
@@ -140,11 +142,17 @@ app.get('/api/drivers', (req, res) => {
   }
 })
 
-// Events log
+// Events log — SQLite (capped); supports ?from=&to=&types=&limit=
 app.get('/api/events/log', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    const entries = []
+    const { from, to, types, limit } = req.query
+    const filters = {
+      from: from || null,
+      to: to || null,
+      types: types ? types.split(',').map(t => t.trim()).filter(Boolean) : null,
+      limit: limit || 5000,
+    }
 
     const vehicleLookup = new Map()
     try {
@@ -162,10 +170,23 @@ app.get('/api/events/log', (req, res) => {
       }
     } catch { }
 
-    const enrich = (entry) => {
-      const vehicle = vehicleLookup.get(entry.assetId?.toString()) || {}
+    const entries = getAllEvents(filters).map(entry => {
+      const vehicle = vehicleLookup.get(entry.asset_id?.toString()) || {}
       const enriched = {
-        ...entry,
+        timestamp: entry.timestamp,
+        assetId: entry.asset_id,
+        driverId: entry.driver_id,
+        driverName: entry.driver_name,
+        driverPhone: entry.driver_phone,
+        eventId: entry.event_id,
+        eventType: entry.event_type,
+        label: entry.label,
+        eventTime: entry.event_time,
+        receivedAt: entry.received_at,
+        latitude: entry.latitude,
+        longitude: entry.longitude,
+        address: entry.address || vehicle.position?.address || null,
+        type: entry.type,
         regNo: vehicle.regNo || 'N/A',
         assetName: vehicle.assetName || 'Unknown Vehicle',
         transporter: vehicle.transporter || 'N/A',
@@ -174,32 +195,15 @@ app.get('/api/events/log', (req, res) => {
         enriched.latitude = vehicle.position.latitude
         enriched.longitude = vehicle.position.longitude
       }
+      if (!enriched.address && vehicle.position?.address) {
+        enriched.address = vehicle.position.address
+      }
       return enriched
-    }
+    })
 
-    const panicLogPath = path.join(process.cwd(), 'panic.log')
-    if (fs.existsSync(panicLogPath)) {
-      const lines = fs.readFileSync(panicLogPath, 'utf8').trim().split('\n').filter(Boolean)
-      lines.forEach(line => {
-        try {
-          entries.push(enrich({ ...JSON.parse(line), type: 'panic', label: 'Panic' }))
-        } catch { }
-      })
-    }
-
-    const eventsLogPath = path.join(process.cwd(), 'events.log')
-    if (fs.existsSync(eventsLogPath)) {
-      const lines = fs.readFileSync(eventsLogPath, 'utf8').trim().split('\n').filter(Boolean)
-      lines.forEach(line => {
-        try {
-          entries.push(enrich({ ...JSON.parse(line), type: 'warning' }))
-        } catch { }
-      })
-    }
-
-    entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     res.json(entries)
-  } catch {
+  } catch (err) {
+    console.error('events/log failed:', err?.message || err)
     res.status(500).end('Internal Server Error')
   }
 })
@@ -238,7 +242,12 @@ app.get('/api/trips/session', (req, res) => {
 // Driver distance summary — strips journeys from wire payload
 app.get('/api/driver-distance', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
-  const summary = getDriverDistanceSummary({ range: req.query.range?.toString() || '24h', month: req.query.month?.toString() || null })
+  const summary = getDriverDistanceSummary({
+    range: req.query.range?.toString() || '24h',
+    month: req.query.month?.toString() || null,
+    from: req.query.from?.toString() || null,
+    to: req.query.to?.toString() || null,
+  })
   const slim = { ...summary, assets: summary.assets.map(({ journeys, ...rest }) => rest) }
   res.json(slim)
 })
@@ -276,23 +285,17 @@ app.get('/api/fuel/history', (req, res) => {
       cutoffStart = now - (cutoffs[period] || cutoffs.day)
     }
 
-    const historyPath = path.join(process.cwd(), 'fuel-history.log')
-    if (!fs.existsSync(historyPath)) return res.json([])
-
-    const lines = fs.readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean)
+    const entries = getFuelHistory({
+      fromIso: new Date(cutoffStart).toISOString(),
+      toIso: new Date(cutoffEnd).toISOString(),
+      eventType: '5min_ticker',
+    })
 
     // Build per-vehicle series, filtered to period
     const seriesMap = new Map()
-    lines.forEach(line => {
-      try {
-        const entry = JSON.parse(line)
-        const eventType = entry.eventType || '5min_ticker'
-        if (eventType !== '5min_ticker') return
-        const ts = new Date(entry.timestamp).getTime()
-        if (ts < cutoffStart || ts > cutoffEnd) return
-        if (!seriesMap.has(entry.assetId)) seriesMap.set(entry.assetId, [])
-        seriesMap.get(entry.assetId).push({ time: entry.timestamp, level: entry.level })
-      } catch { }
+    entries.forEach(entry => {
+      if (!seriesMap.has(entry.assetId)) seriesMap.set(entry.assetId, [])
+      seriesMap.get(entry.assetId).push({ time: entry.timestamp, level: entry.level })
     })
 
     // Enrich with regNo from data.json

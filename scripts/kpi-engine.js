@@ -1,23 +1,12 @@
 /**
  * Operational KPI engine — utilization, availability, harsh braking,
- * overspeeding and fatigue management, computed from:
- *   kpi-events.log  (loaded truck / offload / fatigue / overspeed variants)
- *   events.log      (historical harsh braking + overspeeding warnings)
- *   trips.log       (engine runtime ≈ trip duration, distance)
- *   public/data.json (asset metadata / zones)
- *
- * Formulas:
- *   Utilization %  = operational (working) time / available (in-use) time
- *                    e.g. (trip − idle) / engine, or DrivingTime / Duration
- *   Availability % = Engine runtime / hours in selected period
- *   Harsh braking score = occurrences / 3
- *   Overspeed score     = occurrences / 1
- *   Overspeed ratio     = overspeed duration / (2 × loaded duration) when loaded hours exist
- * Note: UI copy describes utilization as working-while-in-use; engine still also tracks loaded hours as a separate payload metric.
+ * overspeeding and fatigue management, computed from fleet.db:
+ *   kpi_events, events, trips + public/data.json (zones)
  */
 import fs from 'fs';
 import path from 'path';
 import { KPI_CATEGORY } from './kpi-constants.js';
+import { getKpiEvents, getAllEvents, getTripsInRange } from './db.js';
 
 const QUARRY_ZONES = new Set(['QUARRY EWEKORO', 'QUARRY MFAMOSING']);
 
@@ -28,17 +17,17 @@ const DEFAULT_OVERSPEED_SECONDS = 30;
 
 /** Avoid re-scanning multi‑MB logs on every page open (~20s+ cold). */
 const KPI_RESULT_TTL_MS = 120_000;
+const KPI_RESULT_CACHE_MAX = 8;
 const kpiResultCache = new Map();
 
 function kpiCacheKey({ period, from, to, scope }) {
   return `${period || 'week'}|${from || ''}|${to || ''}|${scope || 'quarry'}`;
 }
 
-function readJsonLines(file) {
-  if (!fs.existsSync(file)) return [];
-  return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => {
-    try { return JSON.parse(line); } catch { return null; }
-  }).filter(Boolean);
+function tripInWindow(t, start, end) {
+  const raw = t.TripEnd || t.tripEnd || t.TripStart || t.tripStart;
+  const ts = raw ? new Date(raw).getTime() : NaN;
+  return Number.isFinite(ts) && ts >= start && ts <= end;
 }
 
 function parsePeriodBounds(period, fromQ, toQ) {
@@ -185,6 +174,10 @@ export function computeKpi({ cwd = process.cwd(), period = 'week', from, to, sco
 
   const result = computeKpiFresh({ cwd, period, from, to, scope });
   kpiResultCache.set(cacheKey, { at: Date.now(), data: result });
+  while (kpiResultCache.size > KPI_RESULT_CACHE_MAX) {
+    const oldest = kpiResultCache.keys().next().value;
+    kpiResultCache.delete(oldest);
+  }
   return result;
 }
 
@@ -193,9 +186,14 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
   const windowHours = (end - start) / 3600000;
 
   const vehicles = loadVehicles(cwd);
-  const kpiEvents = readJsonLines(path.join(cwd, 'kpi-events.log'));
-  const trips = readJsonLines(path.join(cwd, 'public', 'trips.log'));
-
+  const trips = getTripsInRange(
+    new Date(start).toISOString(),
+    new Date(end + 1).toISOString(),
+  );
+  const kpiEvents = getKpiEvents({
+    fromIso: new Date(start - MAX_LOADED_INTERVAL_MS).toISOString(),
+    toIso: new Date(end).toISOString(),
+  });
   // Merge harsh braking / overspeeding from both logs, dedupe by eventId
   const seenEventIds = new Set();
   const behaviourEvents = [];
@@ -212,7 +210,19 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
     if (e.category === KPI_CATEGORY.HARSH_BRAKING) pushBehaviour(e, KPI_CATEGORY.HARSH_BRAKING);
     else if (e.category === KPI_CATEGORY.OVERSPEED) pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
   });
-  readJsonLines(path.join(cwd, 'events.log')).forEach(e => {
+  getAllEvents({
+    from: new Date(start).toISOString(),
+    to: new Date(end).toISOString(),
+    limit: 8000,
+  }).forEach(row => {
+    const e = {
+      eventId: row.event_id,
+      label: row.label,
+      eventTime: row.event_time,
+      timestamp: row.timestamp,
+      assetId: row.asset_id,
+      driverId: row.driver_id,
+    };
     if (e.label === 'Harsh Braking') pushBehaviour(e, KPI_CATEGORY.HARSH_BRAKING);
     else if (e.label === 'Overspeeding' || e.label === 'Overspeed Tiered') pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
   });

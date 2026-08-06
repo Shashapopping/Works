@@ -2,19 +2,21 @@ import { useState, useRef, useEffect } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Menu, Bell, Search, UserCircle, ShieldAlert } from 'lucide-react';
 import Sidebar from './Sidebar';
+import SiteSelector from './SiteSelector';
 import SafetyToast from '../SafetyToast';
 import SafetyIncidentModal from '../SafetyIncidentModal';
 import { useFleet } from '../../context/FleetContext';
 import type { SafetyNotification } from '../../hooks/useSafeIQ';
 import EnvironmentBadge from '../EnvironmentBadge';
 import { isKnownDriver } from '../../lib/driverUtils';
+import { SAFEIQ_ENABLED } from '../../config/safeIq';
 
 function getPageTitle(pathname: string): { title: string; sub: string } {
   const map: Record<string, { title: string; sub: string }> = {
     '/': { title: 'Dashboard', sub: '— real-time fleet overview' },
     '/fleet': { title: 'Fleet', sub: '— live asset list' },
-    '/trips': { title: 'Trips', sub: '— ongoing and completed journeys' },
-    '/trips/dispatch': { title: 'Trips', sub: '— dispatch & journey planning' },
+    '/trips': { title: 'Journey Management', sub: '— ongoing and completed journeys' },
+    '/trips/dispatch': { title: 'Journey Management', sub: '— dispatch & journey planning' },
     '/aria': { title: 'AI Insights', sub: '— SafeIQ analyses' },
     '/drivers': { title: 'Driver Management', sub: '— profiles and safety scores' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
@@ -26,6 +28,9 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/vault/acknowledgements': { title: 'Safety Vault', sub: '— acknowledgements' },
     '/vault/audit': { title: 'Safety Vault', sub: '— audit trail' },
     '/tankers': { title: 'Bulk Tankers', sub: '— East & West zone fleet' },
+    '/quarry': { title: 'Quarry', sub: '— Ewekoro, Mfamosing & quarry haulage' },
+    '/cement': { title: 'Cement', sub: '— North / East / West distribution' },
+    '/ready-mix': { title: 'Ready Mix', sub: '— plant assets' },
     '/fuel/monitoring': { title: 'Fuel', sub: '— monitoring' },
     '/fuel/consumption': { title: 'Fuel', sub: '— consumption' },
     '/reports': { title: 'Reports', sub: '— event log and trends' },
@@ -33,8 +38,9 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/maintenance': { title: 'Maintenance', sub: '— scheduling & service' },
     '/settings/general': { title: 'Settings', sub: '— general' },
     '/settings/thresholds': { title: 'Settings', sub: '— safety score & thresholds' },
-    '/settings/api': { title: 'Settings', sub: '— API connections' },
+    '/settings/dev': { title: 'Settings', sub: '— developers' },
     '/settings/roles': { title: 'Settings', sub: '— roles & permissions' },
+    '/settings/users': { title: 'Settings', sub: '— users & access' },
   };
   return map[pathname] ?? { title: 'BPL Fleet', sub: '' };
 }
@@ -217,11 +223,13 @@ export default function AppShell() {
               </button>
             )}
             <span style={{ fontSize: 15, fontWeight: 500, color: '#fff' }}>{title}</span>
-            <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>{sub}</span>
+            {!isMobile && <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>{sub}</span>}
+            <div style={{ width: 1, height: 22, background: 'rgba(255,255,255,0.1)', margin: '0 4px' }} />
+            <SiteSelector />
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {redAlertCount > 0 && (
+            {SAFEIQ_ENABLED && redAlertCount > 0 && (
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 5,
                 padding: '4px 10px', borderRadius: 7,
@@ -245,6 +253,7 @@ export default function AppShell() {
             >
               <Search size={14} />
             </button>
+            {SAFEIQ_ENABLED && (
             <div style={{ position: 'relative' }} ref={notifRef}>
               <button
                 onClick={() => setNotifOpen(o => !o)}
@@ -279,6 +288,7 @@ export default function AppShell() {
                 />
               )}
             </div>
+            )}
             <button
               onClick={() => navigate('/settings/general')}
               style={{
@@ -303,13 +313,15 @@ export default function AppShell() {
         </main>
       </div>
 
-      <SafetyToast
-        notifications={notifications.filter(n => !toastDismissed.has(n.id))}
-        onDismiss={id => setToastDismissed(prev => new Set([...prev, id]))}
-        onClearAll={() => setToastDismissed(new Set(notifications.map(n => n.id)))}
-        onOpen={openNotification}
-      />
-      {selectedNotification && (
+      {SAFEIQ_ENABLED && (
+        <SafetyToast
+          notifications={notifications.filter(n => !toastDismissed.has(n.id))}
+          onDismiss={id => setToastDismissed(prev => new Set([...prev, id]))}
+          onClearAll={() => setToastDismissed(new Set(notifications.map(n => n.id)))}
+          onOpen={openNotification}
+        />
+      )}
+      {SAFEIQ_ENABLED && selectedNotification && (
         <SafetyIncidentModal notification={selectedNotification} onClose={closeNotification} />
       )}
     </div>

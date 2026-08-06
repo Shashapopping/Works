@@ -25,11 +25,12 @@ interface Vehicle {
 type StatusType = 'Moving' | 'Idle' | 'Excessive Idle' | 'Stationary' | 'Parked' | 'Inactive' | 'Offline';
 type StatusFilter = 'All' | StatusType;
 
-const GROUP_ORDER = ['Alternative', 'Cement', 'Inbound', 'LH Customer Assets', 'LH Quarry', 'Ready Mix'];
+const GROUP_ORDER = ['Alternative', 'Bulk Tankers', 'Cement', 'Inbound', 'LH Customer Assets', 'LH Quarry', 'Ready Mix'];
 
 const GROUP_COLORS: Record<string, string> = {
   'Alternative': '#0d9488',
-  'Cement':      '#0078D4',
+  'Bulk Tankers': '#0078D4',
+  'Cement':      '#c2410c',
   'Inbound':     '#7C3AED',
   'LH Customer Assets': '#d97706',
   'LH Quarry':   '#16a34a',
@@ -39,11 +40,12 @@ const GROUP_COLORS: Record<string, string> = {
 
 function getGroup(zone: string): string {
   const z = (zone || '').toUpperCase();
+  if (/BULK\s*TANKERS?/.test(z))                                               return 'Bulk Tankers';
   if (/QUARRY/.test(z))                                                          return 'LH Quarry';
   if (/INBOUND/.test(z))                                                         return 'Inbound';
   if (/READY.?MIX|RDYMIX/.test(z))                                              return 'Ready Mix';
   if (/DEPOT|CUSTOMER|AJAH|OREGUN|\bADO\b|\bAKURE\b|\bISEYIN\b/.test(z))       return 'LH Customer Assets';
-  if (/CEMENT|LH\s*-\s*(NORTH|EAST|WEST)|\bMDD\b|\bDD\b|SPOT.?HIRE|BULK.?TANKER/.test(z)) return 'Cement';
+  if (/CEMENT|LH\s*-\s*(NORTH|EAST|WEST)|\bMDD\b|\bDD\b|SPOT.?HIRE/.test(z)) return 'Cement';
   if (/ALTERNATIVE|ALT/.test(z))                                                return 'Alternative';
   return 'Other';
 }

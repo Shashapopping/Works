@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Sparkles } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
+import { SAFEIQ_ENABLED } from '../../config/safeIq';
 
 export default function AiInsightsWidget() {
   const { insights, notifications } = useFleet();
@@ -18,7 +19,7 @@ export default function AiInsightsWidget() {
             <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.5 }}>{ins.description}</div>
           </div>
         ))}
-        {notifications.length > 0 && (
+        {SAFEIQ_ENABLED && notifications.length > 0 && (
           <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 10 }}>
             {notifications.length} SafeIQ {notifications.length === 1 ? 'analysis' : 'analyses'} pending review
           </div>

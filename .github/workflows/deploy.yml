@@ -107,10 +107,13 @@ jobs:
             cd "$APP_DIR"
             # Drop legacy name
             pm2 delete larfarge-dashboard 2>/dev/null || true
+            # Ensure production auth cookie flags exist (do not overwrite other .env keys)
+            grep -q '^NODE_ENV=' .env || echo 'NODE_ENV=production' >> .env
+            grep -q '^AUTH_COOKIE_SECURE=' .env || echo 'AUTH_COOKIE_SECURE=1' >> .env
             if ! pm2 describe HBM-Dashboard >/dev/null 2>&1; then
-              PORT=3003 pm2 start server.js --name HBM-Dashboard --node-args='--max-old-space-size=768'
+              PORT=3003 NODE_ENV=production pm2 start server.js --name HBM-Dashboard --node-args='--max-old-space-size=768'
             fi
-            # Only cnl + jmg should be online
+            # Only cnl + jmg should be online until cutover
             pm2 stop HBM-Dashboard
             pm2 save
             pm2 list

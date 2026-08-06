@@ -1206,3 +1206,349 @@
   color: var(--cd-text-muted);
   cursor: not-allowed;
 }
+
+/* ── Automate (Resend-calm) ─────────────────────────────────────────────── */
+.bpl-automate {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--cd-border);
+}
+
+.bpl-automate-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.bpl-automate-check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.bpl-automate-check-box {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid #d4d4d8;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #fff;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.bpl-automate-check input:checked + .bpl-automate-check-box {
+  background: #18181b;
+  border-color: #18181b;
+}
+
+.bpl-automate-check-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bpl-automate-check-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cd-text);
+  letter-spacing: -0.01em;
+}
+
+.bpl-automate-check-copy em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--cd-text-muted);
+  line-height: 1.4;
+}
+
+.bpl-automate-panel {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+}
+
+:root[data-theme="dark"] .bpl-automate-panel,
+.dark .bpl-automate-panel {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.bpl-automate-hero {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+  color: #52525b;
+}
+
+.bpl-automate-hero-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--cd-text);
+  letter-spacing: -0.02em;
+  margin-bottom: 4px;
+}
+
+.bpl-automate-hero-sub {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cd-text-muted);
+}
+
+.bpl-automate-section {
+  margin-bottom: 14px;
+}
+
+.bpl-automate-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a1a1aa;
+  margin-bottom: 8px;
+}
+
+.bpl-automate-packs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bpl-automate-pack {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #e4e4e7;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.bpl-automate-pack:hover {
+  border-color: #d4d4d8;
+}
+
+.bpl-automate-pack.on {
+  border-color: #18181b;
+  background: #fff;
+  box-shadow: 0 0 0 1px #18181b;
+}
+
+.bpl-automate-pack-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid #d4d4d8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+  margin-top: 1px;
+}
+
+.bpl-automate-pack.on .bpl-automate-pack-check {
+  background: #18181b;
+  border-color: #18181b;
+}
+
+.bpl-automate-pack strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cd-text);
+  margin-bottom: 2px;
+}
+
+.bpl-automate-pack em {
+  display: block;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--cd-text-muted);
+  line-height: 1.4;
+}
+
+.bpl-automate-seg {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 10px;
+  background: #f4f4f5;
+}
+
+.bpl-automate-seg--wrap {
+  flex-wrap: wrap;
+}
+
+.bpl-automate-seg button {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #71717a;
+  cursor: pointer;
+}
+
+.bpl-automate-seg button.on {
+  background: #fff;
+  color: #18181b;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.bpl-automate-row {
+  display: flex;
+  gap: 10px;
+}
+
+.bpl-automate-input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid #e4e4e7;
+  background: #fff;
+  font-size: 13px;
+  color: var(--cd-text);
+  outline: none;
+}
+
+.bpl-automate-input:focus {
+  border-color: #a1a1aa;
+}
+
+.bpl-automate-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #a1a1aa;
+}
+
+.bpl-automate-primary {
+  width: 100%;
+  margin-top: 4px;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 999px;
+  background: #18181b;
+  color: #fafafa;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bpl-automate-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bpl-automate-list {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #e4e4e7;
+}
+
+.bpl-automate-card {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #e4e4e7;
+  background: #fff;
+  margin-bottom: 8px;
+}
+
+.bpl-automate-card.paused {
+  opacity: 0.65;
+}
+
+.bpl-automate-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  color: var(--cd-text);
+}
+
+.bpl-automate-card-top strong {
+  text-transform: capitalize;
+}
+
+.bpl-automate-card-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.bpl-automate-card-actions button {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid #e4e4e7;
+  background: #fafafa;
+  color: #52525b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.bpl-automate-card-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bpl-automate-card-meta {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #71717a;
+}
+
+.bpl-automate-banner {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bpl-automate-banner.ok {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.bpl-automate-banner.warn {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.bpl-automate-quiet {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--cd-text-muted);
+}
+
+.bpl-automate-spin {
+  animation: bpl-automate-spin 0.9s linear infinite;
+}
+
+@keyframes bpl-automate-spin {
+  to { transform: rotate(360deg); }
+}

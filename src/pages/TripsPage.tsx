@@ -30,7 +30,7 @@ export default function TripsPage() {
   return (
     <FeatureGate featureId="dispatch">
       <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Trips</h1>
+        <h1 className="bpl-page-title">Journey Management</h1>
         <p className="bpl-page-subtitle">Ongoing and completed journeys across the fleet</p>
       </div>
 

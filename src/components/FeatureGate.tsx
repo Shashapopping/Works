@@ -22,9 +22,9 @@ export default function FeatureGate({ featureId, children }: Props) {
           <div className="bpl-feature-locked-icon">
             <Lock size={22} />
           </div>
-          <div className="bpl-feature-locked-title">Package restriction</div>
+          <div className="bpl-feature-locked-title">Not available</div>
           <p className="bpl-feature-locked-message">
-            This service is not a part of your package.
+            This feature is not available for your organization.
           </p>
           <p className="bpl-feature-locked-hint">
             Contact Best Practices Ltd to unlock this module for your fleet.

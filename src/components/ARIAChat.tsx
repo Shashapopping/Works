@@ -3,6 +3,7 @@ import { Brain, X, Send, ChevronDown } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useFleet } from '../context/FleetContext';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
+import { SAFEIQ_ENABLED } from '../config/safeIq';
 
 const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
 
@@ -111,7 +112,7 @@ const PAGE_LABELS: Record<string, string> = {
   '/safety': 'Safety',
   '/aria': 'BPL Analyst Intelligence',
   '/reports': 'Reports & Reviews',
-  '/trips': 'Trips',
+  '/trips': 'Journey Management',
   '/trips/dispatch': 'Dispatch',
   '/settings': 'Settings',
 };
@@ -181,23 +182,27 @@ export default function ARIAChat() {
       .map(([label, count]) => `  ${label}: ${count}`)
       .join('\n');
 
-    // SafeIQ red alerts with analysis
-    const redAlerts = notifications
-      .filter(n => n.analysis?.severity === 'RED' && isKnownDriver(n.driver.name))
-      .slice(0, 5)
-      .map(n => {
-        const t = new Date(n.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
-        const cause = n.analysis?.root_cause?.slice(0, 150) ?? 'Pending analysis';
-        const coaching = n.analysis?.coaching_recommendation?.slice(0, 120) ?? '';
-        return `  [RED] ${n.driver.name} | ${n.vehicle.id} | ${n.magnitude} | ${t}\n    Root cause: ${cause}\n    Coaching: ${coaching}`;
-      }).join('\n');
+    // SafeIQ red alerts with analysis (shelved when SAFEIQ_ENABLED is false)
+    const redAlerts = SAFEIQ_ENABLED
+      ? notifications
+          .filter(n => n.analysis?.severity === 'RED' && isKnownDriver(n.driver.name))
+          .slice(0, 5)
+          .map(n => {
+            const t = new Date(n.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
+            const cause = n.analysis?.root_cause?.slice(0, 150) ?? 'Pending analysis';
+            const coaching = n.analysis?.coaching_recommendation?.slice(0, 120) ?? '';
+            return `  [RED] ${n.driver.name} | ${n.vehicle.id} | ${n.magnitude} | ${t}\n    Root cause: ${cause}\n    Coaching: ${coaching}`;
+          }).join('\n')
+      : '(SafeIQ shelved)';
 
     // Yellow alerts
-    const yellowAlerts = notifications
-      .filter(n => n.analysis?.severity === 'YELLOW' && isKnownDriver(n.driver.name))
-      .slice(0, 5)
-      .map(n => `  [YELLOW] ${n.driver.name} | ${n.vehicle.id} | ${n.magnitude} | ${new Date(n.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })}`)
-      .join('\n');
+    const yellowAlerts = SAFEIQ_ENABLED
+      ? notifications
+          .filter(n => n.analysis?.severity === 'YELLOW' && isKnownDriver(n.driver.name))
+          .slice(0, 5)
+          .map(n => `  [YELLOW] ${n.driver.name} | ${n.vehicle.id} | ${n.magnitude} | ${new Date(n.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })}`)
+          .join('\n')
+      : '(SafeIQ shelved)';
 
     // Open vault investigations
     const openVault = vaultRecords
@@ -262,7 +267,7 @@ ${recentEvents || '  No recent events'}`;
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-haiku-4-5-20251001',
           max_tokens: 400,
           system: SYSTEM_PROMPT,
           stream: true,
