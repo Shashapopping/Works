@@ -5,13 +5,14 @@ name: Deploy HBM Dashboard
 #   VITE_API_SECRET, VITE_ANTHROPIC_API_KEY  (build-time only)
 # Runtime MIX_*/API_SECRET/PORT stay on droplet .env — never rebuild frontend there.
 #
-# HBM is intentionally left STOPPED on the droplet (only cnl + jmg run).
-# Deploy still refreshes code/dist under /var/www/hbm-dashboard for next week.
+# Build dist on GitHub → SCP to droplet → git pull + pm2 restart.
+# Do not Vite-build on the 1GB droplet.
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build:
@@ -95,7 +96,7 @@ jobs:
           overwrite: true
           strip_components: 1
 
-      - name: Keep HBM registered but stopped
+      - name: Restart HBM
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -112,10 +113,12 @@ jobs:
             # Ensure production auth cookie flags exist (do not overwrite other .env keys)
             grep -q '^NODE_ENV=' .env || echo 'NODE_ENV=production' >> .env
             grep -q '^AUTH_COOKIE_SECURE=' .env || echo 'AUTH_COOKIE_SECURE=1' >> .env
-            if ! pm2 describe HBM-Dashboard >/dev/null 2>&1; then
+            if pm2 describe HBM-Dashboard >/dev/null 2>&1; then
+              pm2 restart HBM-Dashboard --update-env
+            else
               PORT=3003 NODE_ENV=production pm2 start server.js --name HBM-Dashboard --node-args='--max-old-space-size=768'
             fi
-            # Only cnl + jmg should be online until cutover
-            pm2 stop HBM-Dashboard
+            sleep 8
+            curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3003/ || true
             pm2 save
             pm2 list
