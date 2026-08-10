@@ -89,7 +89,7 @@ function newId() {
   return crypto.randomUUID();
 }
 
-function publicUser(row, permissions) {
+export function publicUser(row, permissions) {
   if (!row) return null;
   return {
     id: row.id,
@@ -181,9 +181,16 @@ export function saveRoles(roles) {
     const id = String(r.id || '').trim() || `role-${i}-${Date.now().toString(36)}`;
     const name = String(r.name || '').trim();
     if (!name) throw Object.assign(new Error('Role name is required'), { status: 400 });
-    const permissions = Array.isArray(r.permissions)
+    let permissions = Array.isArray(r.permissions)
       ? r.permissions.filter(p => VALID_PERMISSIONS.has(p))
       : [];
+    // Hard floor: Admin role always keeps Settings + User Management (prevents sole-admin lockout)
+    if (id === 'admin') {
+      const required = ['settings', 'user-management'];
+      for (const pid of required) {
+        if (!permissions.includes(pid)) permissions = [...permissions, pid];
+      }
+    }
     return {
       id,
       name,
@@ -191,6 +198,16 @@ export function saveRoles(roles) {
       permissions,
     };
   });
+
+  const adminCapable = normalized.some(r =>
+    r.permissions.includes('user-management') && r.permissions.includes('settings'),
+  );
+  if (!adminCapable) {
+    throw Object.assign(
+      new Error('At least one role must keep Settings and User Management'),
+      { status: 400 },
+    );
+  }
 
   const nextIds = new Set(normalized.map(r => r.id));
   for (const roleId of usedByUsers) {
@@ -300,9 +317,12 @@ export async function updateUser(userId, { name, roleId, status, password }, act
     throw Object.assign(new Error('Invalid role'), { status: 400 });
   }
 
-  // Don't allow disabling the last active admin with user-management
-  if (nextStatus === 'disabled' && user.status === 'active') {
-    assertNotLastAdmin(userId);
+  // Don't allow disabling or demoting the last active admin with user-management
+  if (user.status === 'active') {
+    const losingAdmin =
+      (nextStatus === 'disabled' && user.status === 'active')
+      || (nextRole !== user.role_id && roleHasUserManagement(user.role_id) && !roleHasUserManagement(nextRole));
+    if (losingAdmin) assertNotLastAdmin(userId);
   }
 
   let hash = user.password_hash;
@@ -328,6 +348,10 @@ export async function updateUser(userId, { name, roleId, status, password }, act
   return publicUser(row, getRolePermissions(nextRole));
 }
 
+function roleHasUserManagement(roleId) {
+  return getRolePermissions(roleId).includes('user-management');
+}
+
 function assertNotLastAdmin(userId) {
   const admins = getDb().prepare(`
     SELECT u.id FROM users u
@@ -335,7 +359,7 @@ function assertNotLastAdmin(userId) {
     WHERE rp.permission_id = 'user-management' AND u.status = 'active'
   `).all();
   if (admins.length <= 1 && admins.some(a => a.id === userId)) {
-    throw Object.assign(new Error('Cannot disable the last admin'), { status: 400 });
+    throw Object.assign(new Error('Cannot remove the last admin (disable or change role)'), { status: 400 });
   }
 }
 
@@ -357,7 +381,7 @@ export async function changePassword(userId, currentPassword, newPassword) {
   return { ok: true };
 }
 
-export async function login(email, password) {
+export async function login(email, password, { createSession = true } = {}) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const db = getDb();
   const user = db.prepare(`
@@ -374,18 +398,62 @@ export async function login(email, password) {
   const ok = await bcrypt.compare(String(password || ''), user.password_hash);
   if (!ok) throw Object.assign(new Error('Invalid email or password'), { status: 401 });
 
-  const sessionId = crypto.randomBytes(32).toString('hex');
-  const expires = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
-    .run(sessionId, user.id, expires, nowIso());
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(nowIso(), user.id);
   writeAudit(user.id, 'auth.login', user.id, null);
 
   const permissions = getRolePermissions(user.role_id);
+  const publicUserRow = publicUser({ ...user, last_login_at: nowIso() }, permissions);
+
+  if (!createSession) {
+    return { user: publicUserRow };
+  }
+
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+    .run(sessionId, user.id, expires, nowIso());
+
   return {
     sessionId,
     expiresAt: expires,
-    user: publicUser({ ...user, last_login_at: nowIso() }, permissions),
+    user: publicUserRow,
+  };
+}
+
+/** OAuth sign-in — user must already exist in SQLite (admin-provisioned). */
+export async function loginWithEmail(email, { displayName = null, provider = 'oauth' } = {}) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const db = getDb();
+  const user = db.prepare(`
+    SELECT u.*, r.name AS role_name FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id
+    WHERE u.email = ?
+  `).get(normalizedEmail);
+
+  if (!user || user.status !== 'active') {
+    throw Object.assign(new Error('No active account for this email'), { status: 403 });
+  }
+
+  if (displayName && displayName !== user.name) {
+    db.prepare('UPDATE users SET name = ? WHERE id = ?').run(displayName, user.id);
+    user.name = displayName;
+  }
+
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(nowIso(), user.id);
+  writeAudit(user.id, 'auth.oauth_login', user.id, JSON.stringify({ provider }));
+
+  const permissions = getRolePermissions(user.role_id);
+  const publicUserRow = publicUser({ ...user, last_login_at: nowIso() }, permissions);
+
+  const sessionId = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+    .run(sessionId, user.id, expires, nowIso());
+
+  return {
+    sessionId,
+    expiresAt: expires,
+    user: publicUserRow,
   };
 }
 

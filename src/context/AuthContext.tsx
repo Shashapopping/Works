@@ -4,6 +4,7 @@ import {
   authLogin,
   authLogout,
   authMe,
+  fetchAuthMode,
   permissionForPath,
   type AuthUser,
 } from '../lib/authApi';
@@ -34,6 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
+        await fetchAuthMode();
         const me = await authMe();
         if (!cancelled) setUser(me?.user ?? null);
       } catch {

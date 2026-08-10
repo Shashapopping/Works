@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
 import { useAuth } from '../../context/AuthContext';
-import { permissionForPath } from '../../lib/authApi';
+import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
 
 interface SubItem {
   path: string;
@@ -123,6 +123,8 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
   const { user, hasPermission, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const jwtToken = getAuthMode() === 'jwt' ? getStoredToken() : null;
+  const jwtClaims = jwtToken ? decodeJwtPayload(jwtToken) : null;
 
   const canSeePath = (path: string) => {
     const perm = permissionForPath(path);
@@ -367,6 +369,32 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
           </NavLink>
         )}
 
+        {jwtToken && (
+          <div style={{
+            margin: '8px 10px 0',
+            background: 'rgba(234,179,8,0.1)',
+            border: '0.5px solid rgba(234,179,8,0.35)',
+            borderRadius: 8,
+            padding: '8px 10px',
+            fontSize: 10,
+            color: 'rgba(255,255,255,0.65)',
+            lineHeight: 1.45,
+          }}>
+            <div style={{ fontWeight: 700, color: 'rgba(234,179,8,0.95)', marginBottom: 4 }}>
+              JWT mode (local)
+            </div>
+            {jwtClaims && (
+              <div style={{ fontFamily: 'monospace', fontSize: 9, wordBreak: 'break-all' }}>
+                sub: {String(jwtClaims.sub)}<br />
+                exp: {jwtClaims.exp ? new Date(Number(jwtClaims.exp) * 1000).toLocaleString() : '—'}
+              </div>
+            )}
+            <div style={{ marginTop: 4, opacity: 0.75 }}>
+              Token in localStorage · sent as Authorization: Bearer
+            </div>
+          </div>
+        )}
+
         <div style={{
           margin: '8px 10px 0',
           background: 'rgba(0,120,212,0.12)',
@@ -380,9 +408,16 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             animation: 'aria-pulse 2s ease-in-out infinite',
             flexShrink: 0,
           }} />
-          <span style={{ fontSize: 11, color: 'rgba(0,120,212,0.9)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {user?.name || 'Signed in'}
-          </span>
+          <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
+            <div style={{ fontSize: 11, color: 'rgba(0,120,212,0.9)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user?.name || 'Signed in'}
+            </div>
+            {user?.roleName && (
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {user.roleName}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             style={{

@@ -1,5 +1,6 @@
 import XLSX from 'xlsx-js-style';
 import { displayDriverName } from './driverUtils';
+import { authFetchInit } from './authApi';
 
 export interface LogEntry {
   timestamp: string;
@@ -78,9 +79,8 @@ export async function archiveReportDownload(opts: {
   try {
     const buffer = await opts.blob.arrayBuffer();
     const contentBase64 = arrayBufferToBase64(buffer);
-    const res = await fetch('/api/documents/archive', {
+    const res = await fetch('/api/documents/archive', authFetchInit({
       method: 'POST',
-      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         filename: opts.filename,
@@ -90,7 +90,7 @@ export async function archiveReportDownload(opts: {
         source: 'reports-download',
         meta: opts.meta || null,
       }),
-    });
+    }));
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       console.warn('Documents archive failed:', err?.error || res.status);

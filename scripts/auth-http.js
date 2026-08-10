@@ -6,7 +6,6 @@ import {
   changePassword,
   checkRateLimit,
   createUser,
-  getSessionUser,
   listRoles,
   listUsers,
   login,
@@ -19,6 +18,17 @@ import {
   userHasPermission,
   ACCESS_CATALOG,
 } from './auth.js';
+import {
+  authModeLabel,
+  getRequestUser,
+  isJwtAuthMode,
+  signAccessToken,
+} from './auth-jwt.js';
+import {
+  getOAuthProviderStatus,
+  handleGoogleOAuthCallback,
+  startGoogleOAuth,
+} from './oauth-google.js';
 import { isEmailConfigured } from './email.js';
 import {
   createAutomation,
@@ -71,8 +81,7 @@ function getSessionId(req) {
 }
 
 async function requireUser(req, res, permission) {
-  const sessionId = getSessionId(req);
-  const user = getSessionUser(sessionId);
+  const user = getRequestUser(req);
   if (!user) {
     sendJson(res, 401, { error: 'Unauthorized' });
     return null;
@@ -104,6 +113,26 @@ export async function handleAuthRequest(req, res) {
       handleAuthRequest._bootstrapped = true;
     }
 
+    if (path === '/api/auth/mode' && method === 'GET') {
+      sendJson(res, 200, { mode: authModeLabel() });
+      return true;
+    }
+
+    if (path === '/api/auth/oauth/providers' && method === 'GET') {
+      sendJson(res, 200, getOAuthProviderStatus());
+      return true;
+    }
+
+    if (path === '/api/auth/oauth/google' && method === 'GET') {
+      startGoogleOAuth(req, res);
+      return true;
+    }
+
+    if (path === '/api/auth/oauth/google/callback' && method === 'GET') {
+      await handleGoogleOAuthCallback(req, res);
+      return true;
+    }
+
     if (path === '/api/auth/login' && method === 'POST') {
       const rl = checkRateLimit(clientIp(req), { limit: 15, windowMs: 15 * 60 * 1000 });
       if (!rl.ok) {
@@ -112,23 +141,31 @@ export async function handleAuthRequest(req, res) {
         return true;
       }
       const body = await readBody(req);
-      const result = await login(body.email, body.password);
+      const jwtMode = isJwtAuthMode();
+      const result = await login(body.email, body.password, { createSession: !jwtMode });
+      if (jwtMode) {
+        const token = signAccessToken(result.user);
+        sendJson(res, 200, { user: result.user, token, authMode: 'jwt' });
+        return true;
+      }
       res.setHeader('Set-Cookie', sessionCookieHeader(result.sessionId, { req }));
-      sendJson(res, 200, { user: result.user });
+      sendJson(res, 200, { user: result.user, authMode: 'session' });
       return true;
     }
 
     if (path === '/api/auth/logout' && method === 'POST') {
-      logout(getSessionId(req));
-      res.setHeader('Set-Cookie', sessionCookieHeader('', { clear: true, req }));
+      if (!isJwtAuthMode()) {
+        logout(getSessionId(req));
+        res.setHeader('Set-Cookie', sessionCookieHeader('', { clear: true, req }));
+      }
       sendJson(res, 200, { ok: true });
       return true;
     }
 
     if (path === '/api/auth/me' && method === 'GET') {
-      const user = getSessionUser(getSessionId(req));
+      const user = getRequestUser(req);
       if (!user) { sendJson(res, 401, { error: 'Unauthorized' }); return true; }
-      sendJson(res, 200, { user, accessCatalog: ACCESS_CATALOG });
+      sendJson(res, 200, { user, accessCatalog: ACCESS_CATALOG, authMode: authModeLabel() });
       return true;
     }
 

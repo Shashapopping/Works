@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { fetchOAuthProviders, startGoogleOAuth } from '../lib/authApi';
 import { Lock, Check } from 'lucide-react';
 
 export default function Login() {
@@ -16,6 +17,14 @@ export default function Login() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  useEffect(() => {
+    fetchOAuthProviders().then(p => setGoogleEnabled(p.google)).catch(() => {});
+    const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
+    const oauthErr = params.get('msg');
+    if (params.get('oauth') && oauthErr) setError(oauthErr);
+  }, []);
 
   if (loading) {
     return (
@@ -177,6 +186,38 @@ export default function Login() {
             <button type="submit" className="bpl-btn-primary" disabled={busy} style={{ width: '100%', justifyContent: 'center' }}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
+
+            {googleEnabled && (
+              <>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  color: 'var(--cd-text-muted)', fontSize: 11, margin: '4px 0',
+                }}>
+                  <span style={{ flex: 1, height: 1, background: 'var(--cd-border)' }} />
+                  or
+                  <span style={{ flex: 1, height: 1, background: 'var(--cd-border)' }} />
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => startGoogleOAuth()}
+                  style={{
+                    width: '100%', padding: '10px 12px', borderRadius: 8, fontSize: 14,
+                    border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
+                    color: 'var(--cd-text)', cursor: 'pointer', fontWeight: 600,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+                    <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303C33.654 32.657 29.203 36 24 36c-5.514 0-10-4.486-10-10s4.486-10 10-10c2.841 0 5.406 1.197 7.188 3.113l5.657-5.657C34.046 10.891 29.268 9 24 9 14.611 9 7 16.611 7 26s7.611 17 17 17c9.389 0 17-7.611 17-17 0-1.134-.111-2.242-.389-3.917z"/>
+                    <path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 16.108 18.961 13 24 13c2.841 0 5.406 1.197 7.188 3.113l5.657-5.657C34.046 10.891 29.268 9 24 9 16.318 9 9.656 13.337 6.306 20.309z"/>
+                    <path fill="#4CAF50" d="M24 43c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 43 24 43z"/>
+                    <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.05 12.05 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.111-2.651-.389-3.917z"/>
+                  </svg>
+                  Sign in with Google
+                </button>
+              </>
+            )}
           </form>
         )}
       </div>

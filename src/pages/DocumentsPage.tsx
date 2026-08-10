@@ -11,6 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import FeatureGate from '../components/FeatureGate';
+import { authFetchInit } from '../lib/authApi';
 
 interface DocFolder {
   id: string;
@@ -141,7 +142,7 @@ export default function DocumentsPage() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const loadTree = useCallback(async () => {
-    const res = await fetch('/api/documents/tree', { credentials: 'include' });
+    const res = await fetch('/api/documents/tree', authFetchInit());
     if (!res.ok) throw new Error('Could not load folder tree');
     const data = await res.json();
     const nextTree = (data.tree || []) as DocFolder[];
@@ -156,7 +157,7 @@ export default function DocumentsPage() {
 
   const loadFolder = useCallback(async (id: string | null) => {
     const qs = id ? `?folderId=${encodeURIComponent(id)}` : '';
-    const res = await fetch(`/api/documents${qs}`, { credentials: 'include' });
+    const res = await fetch(`/api/documents${qs}`, authFetchInit());
     if (!res.ok) throw new Error('Could not open folder');
     const data = await res.json();
     setFolderId(data.folder?.id || null);
@@ -216,9 +217,7 @@ export default function DocumentsPage() {
   const downloadFile = async (file: DocFile) => {
     setDownloadingId(file.id);
     try {
-      const res = await fetch(`/api/documents/${encodeURIComponent(file.id)}/download`, {
-        credentials: 'include',
-      });
+      const res = await fetch(`/api/documents/${encodeURIComponent(file.id)}/download`, authFetchInit());
       if (!res.ok) throw new Error('Download failed');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

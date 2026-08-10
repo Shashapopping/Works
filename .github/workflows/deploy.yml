@@ -3,6 +3,7 @@ name: Deploy HBM Dashboard
 # Secrets:
 #   SSH_HOST, SSH_PORT, SSH_USER, SSH_PRIVATE_KEY
 #   VITE_API_SECRET, VITE_ANTHROPIC_API_KEY  (build-time only)
+#   OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET  (runtime, written to droplet .env)
 # Runtime MIX_*/API_SECRET/PORT stay on droplet .env — never rebuild frontend there.
 #
 # Build dist on GitHub → SCP to droplet → git pull + pm2 restart.
@@ -113,6 +114,15 @@ jobs:
             # Ensure production auth cookie flags exist (do not overwrite other .env keys)
             grep -q '^NODE_ENV=' .env || echo 'NODE_ENV=production' >> .env
             grep -q '^AUTH_COOKIE_SECURE=' .env || echo 'AUTH_COOKIE_SECURE=1' >> .env
+            grep -q '^AUTH_MODE=' .env && sed -i 's/^AUTH_MODE=.*/AUTH_MODE=session/' .env || echo 'AUTH_MODE=session' >> .env
+            grep -q '^APP_PUBLIC_URL=' .env && sed -i 's|^APP_PUBLIC_URL=.*|APP_PUBLIC_URL=https://hbm.bestpracticesltd.com.ng|' .env || echo 'APP_PUBLIC_URL=https://hbm.bestpracticesltd.com.ng' >> .env
+            grep -q '^OAUTH_ALLOWED_DOMAINS=' .env || echo 'OAUTH_ALLOWED_DOMAINS=bestpracticesltd.com,bestpracticesltd.com.ng' >> .env
+            if [ -n "${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}" ]; then
+              grep -q '^OAUTH_GOOGLE_CLIENT_ID=' .env && sed -i 's|^OAUTH_GOOGLE_CLIENT_ID=.*|OAUTH_GOOGLE_CLIENT_ID=${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}|' .env || echo 'OAUTH_GOOGLE_CLIENT_ID=${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}' >> .env
+            fi
+            if [ -n "${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}" ]; then
+              grep -q '^OAUTH_GOOGLE_CLIENT_SECRET=' .env && sed -i 's|^OAUTH_GOOGLE_CLIENT_SECRET=.*|OAUTH_GOOGLE_CLIENT_SECRET=${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}|' .env || echo 'OAUTH_GOOGLE_CLIENT_SECRET=${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}' >> .env
+            fi
             if pm2 describe HBM-Dashboard >/dev/null 2>&1; then
               pm2 restart HBM-Dashboard --update-env
             else

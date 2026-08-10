@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, Loader2, Mail, Pause, Play, Send, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { authFetchInit } from '../lib/authApi';
 
 type Frequency = 'daily' | 'weekly' | 'monthly';
 
@@ -47,14 +48,13 @@ function fmtWhen(iso: string | null) {
 }
 
 async function automateFetch(url: string, options: RequestInit = {}) {
-  return fetch(url, {
+  return fetch(url, authFetchInit({
     ...options,
-    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(options.headers || {}),
     },
-  });
+  }));
 }
 
 export default function ReportAutomate() {

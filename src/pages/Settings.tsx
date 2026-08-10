@@ -565,6 +565,7 @@ function PermissionChip({
 }
 
 function RoleSettings() {
+  const { refresh: refreshAuth } = useAuth();
   const [config, setConfig] = useState<RolesConfig>({ roles: [] });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -677,6 +678,8 @@ function RoleSettings() {
           permissions: r.permissions,
         })),
       });
+      // Pick up Settings/sidebar permissions if the signed-in user's role changed
+      await refreshAuth();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {

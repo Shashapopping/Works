@@ -11,6 +11,38 @@ export interface AuthUser {
   createdAt: string;
 }
 
+const JWT_STORAGE_KEY = 'bpl_jwt_token';
+
+let authMode: 'jwt' | 'session' | null = null;
+
+export function getStoredToken(): string | null {
+  try {
+    return localStorage.getItem(JWT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem(JWT_STORAGE_KEY, token);
+    else localStorage.removeItem(JWT_STORAGE_KEY);
+  } catch {
+    /* private browsing */
+  }
+}
+
+export function getAuthMode(): 'jwt' | 'session' | null {
+  return authMode;
+}
+
+export function authFetchInit(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  const token = getStoredToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return { ...init, credentials: 'include', headers };
+}
+
 async function parseJson(res: Response) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -19,10 +51,46 @@ async function parseJson(res: Response) {
   return data;
 }
 
-export async function authMe(): Promise<{ user: AuthUser } | null> {
-  const res = await fetch('/api/auth/me', { credentials: 'include' });
-  if (res.status === 401) return null;
-  return parseJson(res) as Promise<{ user: AuthUser }>;
+export async function fetchAuthMode(): Promise<'jwt' | 'session'> {
+  const res = await fetch('/api/auth/mode');
+  const data = await parseJson(res) as { mode: 'jwt' | 'session' };
+  authMode = data.mode;
+  return data.mode;
+}
+
+export async function fetchOAuthProviders(): Promise<{
+  google: boolean;
+  microsoft: boolean;
+  publicUrl: string | null;
+}> {
+  const res = await fetch('/api/auth/oauth/providers');
+  return parseJson(res) as Promise<{ google: boolean; microsoft: boolean; publicUrl: string | null }>;
+}
+
+export function startGoogleOAuth() {
+  window.location.href = '/api/auth/oauth/google';
+}
+
+/** Decode JWT payload (no signature check — display only). */
+export function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+}
+
+export async function authMe(): Promise<{ user: AuthUser; authMode?: string } | null> {
+  const res = await fetch('/api/auth/me', authFetchInit());
+  if (res.status === 401) {
+    setStoredToken(null);
+    return null;
+  }
+  const data = await parseJson(res) as { user: AuthUser; authMode?: 'jwt' | 'session' };
+  if (data.authMode) authMode = data.authMode;
+  return data;
 }
 
 export async function authLogin(email: string, password: string): Promise<AuthUser> {
@@ -32,41 +100,47 @@ export async function authLogin(email: string, password: string): Promise<AuthUs
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  const data = await parseJson(res) as { user: AuthUser };
+  const data = await parseJson(res) as {
+    user: AuthUser;
+    token?: string;
+    authMode?: 'jwt' | 'session';
+  };
+  if (data.authMode) authMode = data.authMode;
+  if (data.token) setStoredToken(data.token);
+  else setStoredToken(null);
   return data.user;
 }
 
 export async function authLogout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  await fetch('/api/auth/logout', authFetchInit({ method: 'POST' }));
+  setStoredToken(null);
 }
 
 export async function authChangePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const res = await fetch('/api/auth/change-password', {
+  const res = await fetch('/api/auth/change-password', authFetchInit({
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ currentPassword, newPassword }),
-  });
+  }));
   await parseJson(res);
 }
 
 export async function fetchRoles() {
-  const res = await fetch('/api/roles', { credentials: 'include' });
+  const res = await fetch('/api/roles', authFetchInit());
   return parseJson(res) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
 }
 
 export async function putRoles(roles: Array<{ id: string; name: string; desc: string; permissions: string[] }>) {
-  const res = await fetch('/api/roles', {
+  const res = await fetch('/api/roles', authFetchInit({
     method: 'PUT',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ roles }),
-  });
+  }));
   return parseJson(res) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
 }
 
 export async function fetchUsers() {
-  const res = await fetch('/api/users', { credentials: 'include' });
+  const res = await fetch('/api/users', authFetchInit());
   return parseJson(res) as Promise<{ users: AuthUser[]; roles: Array<{ id: string; name: string; desc: string }> }>;
 }
 
@@ -76,12 +150,11 @@ export async function createUserApi(body: {
   password: string;
   roleId: string;
 }) {
-  const res = await fetch('/api/users', {
+  const res = await fetch('/api/users', authFetchInit({
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  }));
   return parseJson(res) as Promise<{
     user: AuthUser & { emailSent?: boolean; emailError?: string | null };
   }>;
@@ -93,12 +166,11 @@ export async function patchUserApi(id: string, body: {
   status?: string;
   password?: string;
 }) {
-  const res = await fetch(`/api/users/${encodeURIComponent(id)}`, {
+  const res = await fetch(`/api/users/${encodeURIComponent(id)}`, authFetchInit({
     method: 'PATCH',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  }));
   return parseJson(res) as Promise<{ user: AuthUser }>;
 }
 
