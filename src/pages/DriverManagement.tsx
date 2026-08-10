@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useDeferredValue } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, ChevronDown, ChevronUp } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
@@ -9,6 +9,9 @@ import {
   type ConsequenceCard,
   type ConsequenceCategory,
 } from '../lib/consequenceScore';
+import { useClientPagination } from '../hooks/useClientPagination';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import PageControls from '../components/PageControls';
 
 const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 
@@ -395,9 +398,13 @@ export default function DriverManagement() {
       .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore || a.consequence.driverScore - b.consequence.driverScore);
   }, [events, statsEvents, tripDrivers]);
 
-  const visible = search
-    ? drivers.filter(d => d.name.toLowerCase().includes(search.toLowerCase()) || d.regNo.toLowerCase().includes(search.toLowerCase()))
+  const debouncedSearch = useDebouncedValue(search, 200);
+  const deferredSearch = useDeferredValue(debouncedSearch);
+  const visible = deferredSearch
+    ? drivers.filter(d => d.name.toLowerCase().includes(deferredSearch.toLowerCase()) || d.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
     : drivers;
+
+  const pagination = useClientPagination(visible, 50);
 
   const toggle = (name: string) => setExpandedDrivers(prev => {
     const n = new Set(prev);
@@ -475,7 +482,7 @@ export default function DriverManagement() {
           <div style={{ textAlign: 'center', padding: '40px', color: 'var(--cd-text-muted)' }}>
             No driver data available
           </div>
-        ) : visible.map(d => (
+        ) : pagination.pageRows.map(d => (
           <DriverCard
             key={d.key}
             driver={d}
@@ -484,6 +491,23 @@ export default function DriverManagement() {
           />
         ))}
       </div>
+
+      {visible.length > 0 && (
+        <div className="bpl-card" style={{ marginTop: 10, padding: 0 }}>
+          <PageControls
+            page={pagination.page}
+            pageCount={pagination.pageCount}
+            from={pagination.from}
+            to={pagination.to}
+            total={pagination.total}
+            hasPrev={pagination.hasPrev}
+            hasNext={pagination.hasNext}
+            onPrev={pagination.prev}
+            onNext={pagination.next}
+            itemLabel="drivers"
+          />
+        </div>
+      )}
     </div>
   );
 }

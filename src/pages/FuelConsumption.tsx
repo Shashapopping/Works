@@ -12,7 +12,6 @@ import {
   type AssetRow,
   type TripRow,
   type RefuelRow,
-  type SuspectDropRow,
   type ConsumptionData,
   type SummaryMetrics,
   buildConsumptionUrl,
@@ -21,7 +20,7 @@ import {
 } from '../lib/fuelConsumption';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
 
-const COL_COUNT = 11;
+const COL_COUNT = 10;
 
 function fmt(n: number | null | undefined, digits = 1) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -89,11 +88,9 @@ function KpiStrip({ summary, initialLoading, scopeLabel }: { summary: SummaryMet
 function AssetDetailPanel({
   trips,
   refuels,
-  suspectDrops,
 }: {
   trips: TripRow[];
   refuels: RefuelRow[];
-  suspectDrops: SuspectDropRow[];
 }) {
   return (
     <div style={{
@@ -131,38 +128,6 @@ function AssetDetailPanel({
                   </tr>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {suspectDrops.length > 0 && (
-        <div style={{ marginBottom: trips.length > 0 ? 16 : 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: '#CC0000', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <AlertTriangle size={13} />
-            Suspect fuel drops ({suspectDrops.length})
-          </div>
-          <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid rgba(204,0,0,0.25)', background: 'var(--cd-surface)' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead>
-                <tr>
-                  {['Start', 'End', 'Duration', 'Before', 'After', 'Drop'].map(h => (
-                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {suspectDrops.map((r, i) => (
-                  <tr key={i} style={{ borderTop: '1px solid var(--cd-border)' }}>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(r.startTime || r.timestamp)}</td>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(r.endTime || r.timestamp)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmtDuration(r.durationMinutes)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(r.beforeLevel, 0)} L</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(r.afterLevel, 0)} L</td>
-                    <td style={{ padding: '6px 10px', color: '#CC0000', fontWeight: 700 }}>−{fmt(r.deltaLiters, 0)} L</td>
-                  </tr>
-                ))}
               </tbody>
             </table>
           </div>
@@ -321,15 +286,6 @@ export default function FuelConsumption() {
     return map;
   }, [data?.refuels]);
 
-  const suspectDropsByAsset = useMemo(() => {
-    const map = new Map<string, SuspectDropRow[]>();
-    (data?.suspectDrops ?? []).forEach(r => {
-      if (!map.has(r.assetId)) map.set(r.assetId, []);
-      map.get(r.assetId)!.push(r);
-    });
-    return map;
-  }, [data?.suspectDrops]);
-
   const siteSummary = useMemo(() => aggregateMetrics(assets), [assets]);
 
   const siteLabel = selectedSite === 'ALL' ? 'All sites' : QUARRY_SITE_LABELS[selectedSite];
@@ -463,7 +419,7 @@ export default function FuelConsumption() {
             <thead>
               <tr style={{ background: 'var(--cd-surface-2)', textAlign: 'left' }}>
                 <th style={{ padding: '10px 8px', width: 28 }} />
-                {['Reg', 'Site', 'Trips', 'Fuel (est.)', 'Distance', 'Duration', 'L/km', 'L/h', 'Refuels', 'Suspect drops'].map(h => (
+                {['Reg', 'Site', 'Trips', 'Fuel (est.)', 'Distance', 'Duration', 'L/km', 'L/h', 'Refuels'].map(h => (
                   <th key={h} style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--cd-text-muted)' }}>{h}</th>
                 ))}
               </tr>
@@ -479,7 +435,6 @@ export default function FuelConsumption() {
                 const isExpanded = expandedAssetId === a.assetId;
                 const assetTrips = (tripsByAsset.get(a.assetId) ?? []).slice(0, 25);
                 const assetRefuels = refuelsByAsset.get(a.assetId) ?? [];
-                const assetSuspectDrops = suspectDropsByAsset.get(a.assetId) ?? [];
                 const isLinked = linkedAssetId === a.assetId;
                 return (
                   <Fragment key={a.assetId}>
@@ -515,21 +470,11 @@ export default function FuelConsumption() {
                           </span>
                         ) : '0'}
                       </td>
-                      <td style={{ padding: '8px 12px' }}>
-                        {a.suspectDropCount > 0 ? (
-                          <span style={{ color: '#CC0000', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
-                            <AlertTriangle size={12} />
-                            {a.suspectDropCount === 1
-                              ? `${fmt(a.suspectDropLiters, 0)} L`
-                              : `${a.suspectDropCount} drops`}
-                          </span>
-                        ) : '0'}
-                      </td>
                     </tr>
                     {isExpanded && (
                       <tr>
                         <td colSpan={COL_COUNT} style={{ padding: 0 }}>
-                          <AssetDetailPanel trips={assetTrips} refuels={assetRefuels} suspectDrops={assetSuspectDrops} />
+                          <AssetDetailPanel trips={assetTrips} refuels={assetRefuels} />
                         </td>
                       </tr>
                     )}

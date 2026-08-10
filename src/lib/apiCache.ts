@@ -16,7 +16,7 @@ export const CACHE_TTL = {
   fleetMeta: 8_000,
   fleetEvents: 12_000,
   kpi: 5 * 60_000,
-  /** Heavy: scans fuel-history.log for refill/drop + trip fuel. */
+  /** Heavy: scans fuel-history for refill + trip fuel. */
   fuelConsumption: 60_000,
   fuelHistory: 45_000,
 } as const;

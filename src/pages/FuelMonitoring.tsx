@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Truck, Activity, Fuel, Wifi, WifiOff, ChevronDown, MapPin, AlertTriangle } from 'lucide-react';
+import { Truck, Activity, Fuel, Wifi, WifiOff, ChevronDown, MapPin } from 'lucide-react';
 import { useFleet, type Vehicle } from '../context/FleetContext';
 import type { ConsumptionData, AssetRow } from '../lib/fuelConsumption';
 import FuelChart, {
@@ -138,13 +138,6 @@ export default function FuelMonitoring() {
     return row.refuelCount === 1 ? `${row.refuelLiters.toFixed(0)} L` : `${row.refuelCount} refills`;
   };
 
-  const dropDisplay = (row?: AssetRow) => {
-    if (!row?.suspectDropCount) return '—';
-    return row.suspectDropCount === 1
-      ? `${row.suspectDropLiters.toFixed(0)} L`
-      : `${row.suspectDropCount} drops`;
-  };
-
   const periodShort = { day: '24h', week: '7d', month: '30d' }[eventsPeriod];
 
   return (
@@ -228,7 +221,7 @@ export default function FuelMonitoring() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', fontWeight: 600 }}>Refills / drops:</span>
+              <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', fontWeight: 600 }}>Refills:</span>
               <div style={{ display: 'flex', gap: 3, background: 'var(--cd-surface-2)', padding: 3, borderRadius: 8 }}>
                 {(['day', 'week', 'month'] as const).map(p => (
                   <button
@@ -265,7 +258,7 @@ export default function FuelMonitoring() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: 'var(--cd-surface-2)', position: 'sticky', top: 0, zIndex: 1 }}>
-                    {['Reg No', 'Asset', 'Status', 'Signal', 'Fuel', `Refill (${periodShort})`, `Drop (${periodShort})`].map(h => (
+                    {['Reg No', 'Asset', 'Status', 'Signal', 'Fuel', `Refill (${periodShort})`].map(h => (
                       <th key={h} style={{
                         padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 700,
                         textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap',
@@ -334,24 +327,6 @@ export default function FuelMonitoring() {
                               title="Open refill details"
                             >
                               {refuelDisplay(events)}
-                            </button>
-                          ) : '—'}
-                        </td>
-                        <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>
-                          {events?.suspectDropCount ? (
-                            <button
-                              type="button"
-                              onClick={e => { e.stopPropagation(); openFuelDetail(v); }}
-                              style={{
-                                display: 'inline-flex', alignItems: 'center', gap: 4,
-                                border: 'none', borderRadius: 6, padding: '4px 7px',
-                                background: 'rgba(204,0,0,0.09)', color: '#CC0000',
-                                fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                              }}
-                              title="Open suspect fuel-drop details"
-                            >
-                              <AlertTriangle size={11} />
-                              {dropDisplay(events)}
                             </button>
                           ) : '—'}
                         </td>

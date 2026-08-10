@@ -12,7 +12,7 @@ import {
 
 export type FuelPeriod = PeriodMode;
 
-/** Shared cached load for refill / drop / trip-fuel payloads. */
+/** Shared cached load for refill / trip-fuel payloads. */
 export async function fetchFuelConsumptionCached(
   url: string,
   opts?: { force?: boolean },

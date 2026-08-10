@@ -11,8 +11,6 @@ import { getFuelHistory, getTripsInRange } from './db.js';
 
 const REFUEL_LITERS = 50;
 const REFUEL_WINDOW_MS = 30 * 60 * 1000;
-const SUSPECT_DROP_LITERS = 30;
-const SUSPECT_DROP_WINDOW_MS = 30 * 60 * 1000;
 const FUEL_MATCH_MS = 15 * 60 * 1000;
 const RESULT_CACHE_TTL_MS = 30_000;
 const resultCache = new Map();
@@ -150,62 +148,6 @@ function detectRefuels(byAsset, start, end) {
   return refuels;
 }
 
-function detectSuspectDrops(byAsset, start, end) {
-  const drops = [];
-
-  byAsset.forEach((rows, assetId) => {
-    const sorted = rows.filter(e => e.eventType === FUEL_EVENT_TYPE.FIVE_MIN);
-    for (let i = 1; i < sorted.length; i++) {
-      const prev = sorted[i - 1];
-      const cur = sorted[i];
-      if (cur.ms < start || prev.ms > end) continue;
-      const delta = prev.level - cur.level;
-      const dt = cur.ms - prev.ms;
-      if (!(delta >= SUSPECT_DROP_LITERS && dt > 0 && dt <= SUSPECT_DROP_WINDOW_MS)) continue;
-
-      // Probe noise / slosh heuristics (not a sustained siphon):
-      // 1) next tick rebounds ≥35% of the drop
-      // 2) prior tick was an upward spike, then level returns near the pre-spike baseline
-      // 3) sub‑2‑minute cliff (single bad sample between ticks)
-      const next = sorted[i + 1];
-      const prev2 = sorted[i - 2];
-      let likelyNoise = false;
-      if (dt < 2 * 60 * 1000) {
-        likelyNoise = true;
-      }
-      if (!likelyNoise && next) {
-        const t2 = next.ms;
-        const rebound = next.level - cur.level;
-        if (t2 - cur.ms > 0 && t2 - cur.ms <= SUSPECT_DROP_WINDOW_MS && rebound >= delta * 0.35) {
-          likelyNoise = true;
-        }
-      }
-      if (!likelyNoise && prev2) {
-        const spike = prev.level - prev2.level;
-        const backToBaseline = Math.abs(prev2.level - cur.level);
-        if (spike >= SUSPECT_DROP_LITERS * 0.5 && backToBaseline <= delta * 0.4) {
-          likelyNoise = true;
-        }
-      }
-
-      // Skip noise entirely — only confirmed suspects leave the engine
-      if (likelyNoise) continue;
-
-      drops.push({
-        assetId,
-        timestamp: cur.timestamp,
-        startTime: prev.timestamp,
-        endTime: cur.timestamp,
-        durationMinutes: Math.max(1, Math.round(dt / 60_000)),
-        beforeLevel: prev.level,
-        afterLevel: cur.level,
-        deltaLiters: delta,
-      });
-    }
-  });
-  return drops;
-}
-
 function periodFuelDrop(rows, start, end) {
   if (!rows?.length) return 0;
   const inWindow = rows.filter(e => e.ms >= start && e.ms <= end);
@@ -271,9 +213,7 @@ export function computeConsumption({
   );
 
   const refuels = detectRefuels(fuelByAsset, start, end);
-  const suspectDrops = detectSuspectDrops(fuelByAsset, start, end);
   const refuelsByAsset = groupByAssetId(refuels);
-  const dropsByAsset = groupByAssetId(suspectDrops);
 
   const startFuelTypes = new Set([FUEL_EVENT_TYPE.TRIP_START, FUEL_EVENT_TYPE.FIVE_MIN]);
   const endFuelTypes = new Set([FUEL_EVENT_TYPE.TRIP_END, FUEL_EVENT_TYPE.FIVE_MIN]);
@@ -324,7 +264,6 @@ export function computeConsumption({
   quarryAssetIds.forEach(assetId => {
     const info = vehicles.get(assetId) || {};
     const assetRefuels = refuelsByAsset.get(assetId) || [];
-    const assetDrops = dropsByAsset.get(assetId) || [];
     assetMap.set(assetId, {
       assetId,
       regNo: info.regNo || assetId,
@@ -337,8 +276,6 @@ export function computeConsumption({
       periodFuelLiters: periodFuelDrop(fuelByAsset.get(assetId), start, end),
       refuelCount: assetRefuels.length,
       refuelLiters: assetRefuels.reduce((sum, r) => sum + r.deltaLiters, 0),
-      suspectDropCount: assetDrops.length,
-      suspectDropLiters: assetDrops.reduce((sum, r) => sum + r.deltaLiters, 0),
     });
   });
 
@@ -392,13 +329,11 @@ export function computeConsumption({
       totalDrivingHours,
       tripCount: tripRows.length,
       refuelCount: refuels.length,
-      suspectDropCount: suspectDrops.length,
     },
     dailySeries,
     assets,
     trips: tripRows.sort((a, b) => new Date(b.tripEnd).getTime() - new Date(a.tripEnd).getTime()),
     refuels: refuels.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
-    suspectDrops: suspectDrops.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     siteTotals: Object.values(siteTotals).sort((a, b) => a.zone.localeCompare(b.zone)),
   };
 

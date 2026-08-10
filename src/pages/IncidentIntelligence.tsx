@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, ClipboardCheck } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
@@ -15,6 +15,9 @@ import {
 } from '../lib/consequenceScore';
 import MixEventInsightsGrid from '../components/MixEventInsightsGrid';
 import { brandLabel, eventLocationLabel } from '../lib/branding';
+import { useClientPagination } from '../hooks/useClientPagination';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import PageControls from '../components/PageControls';
 
 type Tab = 'events' | 'by-driver' | 'trends' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -66,14 +69,16 @@ function EventsTab({ events }: { events: LogEntry[] }) {
       : 'All';
   const [search, setSearch] = useState('');
   const [eventFilter, setEventFilter] = useState<EventFilter>(initialFilter);
+  const debouncedSearch = useDebouncedValue(search, 200);
+  const deferredSearch = useDeferredValue(debouncedSearch);
 
   const filtered = events.filter(e => {
     if (e.type === 'panic') return false;
     const label = getLabel(e);
     if (HIDDEN_LABELS.includes(label)) return false;
     if (eventFilter !== 'All' && label !== eventFilter) return false;
-    if (search) {
-      const s = search.toLowerCase();
+    if (deferredSearch) {
+      const s = deferredSearch.toLowerCase();
       return (
         (e.driverName || '').toLowerCase().includes(s) ||
         (e.regNo || '').toLowerCase().includes(s) ||
@@ -83,6 +88,8 @@ function EventsTab({ events }: { events: LogEntry[] }) {
     }
     return true;
   });
+
+  const pagination = useClientPagination(filtered, 100);
 
   return (
     <div>
@@ -137,7 +144,7 @@ function EventsTab({ events }: { events: LogEntry[] }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.slice(0, 100).map((e, i) => {
+            {pagination.pageRows.map((e, i) => {
               const label = getLabel(e);
               const color = EVENT_COLORS[label] || 'var(--cd-text-muted)';
               return (
@@ -171,6 +178,18 @@ function EventsTab({ events }: { events: LogEntry[] }) {
             No events match your filters
           </div>
         )}
+        <PageControls
+          page={pagination.page}
+          pageCount={pagination.pageCount}
+          from={pagination.from}
+          to={pagination.to}
+          total={pagination.total}
+          hasPrev={pagination.hasPrev}
+          hasNext={pagination.hasNext}
+          onPrev={pagination.prev}
+          onNext={pagination.next}
+          itemLabel="events"
+        />
       </div>
     </div>
   );

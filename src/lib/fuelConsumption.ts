@@ -17,8 +17,6 @@ export interface AssetRow {
   periodFuelLiters: number;
   refuelCount: number;
   refuelLiters: number;
-  suspectDropCount: number;
-  suspectDropLiters: number;
   litersPerKm: number | null;
   litersPerHour: number | null;
 }
@@ -50,18 +48,11 @@ export interface RefuelRow {
   deltaLiters: number;
 }
 
-export interface SuspectDropRow extends RefuelRow {
-  /** True when the next 5‑min probe tick rebounds ≥50% of the drop (probe noise / slosh). */
-  likelyNoise?: boolean;
-  nextLevel?: number | null;
-}
-
 export interface ConsumptionData {
   period: { start: string; end: string };
   assets: AssetRow[];
   trips: TripRow[];
   refuels?: RefuelRow[];
-  suspectDrops?: SuspectDropRow[];
   dailySeries?: { date?: string; day?: string; label: string; liters: number }[];
   summary?: {
     totalFuelLiters: number;
@@ -69,7 +60,6 @@ export interface ConsumptionData {
     totalDrivingHours?: number;
     tripCount?: number;
     refuelCount?: number;
-    suspectDropCount?: number;
   };
 }
 

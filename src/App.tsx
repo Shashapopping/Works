@@ -1,34 +1,48 @@
+import { lazy, Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { FleetProvider } from './context/FleetContext';
 import AppShell from './components/layout/AppShell';
 import RequireAuth from './components/RequireAuth';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import FleetPage from './pages/FleetPage';
-import DispatchPage from './pages/DispatchPage';
-import TripsPage from './pages/TripsPage';
-import AiInsightsPage from './pages/AiInsightsPage';
-import ReportsPage from './pages/ReportsPage';
-import DocumentsPage from './pages/DocumentsPage';
-import DriverManagement from './pages/DriverManagement';
-import IncidentIntelligence from './pages/IncidentIntelligence';
-import Safety from './pages/Safety';
-import Settings from './pages/Settings';
-import Maintenance from './pages/Maintenance';
-import Tankers from './pages/Tankers';
-import Quarry from './pages/Quarry';
-import Cement from './pages/Cement';
-import ReadyMix from './pages/ReadyMix';
-import FuelMonitoring from './pages/FuelMonitoring';
-import FuelConsumption from './pages/FuelConsumption';
-import OperationalKpi from './pages/OperationalKpi';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const FleetPage = lazy(() => import('./pages/FleetPage'));
+const DispatchPage = lazy(() => import('./pages/DispatchPage'));
+const TripsPage = lazy(() => import('./pages/TripsPage'));
+const AiInsightsPage = lazy(() => import('./pages/AiInsightsPage'));
+const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
+const DriverManagement = lazy(() => import('./pages/DriverManagement'));
+const CoachingPage = lazy(() => import('./pages/driver/CoachingPage'));
+const TrainingPage = lazy(() => import('./pages/driver/TrainingPage'));
+const CertificatesPage = lazy(() => import('./pages/driver/CertificatesPage'));
+const IncidentIntelligence = lazy(() => import('./pages/IncidentIntelligence'));
+const Safety = lazy(() => import('./pages/Safety'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Maintenance = lazy(() => import('./pages/Maintenance'));
+const Tankers = lazy(() => import('./pages/Tankers'));
+const Quarry = lazy(() => import('./pages/Quarry'));
+const Cement = lazy(() => import('./pages/Cement'));
+const ReadyMix = lazy(() => import('./pages/ReadyMix'));
+const FuelMonitoring = lazy(() => import('./pages/FuelMonitoring'));
+const FuelConsumption = lazy(() => import('./pages/FuelConsumption'));
+const OperationalKpi = lazy(() => import('./pages/OperationalKpi'));
+
+function PageLoading() {
+  return (
+    <div style={{ padding: 40, textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
+      Loading…
+    </div>
+  );
+}
 
 export default function App() {
   return (
     <AuthProvider>
       <FleetProvider>
         <HashRouter>
+          <Suspense fallback={<PageLoading />}>
           <Routes>
             <Route path="/login" element={<Login />} />
 
@@ -38,6 +52,9 @@ export default function App() {
                 <Route path="/fleet" element={<FleetPage />} />
 
                 <Route path="/drivers" element={<DriverManagement />} />
+                <Route path="/drivers/coaching" element={<CoachingPage />} />
+                <Route path="/drivers/training" element={<TrainingPage />} />
+                <Route path="/drivers/certifications" element={<CertificatesPage />} />
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
 
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
@@ -84,6 +101,7 @@ export default function App() {
               </Route>
             </Route>
           </Routes>
+          </Suspense>
         </HashRouter>
       </FleetProvider>
     </AuthProvider>

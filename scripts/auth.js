@@ -99,10 +99,35 @@ export function publicUser(row, permissions) {
     roleName: row.role_name || null,
     status: row.status,
     mustChangePassword: !!row.must_change_password,
+    isOrganisational: !!row.is_organisational,
     permissions: permissions || [],
     lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at,
   };
+}
+
+export const CLIENT_SEAT_LIMIT = Math.max(
+  1,
+  parseInt(process.env.CLIENT_SEAT_LIMIT || '3', 10) || 3,
+);
+
+export function isOrganisationalUser(userOrRow) {
+  if (!userOrRow) return false;
+  if (typeof userOrRow.isOrganisational === 'boolean') return userOrRow.isOrganisational;
+  return !!userOrRow.is_organisational;
+}
+
+export function countClientSeats() {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS c FROM users
+    WHERE status = 'active' AND COALESCE(is_organisational, 0) = 0
+  `).get();
+  return row?.c || 0;
+}
+
+export function getSeatInfo() {
+  const used = countClientSeats();
+  return { used, limit: CLIENT_SEAT_LIMIT, remaining: Math.max(0, CLIENT_SEAT_LIMIT - used) };
 }
 
 export function seedRolesIfNeeded() {
@@ -238,21 +263,24 @@ export function saveRoles(roles) {
   return listRoles();
 }
 
-export function listUsers() {
+export function listUsers({ scope = 'client' } = {}) {
   const rows = getDb().prepare(`
     SELECT u.*, r.name AS role_name
     FROM users u
     LEFT JOIN roles r ON r.id = u.role_id
     ORDER BY u.created_at DESC
   `).all();
-  return rows.map(r => publicUser(r, getRolePermissions(r.role_id)));
+  const mapped = rows.map(r => publicUser(r, getRolePermissions(r.role_id)));
+  if (scope === 'all') return mapped;
+  return mapped.filter(u => !u.isOrganisational);
 }
 
-export async function createUser({ email, name, password, roleId, actorId }) {
+export async function createUser({ email, name, password, roleId, actorId, isOrganisational = false }) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const displayName = String(name || '').trim();
   const role = String(roleId || '').trim();
   const pwd = String(password || '');
+  const orgFlag = !!isOrganisational;
 
   if (!normalizedEmail || !normalizedEmail.includes('@')) {
     throw Object.assign(new Error('Valid email is required'), { status: 400 });
@@ -267,14 +295,24 @@ export async function createUser({ email, name, password, roleId, actorId }) {
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
   if (existing) throw Object.assign(new Error('A user with that email already exists'), { status: 409 });
 
+  if (!orgFlag) {
+    const seats = getSeatInfo();
+    if (seats.used >= seats.limit) {
+      throw Object.assign(
+        new Error(`License limit reached — this package includes ${seats.limit} user seats`),
+        { status: 402, code: 'seat_limit', limit: seats.limit, used: seats.used, upgrade: true },
+      );
+    }
+  }
+
   const id = newId();
   const hash = await bcrypt.hash(pwd, BCRYPT_ROUNDS);
   db.prepare(`
-    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, created_at)
-    VALUES (?, ?, ?, ?, ?, 'active', 1, ?)
-  `).run(id, normalizedEmail, displayName, hash, role, nowIso());
+    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, is_organisational, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?)
+  `).run(id, normalizedEmail, displayName, hash, role, orgFlag ? 1 : 0, nowIso());
 
-  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role });
+  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role, isOrganisational: orgFlag });
   const row = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
     LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
@@ -300,7 +338,7 @@ export async function createUser({ email, name, password, roleId, actorId }) {
   return { ...created, emailSent: !!emailResult.sent, emailError: emailResult.error || null };
 }
 
-export async function updateUser(userId, { name, roleId, status, password }, actorId) {
+export async function updateUser(userId, { name, roleId, status, password, isOrganisational }, actorId) {
   const db = getDb();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -308,6 +346,7 @@ export async function updateUser(userId, { name, roleId, status, password }, act
   const nextName = name !== undefined ? String(name).trim() : user.name;
   const nextRole = roleId !== undefined ? String(roleId).trim() : user.role_id;
   const nextStatus = status !== undefined ? String(status).trim() : user.status;
+  const nextOrg = isOrganisational !== undefined ? (!!isOrganisational ? 1 : 0) : (user.is_organisational || 0);
 
   if (!nextName) throw Object.assign(new Error('Name is required'), { status: 400 });
   if (!['active', 'disabled'].includes(nextStatus)) {
@@ -325,6 +364,19 @@ export async function updateUser(userId, { name, roleId, status, password }, act
     if (losingAdmin) assertNotLastAdmin(userId);
   }
 
+  // Becoming a client seat (org → non-org, or enabling a non-org user) must respect seat limit
+  const wasClientSeat = user.status === 'active' && !user.is_organisational;
+  const willBeClientSeat = nextStatus === 'active' && !nextOrg;
+  if (willBeClientSeat && !wasClientSeat) {
+    const seats = getSeatInfo();
+    if (seats.used >= seats.limit) {
+      throw Object.assign(
+        new Error(`License limit reached — this package includes ${seats.limit} user seats`),
+        { status: 402, code: 'seat_limit', limit: seats.limit, used: seats.used, upgrade: true },
+      );
+    }
+  }
+
   let hash = user.password_hash;
   let mustChange = user.must_change_password;
   if (password !== undefined && password !== null && String(password).length > 0) {
@@ -336,11 +388,11 @@ export async function updateUser(userId, { name, roleId, status, password }, act
   }
 
   db.prepare(`
-    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?
+    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?, is_organisational = ?
     WHERE id = ?
-  `).run(nextName, nextRole, nextStatus, hash, mustChange, userId);
+  `).run(nextName, nextRole, nextStatus, hash, mustChange, nextOrg, userId);
 
-  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus });
+  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus, isOrganisational: !!nextOrg });
   const row = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
     LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?

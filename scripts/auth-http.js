@@ -6,6 +6,8 @@ import {
   changePassword,
   checkRateLimit,
   createUser,
+  getSeatInfo,
+  isOrganisationalUser,
   listRoles,
   listUsers,
   login,
@@ -18,6 +20,7 @@ import {
   userHasPermission,
   ACCESS_CATALOG,
 } from './auth.js';
+import { getDb } from './db.js';
 import {
   authModeLabel,
   getRequestUser,
@@ -45,6 +48,14 @@ import {
   resolveDownload,
 } from './documents.js';
 import fs from 'fs';
+
+function actorCanManageOrg(user) {
+  if (isOrganisationalUser(user)) return true;
+  const orgCount = getDb().prepare(`
+    SELECT COUNT(*) AS c FROM users WHERE COALESCE(is_organisational, 0) = 1
+  `).get()?.c || 0;
+  return orgCount === 0 && userHasPermission(user, 'user-management');
+}
 
 function sendJson(res, status, body) {
   res.statusCode = status;
@@ -197,7 +208,16 @@ export async function handleAuthRequest(req, res) {
     if (path === '/api/users' && method === 'GET') {
       const user = await requireUser(req, res, 'user-management');
       if (!user) return true;
-      sendJson(res, 200, { users: listUsers(), roles: listRoles() });
+      const scope = url.searchParams.get('scope') === 'all' ? 'all' : 'client';
+      if (scope === 'all' && !actorCanManageOrg(user)) {
+        sendJson(res, 403, { error: 'Full user list is restricted to organisational accounts' });
+        return true;
+      }
+      sendJson(res, 200, {
+        users: listUsers({ scope }),
+        roles: listRoles(),
+        seats: getSeatInfo(),
+      });
       return true;
     }
 
@@ -210,14 +230,34 @@ export async function handleAuthRequest(req, res) {
         return true;
       }
       const body = await readBody(req);
-      const created = await createUser({
-        email: body.email,
-        name: body.name,
-        password: body.password,
-        roleId: body.roleId,
-        actorId: user.id,
-      });
-      sendJson(res, 201, { user: created });
+      const wantOrg = !!body.isOrganisational;
+      if (wantOrg && !actorCanManageOrg(user)) {
+        sendJson(res, 403, { error: 'Only organisational accounts can create internal users' });
+        return true;
+      }
+      try {
+        const created = await createUser({
+          email: body.email,
+          name: body.name,
+          password: body.password,
+          roleId: body.roleId,
+          actorId: user.id,
+          isOrganisational: wantOrg,
+        });
+        sendJson(res, 201, { user: created, seats: getSeatInfo() });
+      } catch (e) {
+        if (e?.code === 'seat_limit' || e?.status === 402) {
+          sendJson(res, 402, {
+            error: e.message,
+            code: 'seat_limit',
+            limit: e.limit,
+            used: e.used,
+            upgrade: true,
+          });
+          return true;
+        }
+        throw e;
+      }
       return true;
     }
 
@@ -226,8 +266,26 @@ export async function handleAuthRequest(req, res) {
       const actor = await requireUser(req, res, 'user-management');
       if (!actor) return true;
       const body = await readBody(req);
-      const updated = await updateUser(decodeURIComponent(userMatch[1]), body, actor.id);
-      sendJson(res, 200, { user: updated });
+      if (body.isOrganisational !== undefined && !actorCanManageOrg(actor)) {
+        sendJson(res, 403, { error: 'Only organisational accounts can change the organisational flag' });
+        return true;
+      }
+      try {
+        const updated = await updateUser(decodeURIComponent(userMatch[1]), body, actor.id);
+        sendJson(res, 200, { user: updated, seats: getSeatInfo() });
+      } catch (e) {
+        if (e?.code === 'seat_limit' || e?.status === 402) {
+          sendJson(res, 402, {
+            error: e.message,
+            code: 'seat_limit',
+            limit: e.limit,
+            used: e.used,
+            upgrade: true,
+          });
+          return true;
+        }
+        throw e;
+      }
       return true;
     }
 

@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useState, useDeferredValue } from 'react';
 import { Wrench, Clock, AlertTriangle, Plus, Calendar, Search, ChevronRight, CheckCircle } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import FeatureGate from '../components/FeatureGate';
+import { useClientPagination } from '../hooks/useClientPagination';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import PageControls from '../components/PageControls';
 
 const DEMO_SERVICE: Record<string, { lastService: string; intervalDays: number; tech?: string; inProgress?: boolean; progress?: number }> = {
   'AAB428XC': { lastService: '2025-12-10', intervalDays: 90 },
@@ -49,6 +52,8 @@ type ServiceFilter = 'all' | 'overdue' | 'due-soon' | 'in-progress' | 'on-track'
 export default function Maintenance() {
   const { vehicles } = useFleet();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 200);
+  const deferredSearch = useDeferredValue(debouncedSearch);
   const [serviceFilter, setServiceFilter] = useState<ServiceFilter>('all');
   const [scheduleVehicle, setScheduleVehicle] = useState<any>(null);
 
@@ -64,8 +69,8 @@ export default function Maintenance() {
     if (serviceFilter === 'in-progress' && svc.label !== 'In Progress') return false;
     if (serviceFilter === 'on-track' && svc.label !== 'On Track') return false;
     if (serviceFilter === 'no-record' && svc.label !== 'No Record') return false;
-    if (search) {
-      const s = search.toLowerCase();
+    if (deferredSearch) {
+      const s = deferredSearch.toLowerCase();
       return (
         v.regNo?.toLowerCase().includes(s) ||
         v.assetName?.toLowerCase().includes(s) ||
@@ -76,6 +81,8 @@ export default function Maintenance() {
     }
     return true;
   });
+
+  const pagination = useClientPagination(filtered, 50);
 
   return (
     <FeatureGate featureId="maintenance">
@@ -166,7 +173,7 @@ export default function Maintenance() {
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 200).map((v, i) => {
+              {pagination.pageRows.map((v, i) => {
                 const svc = getServiceStatus(v.regNo);
                 const record = DEMO_SERVICE[v.regNo];
                 return (
@@ -220,16 +227,23 @@ export default function Maintenance() {
               })}
             </tbody>
           </table>
-          {filtered.length > 200 && (
-            <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--cd-text-muted)', borderTop: '1px solid var(--cd-border)' }}>
-              Showing 200 of {filtered.length.toLocaleString()} assets
-            </div>
-          )}
           {filtered.length === 0 && (
             <div style={{ padding: '40px', textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
               No assets match your search
             </div>
           )}
+          <PageControls
+            page={pagination.page}
+            pageCount={pagination.pageCount}
+            from={pagination.from}
+            to={pagination.to}
+            total={pagination.total}
+            hasPrev={pagination.hasPrev}
+            hasNext={pagination.hasNext}
+            onPrev={pagination.prev}
+            onNext={pagination.next}
+            itemLabel="assets"
+          />
         </div>
       </div>
 

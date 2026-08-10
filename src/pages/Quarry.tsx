@@ -88,9 +88,9 @@ export default function Quarry() {
   );
   const fuelSummary = useMemo(() => aggregateMetrics(quarryFuelRows), [quarryFuelRows]);
   const fuelByZone = useMemo(() => {
-    const out: Record<QuarrySiteKey, { liters: number; distance: number; refuels: number; drops: number }> = {
-      'QUARRY EWEKORO': { liters: 0, distance: 0, refuels: 0, drops: 0 },
-      'QUARRY MFAMOSING': { liters: 0, distance: 0, refuels: 0, drops: 0 },
+    const out: Record<QuarrySiteKey, { liters: number; distance: number; refuels: number }> = {
+      'QUARRY EWEKORO': { liters: 0, distance: 0, refuels: 0 },
+      'QUARRY MFAMOSING': { liters: 0, distance: 0, refuels: 0 },
     };
     for (const a of quarryFuelRows) {
       const z = (a.zone || '').toUpperCase() as QuarrySiteKey;
@@ -98,7 +98,6 @@ export default function Quarry() {
       out[z].liters += a.totalFuelLiters;
       out[z].distance += a.totalDistanceKm;
       out[z].refuels += a.refuelCount;
-      out[z].drops += a.suspectDropCount;
     }
     return out;
   }, [quarryFuelRows]);
@@ -116,26 +115,6 @@ export default function Quarry() {
       .sort((a, b) => a.level - b.level);
   }, [fleet]);
   const lowFuel = probeLive.filter(p => p.level > 0 && p.level < 150).slice(0, 4);
-  const theftEvents = useMemo(() => {
-    const byId = new Map(quarryFuelRows.map(a => [a.assetId, a]));
-    return (fuelData?.suspectDrops ?? [])
-      .filter(d => {
-        if (!byId.has(d.assetId)) return false;
-        if (d.likelyNoise) return false;
-        // Guard stale cache: single-sample cliffs that rebound are not theft
-        if (d.nextLevel != null && d.deltaLiters > 0 && (d.nextLevel - d.afterLevel) >= d.deltaLiters * 0.35) {
-          return false;
-        }
-        if ((d.durationMinutes ?? 99) <= 1 && d.deltaLiters >= 100) return false;
-        return true;
-      })
-      .map(d => ({
-        ...d,
-        regNo: byId.get(d.assetId)?.regNo ?? d.assetId,
-        zone: byId.get(d.assetId)?.zone ?? '',
-      }));
-  }, [fuelData, quarryFuelRows]);
-  const displayedTheftCount = theftEvents.length;
   const maxZoneFuel = Math.max(
     fuelByZone['QUARRY EWEKORO'].liters,
     fuelByZone['QUARRY MFAMOSING'].liters,
@@ -344,7 +323,6 @@ export default function Quarry() {
               {[
                 { label: 'L / hour', value: fmtRatio(fuelSummary.litersPerHour), icon: Activity, color: '#0891b2' },
                 { label: 'Refuels', value: String(fuelSummary.refuels), icon: Droplets, color: '#d97706' },
-                { label: 'Theft', value: String(displayedTheftCount), icon: AlertTriangle, color: displayedTheftCount > 0 ? '#CC0000' : '#6B7A8D' },
                 { label: 'Probes live', value: String(probeLive.length), icon: Gauge, color: '#0d9488' },
               ].map(m => (
                 <div key={m.label} style={{
@@ -358,48 +336,6 @@ export default function Quarry() {
                   <div style={{ fontSize: 18, fontWeight: 700, color: m.color, fontFamily: 'var(--cd-font-display)' }}>{m.value}</div>
                 </div>
               ))}
-            </div>
-
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--cd-border)' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)', marginBottom: 8 }}>
-                Theft detail
-              </div>
-              {theftEvents.length === 0 ? (
-                <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', padding: '8px 0' }}>
-                  No suspected theft today
-                </div>
-              ) : (
-                theftEvents.slice(0, 6).map((d, i) => {
-                  const when = d.startTime || d.timestamp;
-                  const timeLabel = when
-                    ? new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                    : '—';
-                  return (
-                    <div
-                      key={`${d.assetId}-${d.timestamp}-${i}`}
-                      style={{
-                        padding: '10px 12px', marginBottom: 8, borderRadius: 10,
-                        border: '1px solid rgba(204,0,0,0.28)',
-                        background: 'rgba(204,0,0,0.06)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-                        <span style={{ fontWeight: 700, fontSize: 12, color: 'var(--cd-text)' }}>{d.regNo}</span>
-                        <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#CC0000' }}>
-                          Suspected
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--cd-text)' }}>
-                        <strong style={{ color: '#CC0000' }}>−{Math.round(d.deltaLiters)} L</strong>
-                        {' '}{Math.round(d.beforeLevel)} → {Math.round(d.afterLevel)} L
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 3 }}>
-                        {timeLabel} · {d.durationMinutes ?? '—'} min · {QUARRY_SITE_LABELS[d.zone as QuarrySiteKey] || d.zone}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
             </div>
 
             <div style={{ marginTop: 18 }}>

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Link, useBlocker } from 'react-router-dom';
+import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import {
   DEFAULT_FLEET_SCORE_CONFIG,
@@ -21,14 +21,17 @@ import {
   type RolesConfig,
 } from '../lib/roleConfig';
 import {
+  ApiError,
   createUserApi,
   fetchRoles,
   fetchUsers,
   patchUserApi,
   putRoles,
   type AuthUser,
+  type SeatInfo,
 } from '../lib/authApi';
 import { useAuth } from '../context/AuthContext';
+import LicenseUpgradeModal from '../components/LicenseUpgradeModal';
 
 type Tab = 'general' | 'thresholds' | 'roles' | 'users' | 'dev';
 
@@ -567,6 +570,7 @@ function PermissionChip({
 function RoleSettings() {
   const { refresh: refreshAuth } = useAuth();
   const [config, setConfig] = useState<RolesConfig>({ roles: [] });
+  const [baseline, setBaseline] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saved, setSaved] = useState(false);
@@ -576,20 +580,26 @@ function RoleSettings() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState({ name: '', desc: '' });
 
+  const serialize = (roles: RoleDefinition[]) => JSON.stringify(
+    roles.map(r => ({ id: r.id, name: r.name, desc: r.desc, permissions: [...r.permissions].sort() })),
+  );
+
+  const dirty = !loading && baseline !== '' && serialize(config.roles) !== baseline;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const data = await fetchRoles();
         if (!cancelled) {
-          setConfig({
-            roles: data.roles.map(r => ({
-              id: r.id,
-              name: r.name,
-              desc: r.desc,
-              permissions: r.permissions,
-            })),
-          });
+          const roles = data.roles.map(r => ({
+            id: r.id,
+            name: r.name,
+            desc: r.desc,
+            permissions: r.permissions,
+          }));
+          setConfig({ roles });
+          setBaseline(serialize(roles));
         }
       } catch (e) {
         if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load roles');
@@ -599,6 +609,24 @@ function RoleSettings() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
+
+  const blocker = useBlocker(dirty);
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    const leave = window.confirm('You have unsaved role changes. Leave without saving?');
+    if (leave) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
 
   const assignPermission = (roleId: string, permissionId: string, fromRoleId: string | null) => {
     setConfig(prev => ({
@@ -668,17 +696,27 @@ function RoleSettings() {
 
   const save = async () => {
     setSaveError('');
+    // Flush in-progress name/desc edit into config before persist
+    let rolesToSave = config.roles;
+    if (editingId) {
+      rolesToSave = config.roles.map(r =>
+        r.id === editingId
+          ? { ...r, name: editDraft.name.trim() || r.name, desc: editDraft.desc.trim() }
+          : r,
+      );
+      setConfig({ roles: rolesToSave });
+      setEditingId(null);
+    }
     try {
-      const data = await putRoles(config.roles);
-      setConfig({
-        roles: data.roles.map(r => ({
-          id: r.id,
-          name: r.name,
-          desc: r.desc,
-          permissions: r.permissions,
-        })),
-      });
-      // Pick up Settings/sidebar permissions if the signed-in user's role changed
+      const data = await putRoles(rolesToSave);
+      const roles = data.roles.map(r => ({
+        id: r.id,
+        name: r.name,
+        desc: r.desc,
+        permissions: r.permissions,
+      }));
+      setConfig({ roles });
+      setBaseline(serialize(roles));
       await refreshAuth();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -907,6 +945,11 @@ function RoleSettings() {
 
           <div style={{ padding: '12px 16px', background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 10, fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.5 }}>
             Roles are stored on the server and enforced for every signed-in user. Assign people to roles under Settings → Users.
+            {dirty && (
+              <div style={{ marginTop: 8, color: '#b45309', fontWeight: 600 }}>
+                Unsaved changes — click Save roles before leaving this page or they will be lost.
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingBottom: 4 }}>
@@ -921,7 +964,7 @@ function RoleSettings() {
               Reset defaults
             </button>
             <button className="bpl-btn-primary" onClick={save}>
-              {saved ? <><Check size={14} /> Saved</> : 'Save roles'}
+              {saved ? <><Check size={14} /> Saved</> : dirty ? 'Save roles*' : 'Save roles'}
             </button>
           </div>
         </div>
@@ -934,16 +977,19 @@ function UserSettings() {
   const { user: me } = useAuth();
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [roles, setRoles] = useState<Array<{ id: string; name: string; desc: string }>>([]);
+  const [seats, setSeats] = useState<SeatInfo>({ used: 0, limit: 3, remaining: 3 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [form, setForm] = useState({ name: '', email: '', password: '', roleId: 'view-only' });
   const [creating, setCreating] = useState(false);
   const [createdTemp, setCreatedTemp] = useState<{ email: string; password: string; emailSent?: boolean; emailError?: string | null } | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const reload = async () => {
-    const data = await fetchUsers();
+    const data = await fetchUsers('client');
     setUsers(data.users);
     setRoles(data.roles);
+    if (data.seats) setSeats(data.seats);
     if (!form.roleId && data.roles[0]) {
       setForm(p => ({ ...p, roleId: data.roles[0].id }));
     }
@@ -963,8 +1009,14 @@ function UserSettings() {
     return () => { cancelled = true; };
   }, []);
 
+  const atLimit = seats.used >= seats.limit;
+
   const onCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (atLimit) {
+      setUpgradeOpen(true);
+      return;
+    }
     setError('');
     setCreatedTemp(null);
     setCreating(true);
@@ -977,9 +1029,17 @@ function UserSettings() {
         emailError: (result.user as AuthUser & { emailError?: string | null }).emailError ?? null,
       });
       setForm({ name: '', email: '', password: '', roleId: form.roleId || 'view-only' });
+      if (result.seats) setSeats(result.seats);
       await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Create failed');
+      if (err instanceof ApiError && (err.code === 'seat_limit' || err.status === 402)) {
+        if (err.used != null && err.limit != null) {
+          setSeats({ used: err.used, limit: err.limit, remaining: Math.max(0, err.limit - err.used) });
+        }
+        setUpgradeOpen(true);
+      } else {
+        setError(err instanceof Error ? err.message : 'Create failed');
+      }
     } finally {
       setCreating(false);
     }
@@ -988,10 +1048,15 @@ function UserSettings() {
   const setStatus = async (u: AuthUser, status: 'active' | 'disabled') => {
     setError('');
     try {
-      await patchUserApi(u.id, { status });
+      const result = await patchUserApi(u.id, { status });
+      if (result.seats) setSeats(result.seats);
       await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Update failed');
+      if (err instanceof ApiError && (err.code === 'seat_limit' || err.status === 402)) {
+        setUpgradeOpen(true);
+      } else {
+        setError(err instanceof Error ? err.message : 'Update failed');
+      }
     }
   };
 
@@ -1009,6 +1074,33 @@ function UserSettings() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <LicenseUpgradeModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        used={seats.used}
+        limit={seats.limit}
+      />
+
+      <div className="bpl-card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)' }}>User seats</div>
+          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 2 }}>
+            {seats.used} of {seats.limit} seats used
+            {atLimit ? ' — upgrade to add more' : ''}
+          </div>
+        </div>
+        <div style={{
+          minWidth: 120, height: 8, borderRadius: 999, background: 'var(--cd-surface-2)', overflow: 'hidden',
+          border: '1px solid var(--cd-border)',
+        }}>
+          <div style={{
+            width: `${Math.min(100, (seats.used / Math.max(1, seats.limit)) * 100)}%`,
+            height: '100%',
+            background: atLimit ? '#dc2626' : 'var(--bpl-blue)',
+          }} />
+        </div>
+      </div>
+
       <div className="bpl-card" style={{ padding: 20 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
           Create user
@@ -1018,125 +1110,246 @@ function UserSettings() {
         </div>
         <form onSubmit={onCreate} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div>
-            <label style={labelStyle}>Full name</label>
-            <input style={fieldStyle} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} required />
+            <label style={labelStyle}>Name</label>
+            <input style={fieldStyle} required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
           </div>
           <div>
             <label style={labelStyle}>Email</label>
-            <input type="email" style={fieldStyle} value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} required />
+            <input style={fieldStyle} type="email" required value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} />
           </div>
           <div>
             <label style={labelStyle}>Temporary password</label>
-            <input style={fieldStyle} value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} required minLength={8} />
+            <input style={fieldStyle} type="text" required minLength={8} value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} />
           </div>
           <div>
             <label style={labelStyle}>Role</label>
             <select style={fieldStyle} value={form.roleId} onChange={e => setForm(p => ({ ...p, roleId: e.target.value }))}>
-              {roles.map(r => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
+              {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
-          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="submit" className="bpl-btn-primary" disabled={creating}>
-              {creating ? 'Creating…' : 'Create account'}
+          <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button
+              type={atLimit ? 'button' : 'submit'}
+              className="bpl-btn-primary"
+              disabled={creating}
+              onClick={atLimit ? () => setUpgradeOpen(true) : undefined}
+            >
+              {creating ? 'Creating…' : atLimit ? 'Upgrade to add users' : 'Create user'}
             </button>
+            {error && <span style={{ fontSize: 12, color: '#dc2626' }}>{error}</span>}
           </div>
         </form>
         {createdTemp && (
-          <div style={{
-            marginTop: 14, padding: '10px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
-            background: 'var(--bpl-blue-soft)', border: '1px solid var(--bpl-blue)', color: 'var(--cd-text)',
-          }}>
-            Account created for <strong>{createdTemp.email}</strong>.
-            {createdTemp.emailSent
-              ? ' Invite email sent with the temporary password.'
-              : ` Email not sent${createdTemp.emailError ? ` (${createdTemp.emailError})` : ''} — share the temporary password securely.`}
-            {' '}They will be prompted to change it on first sign-in.
+          <div style={{ marginTop: 14, padding: 12, background: 'var(--cd-surface-2)', borderRadius: 8, fontSize: 12, color: 'var(--cd-text-muted)' }}>
+            Created <strong style={{ color: 'var(--cd-text)' }}>{createdTemp.email}</strong>
+            {createdTemp.emailSent ? ' — invite email sent.' : ` — temp password: ${createdTemp.password}`}
+            {createdTemp.emailError && <div style={{ color: '#b45309', marginTop: 4 }}>Email: {createdTemp.emailError}</div>}
           </div>
         )}
       </div>
 
-      {error && (
-        <div style={{ fontSize: 12, color: '#dc2626', padding: '10px 12px', borderRadius: 8, background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)' }}>
-          {error}
+      <div className="bpl-card" style={{ padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 12, fontFamily: 'var(--cd-font-display)' }}>
+          People ({users.length})
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {users.map(u => (
+            <div key={u.id} style={{
+              display: 'grid', gridTemplateColumns: '1.4fr 1.2fr 1fr auto', gap: 10, alignItems: 'center',
+              padding: '10px 12px', borderRadius: 8, border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)' }}>{u.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{u.email}</div>
+              </div>
+              <select
+                style={{ ...fieldStyle, padding: '6px 10px' }}
+                value={u.roleId}
+                disabled={u.id === me?.id}
+                onChange={e => setRole(u, e.target.value)}
+              >
+                {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              <div style={{ fontSize: 12, color: u.status === 'active' ? '#059669' : 'var(--cd-text-muted)' }}>
+                {u.status}
+              </div>
+              <button
+                type="button"
+                disabled={u.id === me?.id}
+                onClick={() => setStatus(u, u.status === 'active' ? 'disabled' : 'active')}
+                style={{
+                  padding: '6px 10px', borderRadius: 7, fontSize: 12, cursor: u.id === me?.id ? 'not-allowed' : 'pointer',
+                  border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: 'var(--cd-text-muted)',
+                }}
+              >
+                {u.status === 'active' ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+          ))}
+          {users.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>No client users yet.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlatformUsersDev() {
+  const { user: me } = useAuth();
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [roles, setRoles] = useState<Array<{ id: string; name: string; desc: string }>>([]);
+  const [seats, setSeats] = useState<SeatInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({
+    name: '', email: '', password: '', roleId: 'admin', isOrganisational: true,
+  });
+  const [creating, setCreating] = useState(false);
+  const [canManageOrg, setCanManageOrg] = useState(!!me?.isOrganisational);
+
+  const reload = useCallback(async () => {
+    try {
+      const data = await fetchUsers('all');
+      setUsers(data.users);
+      setRoles(data.roles);
+      if (data.seats) setSeats(data.seats);
+      setCanManageOrg(true);
+    } catch {
+      const data = await fetchUsers('client');
+      setUsers(data.users);
+      setRoles(data.roles);
+      if (data.seats) setSeats(data.seats);
+      setCanManageOrg(!!me?.isOrganisational);
+    }
+  }, [me?.isOrganisational]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await reload();
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load users');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reload]);
+
+  const onCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canManageOrg) {
+      setError('Sign in with an organisational account to manage platform users');
+      return;
+    }
+    setError('');
+    setCreating(true);
+    try {
+      await createUserApi(form);
+      setForm({ name: '', email: '', password: '', roleId: form.roleId, isOrganisational: form.isOrganisational });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Create failed');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleOrg = async (u: AuthUser) => {
+    setError('');
+    try {
+      await patchUserApi(u.id, { isOrganisational: !u.isOrganisational });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed');
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="bpl-card" style={{ padding: 20, marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+          Platform users
+        </div>
+        <span title="Organisational accounts are internal Best Practices Ltd users. They stay hidden from Settings → Users and do not use a client seat." style={{ display: 'inline-flex', color: 'var(--cd-text-muted)', cursor: 'help' }}>
+          <Info size={14} />
+        </span>
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 14, lineHeight: 1.5 }}>
+        Full account list (including internal organisational users). Mark accounts as <strong style={{ color: 'var(--cd-text)' }}>Organisational</strong> so they do not appear on the public Users table and do not consume a client seat.
+        {seats && <> Client seats in use: {seats.used}/{seats.limit}.</>}
+      </p>
+
+      {!canManageOrg && (
+        <div style={{ fontSize: 12, color: '#b45309', marginBottom: 12 }}>
+          Your signed-in account is not marked organisational — mark it here once (via another org admin) or promote it in Dev after first bootstrap. Scope=all requires an organisational actor.
         </div>
       )}
 
-      <div className="bpl-card" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--cd-border)', fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
-          People ({users.length})
-        </div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--cd-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Name</th>
-                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Email</th>
-                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Role</th>
-                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Status</th>
-                <th style={{ padding: '10px 16px', fontWeight: 700 }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map(u => (
-                <tr key={u.id} style={{ borderTop: '1px solid var(--cd-border)' }}>
-                  <td style={{ padding: '12px 16px', color: 'var(--cd-text)', fontWeight: 500 }}>
-                    {u.name}{me?.id === u.id ? ' (you)' : ''}
-                  </td>
-                  <td style={{ padding: '12px 16px', color: 'var(--cd-text-muted)' }}>{u.email}</td>
-                  <td style={{ padding: '12px 16px' }}>
-                    <select
-                      style={{ ...fieldStyle, width: 'auto', minWidth: 140, padding: '6px 10px' }}
-                      value={u.roleId}
-                      onChange={e => setRole(u, e.target.value)}
-                    >
-                      {roles.map(r => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td style={{ padding: '12px 16px' }}>
-                    <span style={{
-                      fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 9999,
-                      background: u.status === 'active' ? 'rgba(22,163,74,0.12)' : 'rgba(220,38,38,0.1)',
-                      color: u.status === 'active' ? '#16a34a' : '#dc2626',
-                    }}>
-                      {u.status}{u.mustChangePassword ? ' · must change password' : ''}
-                    </span>
-                  </td>
-                  <td style={{ padding: '12px 16px' }}>
-                    {u.status === 'active' ? (
-                      <button
-                        type="button"
-                        disabled={me?.id === u.id}
-                        onClick={() => setStatus(u, 'disabled')}
-                        style={{
-                          padding: '5px 10px', borderRadius: 7, fontSize: 12, cursor: me?.id === u.id ? 'not-allowed' : 'pointer',
-                          border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: '#dc2626',
-                          opacity: me?.id === u.id ? 0.4 : 1,
-                        }}
-                      >
-                        Disable
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setStatus(u, 'active')}
-                        style={{
-                          padding: '5px 10px', borderRadius: 7, fontSize: 12, cursor: 'pointer',
-                          border: '1px solid var(--cd-border)', background: 'var(--cd-surface)', color: '#16a34a',
-                        }}
-                      >
-                        Enable
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {canManageOrg && (
+        <form onSubmit={onCreate} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+          <input style={fieldStyle} placeholder="Name" required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+          <input style={fieldStyle} type="email" placeholder="Email" required value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} />
+          <input style={fieldStyle} placeholder="Temp password (8+)" required minLength={8} value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} />
+          <select style={fieldStyle} value={form.roleId} onChange={e => setForm(p => ({ ...p, roleId: e.target.value }))}>
+            {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--cd-text)', gridColumn: '1 / -1' }}>
+            <input
+              type="checkbox"
+              checked={form.isOrganisational}
+              onChange={e => setForm(p => ({ ...p, isOrganisational: e.target.checked }))}
+            />
+            Organisational (internal)
+            <span title="Internal Best Practices Ltd account. Hidden from Settings → Users. Visible only in Dev. Does not use a client seat." style={{ display: 'inline-flex', color: 'var(--cd-text-muted)', cursor: 'help' }}>
+              <Info size={13} />
+            </span>
+          </label>
+          <button type="submit" className="bpl-btn-primary" disabled={creating} style={{ justifySelf: 'start' }}>
+            {creating ? 'Creating…' : 'Create platform user'}
+          </button>
+        </form>
+      )}
+
+      {error && <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 10 }}>{error}</div>}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {users.map(u => (
+          <div key={u.id} style={{
+            display: 'grid', gridTemplateColumns: '1.5fr 1fr auto', gap: 10, alignItems: 'center',
+            padding: '10px 12px', borderRadius: 8, border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
+          }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)' }}>
+                {u.name}
+                {u.isOrganisational && (
+                  <span style={{
+                    marginLeft: 8, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+                    color: '#0078D4', textTransform: 'uppercase',
+                  }}>Org</span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{u.email} · {u.roleName || u.roleId} · {u.status}</div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cd-text)', cursor: canManageOrg ? 'pointer' : 'not-allowed' }}>
+              <input
+                type="checkbox"
+                checked={!!u.isOrganisational}
+                disabled={!canManageOrg || u.id === me?.id && !!u.isOrganisational && users.filter(x => x.isOrganisational).length <= 1}
+                onChange={() => toggleOrg(u)}
+              />
+              Organisational
+              <span title="Internal account — won't show on the public Users table unless you're in Dev." style={{ display: 'inline-flex', color: 'var(--cd-text-muted)', cursor: 'help' }}>
+                <Info size={12} />
+              </span>
+            </label>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{u.isOrganisational ? 'Hidden from client Users' : 'Client seat'}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1205,6 +1418,7 @@ export default function Settings({ tab }: { tab: Tab }) {
       {tab === 'dev' && (
         <DevGate>
           <APISettings />
+          <PlatformUsersDev />
         </DevGate>
       )}
     </div>

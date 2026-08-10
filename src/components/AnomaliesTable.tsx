@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useDeferredValue } from 'react';
 import { Search, ChevronLeft, ChevronRight, WifiOff, AlertTriangle } from 'lucide-react';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
 interface Warning {
   eventId: string;
@@ -120,6 +121,8 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
     return cached ?? [];
   });
   const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 200);
+  const deferredSearchTerm = useDeferredValue(debouncedSearchTerm);
   const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.fleetData));
   const [currentPage, setCurrentPage] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
@@ -264,9 +267,9 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
 
   const filteredAnomalies = sortedAnomalies.filter(anomaly => {
     const matchesSearch =
-      anomaly.regNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      anomaly.assetName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      anomaly.transporter.toLowerCase().includes(searchTerm.toLowerCase());
+      anomaly.regNo.toLowerCase().includes(deferredSearchTerm.toLowerCase()) ||
+      anomaly.assetName.toLowerCase().includes(deferredSearchTerm.toLowerCase()) ||
+      anomaly.transporter.toLowerCase().includes(deferredSearchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'All' || anomaly.status === statusFilter
       || (statusFilter === 'Inactive' && anomaly.status === 'Offline');
     return matchesSearch && matchesStatus;
@@ -277,7 +280,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
   const endIndex = startIndex + ITEMS_PER_PAGE;
   const currentPageItems = filteredAnomalies.slice(startIndex, endIndex);
 
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, statusFilter]);
+  useEffect(() => { setCurrentPage(1); }, [deferredSearchTerm, statusFilter]);
 
   const handleRefresh = async () => {
     setRefreshing(true);

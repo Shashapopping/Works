@@ -145,6 +145,7 @@ function initSchema() {
       role_id TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       must_change_password INTEGER NOT NULL DEFAULT 0,
+      is_organisational INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       last_login_at TEXT,
       FOREIGN KEY (role_id) REFERENCES roles(id)
@@ -221,6 +222,21 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_document_files_folder ON document_files(folder_id);
     CREATE INDEX IF NOT EXISTS idx_document_files_created ON document_files(created_at);
   `);
+
+  // Migrations for existing DBs
+  const userCols = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
+  if (!userCols.includes('is_organisational')) {
+    db.exec(`ALTER TABLE users ADD COLUMN is_organisational INTEGER NOT NULL DEFAULT 0`);
+  }
+  // Keep known BPL / bootstrap accounts organisational (idempotent)
+  db.prepare(`
+    UPDATE users SET is_organisational = 1
+    WHERE COALESCE(is_organisational, 0) = 0
+      AND (
+        lower(email) LIKE '%bestpracticesltd.com%'
+        OR lower(email) = 'admin@hbm.local'
+      )
+  `).run();
 }
 
 export function withTransaction(fn) {

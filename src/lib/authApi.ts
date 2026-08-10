@@ -6,9 +6,34 @@ export interface AuthUser {
   roleName: string | null;
   status: string;
   mustChangePassword: boolean;
+  isOrganisational?: boolean;
   permissions: string[];
   lastLoginAt: string | null;
   createdAt: string;
+}
+
+export interface SeatInfo {
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  limit?: number;
+  used?: number;
+  upgrade?: boolean;
+
+  constructor(message: string, opts: { status: number; code?: string; limit?: number; used?: number; upgrade?: boolean }) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = opts.status;
+    this.code = opts.code;
+    this.limit = opts.limit;
+    this.used = opts.used;
+    this.upgrade = opts.upgrade;
+  }
 }
 
 const JWT_STORAGE_KEY = 'bpl_jwt_token';
@@ -44,9 +69,21 @@ export function authFetchInit(init: RequestInit = {}): RequestInit {
 }
 
 async function parseJson(res: Response) {
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json().catch(() => ({})) as {
+    error?: string;
+    code?: string;
+    limit?: number;
+    used?: number;
+    upgrade?: boolean;
+  };
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || res.statusText || 'Request failed');
+    throw new ApiError(data.error || res.statusText || 'Request failed', {
+      status: res.status,
+      code: data.code,
+      limit: data.limit,
+      used: data.used,
+      upgrade: data.upgrade,
+    });
   }
   return data;
 }
@@ -139,9 +176,14 @@ export async function putRoles(roles: Array<{ id: string; name: string; desc: st
   return parseJson(res) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
 }
 
-export async function fetchUsers() {
-  const res = await fetch('/api/users', authFetchInit());
-  return parseJson(res) as Promise<{ users: AuthUser[]; roles: Array<{ id: string; name: string; desc: string }> }>;
+export async function fetchUsers(scope: 'client' | 'all' = 'client') {
+  const qs = scope === 'all' ? '?scope=all' : '';
+  const res = await fetch(`/api/users${qs}`, authFetchInit());
+  return parseJson(res) as Promise<{
+    users: AuthUser[];
+    roles: Array<{ id: string; name: string; desc: string }>;
+    seats: SeatInfo;
+  }>;
 }
 
 export async function createUserApi(body: {
@@ -149,6 +191,7 @@ export async function createUserApi(body: {
   name: string;
   password: string;
   roleId: string;
+  isOrganisational?: boolean;
 }) {
   const res = await fetch('/api/users', authFetchInit({
     method: 'POST',
@@ -157,6 +200,7 @@ export async function createUserApi(body: {
   }));
   return parseJson(res) as Promise<{
     user: AuthUser & { emailSent?: boolean; emailError?: string | null };
+    seats?: SeatInfo;
   }>;
 }
 
@@ -165,13 +209,14 @@ export async function patchUserApi(id: string, body: {
   roleId?: string;
   status?: string;
   password?: string;
+  isOrganisational?: boolean;
 }) {
   const res = await fetch(`/api/users/${encodeURIComponent(id)}`, authFetchInit({
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }));
-  return parseJson(res) as Promise<{ user: AuthUser }>;
+  return parseJson(res) as Promise<{ user: AuthUser; seats?: SeatInfo }>;
 }
 
 /** Map app paths to permission ids */

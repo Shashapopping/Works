@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Users,
+  LayoutDashboard, Users, User, GraduationCap, Award, BadgeCheck,
   AlertTriangle, Search, ListChecks, TrendingUp,
   Shield, Wrench, FileBarChart2, Folder, BarChart3, Fuel,
   Truck, Map, Navigation, Route, Brain, Lock, Gauge,
@@ -32,7 +32,15 @@ interface NavGroup {
 const NAV: NavGroup[] = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/fleet', icon: Map, label: 'Fleet' },
-  { path: '/drivers', icon: Users, label: 'Driver Management' },
+  {
+    path: '/drivers', icon: Users, label: 'Driver Management',
+    children: [
+      { path: '/drivers', label: 'Drivers', icon: User },
+      { path: '/drivers/coaching', label: 'Coaching', icon: GraduationCap },
+      { path: '/drivers/training', label: 'Training', icon: Award },
+      { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
+    ],
+  },
   {
     path: '/incidents', icon: AlertTriangle, label: 'Incident Intelligence',
     children: [
