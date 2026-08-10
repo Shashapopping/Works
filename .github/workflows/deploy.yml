@@ -116,7 +116,7 @@ jobs:
             grep -q '^AUTH_COOKIE_SECURE=' .env || echo 'AUTH_COOKIE_SECURE=1' >> .env
             grep -q '^AUTH_MODE=' .env && sed -i 's/^AUTH_MODE=.*/AUTH_MODE=session/' .env || echo 'AUTH_MODE=session' >> .env
             grep -q '^APP_PUBLIC_URL=' .env && sed -i 's|^APP_PUBLIC_URL=.*|APP_PUBLIC_URL=https://hbm.bestpracticesltd.com.ng|' .env || echo 'APP_PUBLIC_URL=https://hbm.bestpracticesltd.com.ng' >> .env
-            grep -q '^OAUTH_ALLOWED_DOMAINS=' .env || echo 'OAUTH_ALLOWED_DOMAINS=bestpracticesltd.com,bestpracticesltd.com.ng' >> .env
+            grep -q '^OAUTH_ALLOWED_DOMAINS=' .env && sed -i 's|^OAUTH_ALLOWED_DOMAINS=.*|OAUTH_ALLOWED_DOMAINS=bestpracticesltd.com,bestpracticesltd.com.ng,gmail.com|' .env || echo 'OAUTH_ALLOWED_DOMAINS=bestpracticesltd.com,bestpracticesltd.com.ng,gmail.com' >> .env
             if [ -n "${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}" ]; then
               grep -q '^OAUTH_GOOGLE_CLIENT_ID=' .env && sed -i 's|^OAUTH_GOOGLE_CLIENT_ID=.*|OAUTH_GOOGLE_CLIENT_ID=${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}|' .env || echo 'OAUTH_GOOGLE_CLIENT_ID=${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}' >> .env
             fi
