@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Gauge, AlertTriangle, Zap, Eye, Search, Truck } from 'lucide-react';
+import { Gauge, AlertTriangle, Search, Truck } from 'lucide-react';
 import { authFetch } from '../context/FleetContext';
 import {
   type KpiPeriodMode,
@@ -30,12 +30,6 @@ function fmtHours(h: number | null | undefined) {
   return `${h.toFixed(1)} h`;
 }
 
-function fmtDate(iso: string | null) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
 function pctColor(pct: number | null) {
   if (pct == null) return 'var(--cd-text-muted)';
   if (pct >= 60) return '#16a34a';
@@ -56,13 +50,6 @@ function PctBar({ pct }: { pct: number | null }) {
     </div>
   );
 }
-
-const FATIGUE_LABELS: Record<string, { label: string; color: string }> = {
-  fatigue_yawning: { label: 'Yawning', color: '#d97706' },
-  fatigue_eye_closing: { label: 'Eye Closing', color: '#dc2626' },
-  distraction: { label: 'Distraction', color: '#7c3aed' },
-  phone_distraction: { label: 'Phone Use', color: '#0078D4' },
-};
 
 export default function OperationalKpi() {
   const [scope, setScope] = useState<KpiScope>('quarry');
@@ -141,8 +128,6 @@ export default function OperationalKpi() {
   }, [data?.assets, search, sortKey, sortDesc]);
 
   const hasLoadData = (data?.assets ?? []).some(a => a.loadCount > 0);
-  const fatigueDrivers = data?.fatigue.drivers ?? [];
-  const fatigueEvents = data?.fatigue.events ?? [];
 
   const toggleSort = (key: keyof KpiAssetRow) => {
     if (sortKey === key) setSortDesc(d => !d);
@@ -156,7 +141,6 @@ export default function OperationalKpi() {
     { label: 'Loaded duration', value: fmtHours(summary?.totalLoadedHours ?? 0), hint: 'From loaded-truck events', tip: KPI_DEFINITIONS.loadedDuration },
     { label: 'Harsh braking', value: String(summary?.harshBrakingTotal ?? 0), hint: 'Event count', tip: KPI_DEFINITIONS.harshBraking },
     { label: 'Overspeeding', value: String(summary?.overspeedTotal ?? 0), hint: `${fmtHours(summary?.overspeedHoursTotal ?? 0)} duration`, tip: KPI_DEFINITIONS.overspeeding },
-    { label: 'Fatigue events', value: String(summary?.fatigueEventTotal ?? 0), hint: `${summary?.yawningTotal ?? 0} yawning`, tip: KPI_DEFINITIONS.fatigue },
   ];
 
   const columns: { key: keyof KpiAssetRow; label: string; tip?: string }[] = [
@@ -169,7 +153,6 @@ export default function OperationalKpi() {
     { key: 'availabilityPct', label: 'Availability', tip: KPI_DEFINITIONS.availability },
     { key: 'harshBrakingCount', label: 'Harsh braking', tip: KPI_DEFINITIONS.harshBraking },
     { key: 'overspeedCount', label: 'Overspeed', tip: KPI_DEFINITIONS.overspeeding },
-    { key: 'yawningCount', label: 'Fatigue', tip: KPI_DEFINITIONS.fatigue },
   ];
 
   return (
@@ -180,7 +163,7 @@ export default function OperationalKpi() {
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 20 }}>
         Utilization = how much the truck was actually working while it was in use (operational time ÷ available engine time).
-        Availability = engine runtime vs hours in the selected period. Harsh braking, overspeeding and fatigue come from MiX event telemetry.
+        Availability = engine runtime vs hours in the selected period. Harsh braking and overspeeding come from MiX event telemetry.
       </p>
 
       {/* Controls */}
@@ -350,95 +333,11 @@ export default function OperationalKpi() {
                       </span>
                     ) : '0'}
                   </td>
-                  <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
-                    {(a.yawningCount + a.eyeClosingCount + a.distractionCount + a.phoneDistractionCount) > 0 ? (
-                      <span style={{ color: '#7c3aed', fontWeight: 600 }}>
-                        {a.yawningCount + a.eyeClosingCount + a.distractionCount + a.phoneDistractionCount}
-                        {a.yawningCount > 0 && (
-                          <span style={{ fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 6, fontSize: 11 }}>
-                            {a.yawningCount} yawn
-                          </span>
-                        )}
-                      </span>
-                    ) : '0'}
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </div>
-
-      {/* Fatigue management */}
-      <div>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--cd-text)', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Eye size={15} color="#7c3aed" />
-          Fatigue management
-          <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 4 }}>
-            MiX Vision in-cab camera events — yawning, eye closing, distraction, phone use
-          </span>
-        </div>
-
-        {fatigueDrivers.length === 0 ? (
-          <div style={{
-            padding: '18px 16px', borderRadius: 10, border: '1px dashed var(--cd-border)',
-            fontSize: 12, color: 'var(--cd-text-muted)', textAlign: 'center',
-          }}>
-            No fatigue events recorded in this period. Events appear here as soon as MiX Vision
-            fatigue telemetry (yawning / eye closing) is received.
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
-            <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--cd-border)' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: 'var(--cd-surface-2)', textAlign: 'left' }}>
-                    {['Driver', 'Yawning', 'Eye Closing', 'Distraction', 'Phone', 'Total', 'Last event'].map(h => (
-                      <th key={h} style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {fatigueDrivers.map((d, i) => (
-                    <tr key={d.driverId ?? i} style={{ borderTop: '1px solid var(--cd-border)' }}>
-                      <td style={{ padding: '8px 12px', fontWeight: 600, whiteSpace: 'nowrap' }} title={d.vehicles.join(', ')}>{d.driverName}</td>
-                      <td style={{ padding: '8px 12px', color: d.yawningCount > 0 ? '#d97706' : undefined }}>{d.yawningCount}</td>
-                      <td style={{ padding: '8px 12px', color: d.eyeClosingCount > 0 ? '#dc2626' : undefined }}>{d.eyeClosingCount}</td>
-                      <td style={{ padding: '8px 12px' }}>{d.distractionCount}</td>
-                      <td style={{ padding: '8px 12px' }}>{d.phoneDistractionCount}</td>
-                      <td style={{ padding: '8px 12px', fontWeight: 700 }}>{d.totalEvents}</td>
-                      <td style={{ padding: '8px 12px', whiteSpace: 'nowrap', color: 'var(--cd-text-muted)' }}>{fmtDate(d.lastEventTime)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div style={{ borderRadius: 10, border: '1px solid var(--cd-border)', maxHeight: 420, overflowY: 'auto' }}>
-              {fatigueEvents.map((e, i) => {
-                const meta = FATIGUE_LABELS[e.category] ?? { label: e.label, color: 'var(--cd-text-muted)' };
-                return (
-                  <div key={e.eventId ?? i} style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '9px 14px', borderTop: i > 0 ? '1px solid var(--cd-border)' : 'none',
-                  }}>
-                    <Zap size={13} color={meta.color} style={{ flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)' }}>
-                        {meta.label}
-                        <span style={{ fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 6 }}>{e.regNo}</span>
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>
-                        {e.driverName}{e.speed != null ? ` · ${Math.round(e.speed)} km/h` : ''}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(e.eventTime)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

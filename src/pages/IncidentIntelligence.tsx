@@ -1,6 +1,6 @@
-import { useState, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
+import { useState, useMemo, useEffect, useCallback, useDeferredValue, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, ClipboardCheck } from 'lucide-react';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
@@ -17,7 +17,7 @@ import MixEventInsightsGrid from '../components/MixEventInsightsGrid';
 import { brandLabel, eventLocationLabel } from '../lib/branding';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
-import PageControls from '../components/PageControls';
+import { useTableSort } from '../hooks/useTableSort';
 
 type Tab = 'events' | 'by-driver' | 'trends' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -92,104 +92,116 @@ function EventsTab({ events }: { events: LogEntry[] }) {
   const pagination = useClientPagination(filtered, 100);
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-          <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--cd-text-muted)' }} />
+    <div className="bpl-card" style={{ display: 'flex', flexDirection: 'column', minHeight: 520, padding: 0 }}>
+      <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--cd-border)', flexShrink: 0 }}>
+        <div style={{ position: 'relative' }}>
+          <Search style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--cd-text-soft, var(--cd-text-muted))' }} />
           <input
             type="text"
             placeholder="Search driver, vehicle, event..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             style={{
-              width: '100%', paddingLeft: 34, paddingRight: 12, paddingTop: 8, paddingBottom: 8,
-              border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 13,
-              background: 'var(--cd-surface-2)', color: 'var(--cd-text)', outline: 'none',
+              width: '100%', paddingLeft: 32, paddingRight: 12, paddingTop: 7, paddingBottom: 7,
+              border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 13, outline: 'none',
+              backgroundColor: 'var(--cd-surface-2)', color: 'var(--cd-text)',
             }}
           />
         </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {EVENT_FILTERS.map(f => (
+      </div>
+
+      <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--cd-border)', display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0 }}>
+        {EVENT_FILTERS.map(f => {
+          const active = eventFilter === f;
+          const color = f === 'All' ? 'var(--bpl-blue)' : (EVENT_COLORS[f] || 'var(--bpl-blue)');
+          return (
             <button
               key={f}
               onClick={() => setEventFilter(f)}
               style={{
-                padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                cursor: 'pointer', border: '1px solid',
-                borderColor: eventFilter === f ? 'var(--bpl-blue)' : 'var(--cd-border)',
-                background: eventFilter === f ? 'var(--bpl-blue-soft)' : 'var(--cd-surface)',
-                color: eventFilter === f ? 'var(--bpl-blue)' : 'var(--cd-text-muted)',
+                padding: '4px 10px', borderRadius: 9999, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                border: active ? `0.5px solid ${color}55` : '0.5px solid var(--cd-border)',
+                background: active ? `${color}15` : 'var(--cd-surface-2)',
+                color: active ? color : 'var(--cd-text-muted)',
               }}
             >
               {f}
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
-      <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 10 }}>
-        {filtered.length} events
-      </div>
-
-      <div className="bpl-card" style={{ overflow: 'hidden' }}>
-        <table className="bpl-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Event</th>
-              <th>Driver</th>
-              <th>Vehicle</th>
-              <th>Transporter</th>
-              <th>Location</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pagination.pageRows.map((e, i) => {
-              const label = getLabel(e);
-              const color = EVENT_COLORS[label] || 'var(--cd-text-muted)';
-              return (
-                <tr key={i}>
-                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>
-                    {formatTime(e.eventTime || e.timestamp)}
-                  </td>
-                  <td>
-                    <span style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 5,
-                      padding: '2px 8px', borderRadius: 9999,
-                      background: `${color}15`, color, border: `1px solid ${color}30`,
-                      fontSize: 11, fontWeight: 600,
-                    }}>
-                      {label}
-                    </span>
-                  </td>
-                  <td style={{ fontWeight: 500 }}>{displayDriverName(e.driverName)}</td>
-                  <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{e.regNo || e.assetId}</td>
-                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{brandLabel(e.transporter) || '—'}</td>
-                  <td style={{ fontSize: 12, color: 'var(--cd-text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={eventLocationLabel(e)}>
-                    {eventLocationLabel(e)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {filtered.length === 0 && (
-          <div style={{ padding: '32px', textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {filtered.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: 13 }}>
             No events match your filters
           </div>
-        )}
-        <PageControls
-          page={pagination.page}
-          pageCount={pagination.pageCount}
-          from={pagination.from}
-          to={pagination.to}
-          total={pagination.total}
-          hasPrev={pagination.hasPrev}
-          hasNext={pagination.hasNext}
-          onPrev={pagination.prev}
-          onNext={pagination.next}
-          itemLabel="events"
-        />
+        ) : pagination.pageRows.map((e, i) => {
+          const label = getLabel(e);
+          const color = EVENT_COLORS[label] || 'var(--cd-text-muted)';
+          const location = eventLocationLabel(e);
+          const hasDriver = isKnownDriver(e.driverName);
+          return (
+            <div key={i} style={{
+              padding: '10px 12px', borderRadius: 8,
+              border: `0.5px solid ${color}40`,
+              backgroundColor: `${color}0d`,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color }}>{label}</span>
+                <span style={{ fontSize: 10, color: 'var(--cd-text-soft, var(--cd-text-muted))' }}>{formatTime(e.eventTime || e.timestamp)}</span>
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--cd-text)', marginBottom: 2 }}>{e.regNo || e.assetId}</div>
+              {e.assetName && e.assetName !== 'N/A' && (
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 2 }}>{e.assetName}</div>
+              )}
+              {e.transporter && e.transporter !== 'N/A' && (
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 2 }}>{brandLabel(e.transporter)}</div>
+              )}
+              {hasDriver && (
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: location ? 2 : 0 }}>
+                  {displayDriverName(e.driverName)}
+                </div>
+              )}
+              {location && <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{location}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ padding: '10px 16px', borderTop: '1px solid var(--cd-border)', fontSize: 11, color: 'var(--cd-text-muted)', textAlign: 'center', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span>{pagination.total === 0 ? 'No events' : `Showing ${pagination.from}–${pagination.to} of ${pagination.total}`}</span>
+          {pagination.pageCount > 1 && (
+            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <button
+                type="button"
+                disabled={!pagination.hasPrev}
+                onClick={pagination.prev}
+                style={{
+                  padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: pagination.hasPrev ? 'pointer' : 'default',
+                  border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
+                  color: pagination.hasPrev ? 'var(--cd-text)' : 'var(--cd-text-soft, var(--cd-text-muted))',
+                }}
+              >
+                Prev
+              </button>
+              <span>Page {pagination.page + 1} / {pagination.pageCount}</span>
+              <button
+                type="button"
+                disabled={!pagination.hasNext}
+                onClick={pagination.next}
+                style={{
+                  padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: pagination.hasNext ? 'pointer' : 'default',
+                  border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
+                  color: pagination.hasNext ? 'var(--cd-text)' : 'var(--cd-text-soft, var(--cd-text-muted))',
+                }}
+              >
+                Next
+              </button>
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -263,9 +275,13 @@ function TrendsTab({ events }: { events: LogEntry[] }) {
   return <MixEventInsightsGrid events={events} />;
 }
 
+type TrackingSortKey = 'driver' | 'vehicle' | 'score';
+
 function PatternsTab({ events }: { events: LogEntry[] }) {
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
+  const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -348,6 +364,25 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
     setOccurrences(prev => logConsequenceResponse(prev, driverKey, category));
   }, []);
 
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return trackingRows;
+    return trackingRows.filter(r => r.name.toLowerCase().includes(q) || r.consequence.categoryLabel.toLowerCase().includes(q));
+  }, [trackingRows, search]);
+
+  const getSortValue = (row: typeof trackingRows[number], key: TrackingSortKey) => {
+    if (key === 'driver') return row.name;
+    if (key === 'vehicle') return row.distanceKm;
+    return row.consequence.displayScore;
+  };
+  const { sorted, toggle: toggleSort, ariaSort, indicator } = useTableSort(filteredRows, getSortValue);
+
+  const toggleExpanded = (key: string) => setExpanded(prev => {
+    const n = new Set(prev);
+    n.has(key) ? n.delete(key) : n.add(key);
+    return n;
+  });
+
   return (
     <div>
       <div className="bpl-card" style={{ padding: 20, marginBottom: 16 }}>
@@ -363,85 +398,124 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
         </p>
       </div>
 
-      {trackingRows.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--cd-text-muted)', fontSize: 13 }}>
-          No Amber, Yellow, or Red drivers in this date range
+      <div className="bpl-card bpl-fatigue-toolbar" style={{ marginBottom: 16 }}>
+        <div className="bpl-fatigue-search">
+          <Search size={15} />
+          <input
+            type="search"
+            placeholder="Search driver or category…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            aria-label="Search response drivers"
+          />
         </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {trackingRows.map(row => {
-            const { consequence } = row;
-            const color = consequence.categoryColor;
-            return (
-              <div key={row.key} className="bpl-card" style={{ padding: '16px 20px', borderLeft: `4px solid ${color}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: 180 }}>
-                    <div style={{ fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4 }}>{row.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
-                      {consequence.counts.eventCount} scored events · {Math.round(row.distanceKm).toLocaleString()} km
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 22, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
-                        {consequence.displayScore}
-                      </div>
-                      <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>/100</div>
-                    </div>
-                    <span style={{
-                      padding: '3px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700,
-                      background: `${color}15`, color,
-                    }}>
-                      {consequence.categoryLabel}
-                    </span>
-                  </div>
-                </div>
-
-                <div style={{
-                  display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-                  gap: 10, marginTop: 12,
-                }}>
-                  {[
-                    { label: 'Penalty points', value: consequence.penaltyPoints },
-                    { label: 'Score / 100 km', value: consequence.driverScore.toFixed(1) },
-                    { label: 'Occurrences logged', value: row.loggedCount },
-                  ].map(s => (
-                    <div key={s.label} style={{
-                      padding: '8px 10px', borderRadius: 8, background: 'var(--cd-surface-2)',
-                      border: '1px solid var(--cd-border)',
-                    }}>
-                      <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{s.label}</div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--cd-text)', marginTop: 2 }}>{s.value}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{
-                  marginTop: 12, padding: '10px 12px', borderRadius: 8,
-                  background: `${color}10`, border: `1px solid ${color}25`,
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-                }}>
-                  <div style={{ fontSize: 12, color: 'var(--cd-text)', flex: 1 }}>
-                    <span style={{ fontWeight: 700, color }}>Recommended · {consequence.occurrenceIndex === 1 ? '1st' : '2nd+'} occurrence: </span>
-                    {consequence.recommendedConsequence}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleLogResponse(row.key, consequence.category)}
-                    style={{
-                      padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                      border: `1px solid ${color}50`, background: color, color: '#fff', flexShrink: 0,
-                    }}
-                  >
-                    Log response
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+        <div style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginLeft: 'auto' }}>
+          {sorted.length} driver{sorted.length === 1 ? '' : 's'}
         </div>
-      )}
+      </div>
+
+      <div className="bpl-card bpl-table-scroll" style={{ padding: 0 }}>
+        <table className="bpl-dispatch-table bpl-fatigue-table">
+          <thead>
+            <tr>
+              <th style={{ width: 36 }} />
+              {([
+                { key: 'driver' as const, label: 'Driver' },
+                { key: 'vehicle' as const, label: 'Distance' },
+                { key: 'score' as const, label: 'Score' },
+              ]).map(col => (
+                <th
+                  key={col.key}
+                  aria-sort={ariaSort(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => toggleSort(col.key)}
+                >
+                  {col.label}{indicator(col.key)}
+                </th>
+              ))}
+              <th>Category</th>
+              <th>Recommended consequence</th>
+              <th style={{ width: 120 }}> </th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.length === 0 ? (
+              <tr>
+                <td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
+                  No Amber, Yellow, or Red drivers in this date range
+                </td>
+              </tr>
+            ) : sorted.map(row => {
+              const { consequence } = row;
+              const color = consequence.categoryColor;
+              const open = expanded.has(row.key);
+              return (
+                <Fragment key={row.key}>
+                  <tr onClick={() => toggleExpanded(row.key)} aria-expanded={open} style={{ cursor: 'pointer' }}>
+                    <td style={{ color: 'var(--cd-text-muted)' }}>
+                      {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </td>
+                    <td style={{ fontWeight: 600 }}>{row.name}</td>
+                    <td>
+                      <div>{Math.round(row.distanceKm).toLocaleString()} km</div>
+                      <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{consequence.counts.eventCount} scored events</div>
+                    </td>
+                    <td>
+                      <span style={{ fontWeight: 700, color }}>{consequence.displayScore}</span>
+                      <span style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}> /100</span>
+                    </td>
+                    <td>
+                      <span style={{
+                        padding: '3px 8px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
+                        background: `${color}15`, color,
+                      }}>
+                        {consequence.categoryLabel}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 12, maxWidth: 280 }}>
+                      {consequence.occurrenceIndex === 1 ? '1st' : '2nd+'} occurrence: {consequence.recommendedConsequence}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="bpl-btn-secondary"
+                        onClick={e => { e.stopPropagation(); handleLogResponse(row.key, consequence.category); }}
+                        style={{ fontSize: 11, padding: '4px 8px' }}
+                      >
+                        Log response
+                      </button>
+                    </td>
+                  </tr>
+                  {open && (
+                    <tr>
+                      <td colSpan={7} style={{ padding: '12px 16px 16px 48px', background: 'var(--cd-bg, var(--cd-surface))' }}>
+                        <div style={{
+                          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                          gap: 10, maxWidth: 560,
+                        }}>
+                          {[
+                            { label: 'Penalty points', value: consequence.penaltyPoints },
+                            { label: 'Score / 100 km', value: consequence.driverScore.toFixed(1) },
+                            { label: 'Occurrences logged', value: row.loggedCount },
+                          ].map(s => (
+                            <div key={s.label} style={{
+                              padding: '8px 10px', borderRadius: 8, background: 'var(--cd-surface-2)',
+                              border: '1px solid var(--cd-border)',
+                            }}>
+                              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{s.label}</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--cd-text)', marginTop: 2 }}>{s.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

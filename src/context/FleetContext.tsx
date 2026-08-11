@@ -252,13 +252,18 @@ interface FleetContextType {
   updateScoreConfig: (config: FleetScoreConfig) => void;
   /**
    * Global site/location filter. Empty array = all sites.
-   * Multiple keys = OR match (vehicle included if its zone is in the set).
+   * Multiple keys = OR match — a vehicle is included if its zone OR its
+   * granular `site` (transporter/depot name, e.g. "TRULUCK", "SHIWATECH")
+   * is in the set. This lets the Cement site-hierarchy dropdown select an
+   * individual transporter without needing a distinct top-level zone.
    */
   selectedSites: string[];
   setSelectedSites: (sites: string[]) => void;
   toggleSite: (siteKey: string) => void;
   /** Distinct sites (fleet zones) derived from live data, with asset counts. */
   siteOptions: { key: string; label: string; count: number }[];
+  /** Distinct `site` values (transporter/depot names within a zone) derived from live data, with asset counts. */
+  siteNameOptions: { key: string; label: string; count: number }[];
 }
 
 /** @deprecated kept for any leftover imports — empty selectedSites means all */
@@ -687,12 +692,25 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [vehicles]);
 
+  /** Granular `site` field (transporter/depot names living *inside* a zone, e.g. DD WEST → TRULUCK, SHIWATECH…). */
+  const siteNameOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const v of vehicles) {
+      const key = (v.site || '').trim();
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([key, count]) => ({ key, label: key, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }, [vehicles]);
+
   const siteFilterActive = selectedSites.length > 0;
 
   const filteredVehicles = useMemo(() => {
     if (!siteFilterActive) return vehicles;
     const allowed = new Set(selectedSites);
-    return vehicles.filter(v => allowed.has(siteKeyFor(v.zone)));
+    return vehicles.filter(v => allowed.has(siteKeyFor(v.zone)) || allowed.has((v.site || '').trim()));
   }, [vehicles, selectedSites, siteFilterActive]);
 
   const filteredEvents = useMemo(() => {
@@ -787,7 +805,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       vaultRecords, addVaultRecord, updateVaultRecord,
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
-      selectedSites, setSelectedSites, toggleSite, siteOptions,
+      selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
     }}>
       {children}
     </FleetContext.Provider>
