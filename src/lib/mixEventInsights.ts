@@ -210,15 +210,20 @@ export function buildStackedFromAggregate(
   selected: RelatableEvent[],
   metric: EventMetric,
   distanceKm: number,
+  labelForKey?: (key: string) => string,
 ) {
   const series = legendSeries(selected);
-  const dayKeys = Object.keys(agg.byDay).sort();
+  const dayKeys = Object.keys(agg.byDay).sort((a, b) => {
+    // day-of-week keys sort as dow-0..6; week/month/day lexicographic works
+    if (a.startsWith('dow-') && b.startsWith('dow-')) return Number(a.slice(4)) - Number(b.slice(4));
+    return a.localeCompare(b);
+  });
   const perDayKm = dayKeys.length ? distanceKm / dayKeys.length : 0;
 
   return dayKeys.map(day => {
     const row: Record<string, string | number> = {
       day,
-      label: dayLabelLagos(day),
+      label: labelForKey ? labelForKey(day) : dayLabelLagos(day),
     };
     const bucket = agg.byDay[day] || {};
     for (const s of series) {

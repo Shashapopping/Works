@@ -355,6 +355,8 @@ export default function TrendsPage() {
     return d.toISOString().slice(0, 10);
   });
   const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [labelFilter, setLabelFilter] = useState<Set<string> | null>(null);
 
   const persist = (next: TrendsStoredState) => {
     setState(next);
@@ -367,7 +369,7 @@ export default function TrendsPage() {
     [state],
   );
 
-  const filtered = useMemo(
+  const periodEvents = useMemo(
     () => events.filter(e => {
       if (e.type === 'panic') return false;
       const label = e.label || 'Unknown';
@@ -376,6 +378,39 @@ export default function TrendsPage() {
     }),
     [events, period, fromDate, toDate],
   );
+
+  const availableLabels = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of periodEvents) {
+      const label = e.label || 'Unknown';
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [periodEvents]);
+
+  const filtered = useMemo(() => {
+    if (!labelFilter) return periodEvents;
+    return periodEvents.filter(e => labelFilter.has(e.label || 'Unknown'));
+  }, [periodEvents, labelFilter]);
+
+  const activeFilterCount = labelFilter ? labelFilter.size : 0;
+
+  const removeChart = (chartId: TrendsChartId) => {
+    const nextIds = active.chartIds.filter(id => id !== chartId);
+    if (active.preset) {
+      persist({
+        ...state,
+        presetCharts: { ...state.presetCharts, [active.id]: nextIds },
+      });
+    } else {
+      persist({
+        ...state,
+        custom: state.custom.map(d =>
+          d.id === active.id ? { ...d, chartIds: nextIds } : d,
+        ),
+      });
+    }
+  };
 
   const mixIds = useMemo(() => {
     const ids: WidgetId[] = [];
@@ -397,6 +432,11 @@ export default function TrendsPage() {
 
   const openCreate = () => {
     setModalMode('create');
+    setAddOpen(true);
+  };
+
+  const openEdit = () => {
+    setModalMode('edit');
     setAddOpen(true);
   };
 
@@ -448,8 +488,6 @@ export default function TrendsPage() {
     }
     setAddOpen(false);
   };
-
-  void grouping;
 
   return (
     <div style={{ margin: '-4px 0 0' }}>
@@ -515,17 +553,107 @@ export default function TrendsPage() {
 
         <AssetDriverSlider value={scope} onChange={setScope} />
 
-        <button
-          type="button"
-          title="Filters"
-          style={{
-            width: 34, height: 34, borderRadius: 4, border: '1px solid #d1d5db',
-            background: '#fff', color: '#6b7280', cursor: 'pointer',
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          <Filter size={15} />
-        </button>
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            title="Filters"
+            onClick={() => setFilterOpen(v => !v)}
+            style={{
+              width: 34, height: 34, borderRadius: 4, border: '1px solid #d1d5db',
+              background: filterOpen || labelFilter ? '#eef6f5' : '#fff',
+              color: filterOpen || labelFilter ? TEAL : '#6b7280',
+              cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              position: 'relative',
+            }}
+          >
+            <Filter size={15} />
+            {activeFilterCount > 0 && (
+              <span style={{
+                position: 'absolute', top: -4, right: -4, minWidth: 16, height: 16,
+                borderRadius: 8, background: TEAL, color: '#fff', fontSize: 10, fontWeight: 700,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
+              }}>
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+
+          {filterOpen && (
+            <div
+              style={{
+                position: 'absolute', top: '100%', left: 0, zIndex: 40, marginTop: 6,
+                width: 320, maxHeight: 360, overflow: 'auto',
+                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+                boxShadow: '0 12px 28px rgba(0,0,0,0.14)',
+              }}
+            >
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 12px', borderBottom: '1px solid #eef0f2',
+              }}>
+                <strong style={{ fontSize: 13, color: '#374151' }}>Filter by event type</strong>
+                <button
+                  type="button"
+                  onClick={() => setFilterOpen(false)}
+                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#6b7280' }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div style={{ padding: '8px 12px', display: 'flex', gap: 8, borderBottom: '1px solid #eef0f2' }}>
+                <button
+                  type="button"
+                  onClick={() => setLabelFilter(new Set(availableLabels.map(([l]) => l)))}
+                  style={{ border: 'none', background: 'transparent', color: TEAL, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLabelFilter(null)}
+                  style={{ border: 'none', background: 'transparent', color: '#6b7280', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Clear
+                </button>
+              </div>
+              <div style={{ padding: '8px 0' }}>
+                {availableLabels.length === 0 ? (
+                  <div style={{ padding: 16, fontSize: 12, color: '#9ca3af' }}>No events in this period</div>
+                ) : availableLabels.map(([label, count]) => {
+                  const checked = !labelFilter || labelFilter.has(label);
+                  return (
+                    <label
+                      key={label}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '7px 12px', cursor: 'pointer', fontSize: 13, color: '#374151',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const base = labelFilter
+                            ? new Set(labelFilter)
+                            : new Set(availableLabels.map(([l]) => l));
+                          if (base.has(label)) base.delete(label);
+                          else base.add(label);
+                          if (base.size === 0 || base.size === availableLabels.length) setLabelFilter(null);
+                          else setLabelFilter(base);
+                        }}
+                      />
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {label}
+                      </span>
+                      <span style={{ color: '#9ca3af', fontSize: 12 }}>{count}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div style={{ flex: 1, minWidth: 8 }} />
 
@@ -559,7 +687,7 @@ export default function TrendsPage() {
           {!active.preset && (
             <button
               type="button"
-              onClick={() => { setModalMode('edit'); setAddOpen(true); }}
+              onClick={openEdit}
               style={{
                 marginLeft: 10, border: 'none', background: 'transparent',
                 color: TEAL, fontSize: 12, fontWeight: 600, cursor: 'pointer',
@@ -571,7 +699,7 @@ export default function TrendsPage() {
           {active.preset && (
             <button
               type="button"
-              onClick={() => { setModalMode('edit'); setAddOpen(true); }}
+              onClick={openEdit}
               style={{
                 marginLeft: 10, border: 'none', background: 'transparent',
                 color: TEAL, fontSize: 12, fontWeight: 600, cursor: 'pointer',
@@ -604,13 +732,21 @@ export default function TrendsPage() {
         gap: 14,
       }}>
         {extraIds.map(id => (
-          <TrendsExtraChart key={id} chartId={id} events={filtered} scope={scope} />
+          <TrendsExtraChart
+            key={id}
+            chartId={id}
+            events={filtered}
+            scope={scope}
+            grouping={grouping}
+            onEditDashboard={openEdit}
+            onRemoveChart={removeChart}
+          />
         ))}
       </div>
 
       {mixIds.length > 0 && (
         <div style={{ marginTop: extraIds.length ? 14 : 0 }}>
-          <MixEventInsightsGrid events={filtered} visibleIds={mixIds} />
+          <MixEventInsightsGrid events={filtered} visibleIds={mixIds} grouping={grouping} />
         </div>
       )}
 

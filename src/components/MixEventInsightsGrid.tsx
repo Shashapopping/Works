@@ -23,6 +23,8 @@ import {
   type WidgetId,
   type WidgetSettings,
 } from '../lib/mixEventInsights';
+import { bucketLabel, rebucketAggregate } from '../lib/trendsBucket';
+import type { TrendsGrouping } from '../lib/trendsDashboard';
 
 const ICON_MAP = {
   file: FileText,
@@ -238,6 +240,7 @@ function MixWidgetCard({
   distanceKm,
   settings,
   onChangeSettings,
+  grouping,
 }: {
   id: WidgetId;
   agg: EventDayAggregate;
@@ -246,6 +249,7 @@ function MixWidgetCard({
   distanceKm: number;
   settings: WidgetSettings;
   onChangeSettings: (next: WidgetSettings) => void;
+  grouping: TrendsGrouping;
 }) {
   const meta = WIDGET_DEFAULTS[id];
   const Icon = ICON_MAP[meta.icon];
@@ -254,8 +258,14 @@ function MixWidgetCard({
   const series = useMemo(() => legendSeries(settings.selectedEvents), [settings.selectedEvents]);
 
   const stacked = useMemo(
-    () => buildStackedFromAggregate(agg, settings.selectedEvents, settings.metric, distanceKm),
-    [agg, settings, distanceKm],
+    () => buildStackedFromAggregate(
+      agg,
+      settings.selectedEvents,
+      settings.metric,
+      distanceKm,
+      key => bucketLabel(key, grouping),
+    ),
+    [agg, settings, distanceKm, grouping],
   );
   const ranked = useMemo(
     () => buildRankFromAggregate(agg, settings.selectedEvents, settings.metric, distanceKm),
@@ -441,10 +451,12 @@ const EMPTY_AGG: EventDayAggregate = {
 export default function MixEventInsightsGrid({
   events,
   visibleIds,
+  grouping = 'day',
 }: {
   events: LogEntry[];
   /** When set, only render these widgets (order preserved). */
   visibleIds?: WidgetId[];
+  grouping?: TrendsGrouping;
 }) {
   const [distanceKm, setDistanceKm] = useState(0);
   const [distanceLoaded, setDistanceLoaded] = useState(false);
@@ -462,7 +474,7 @@ export default function MixEventInsightsGrid({
   useEffect(() => {
     let cancelled = false;
     const run = () => {
-      const next = preaggregateRelatableEvents(events);
+      const next = rebucketAggregate(preaggregateRelatableEvents(events), grouping);
       if (cancelled) return;
       startTransition(() => setAgg(next));
       requestAnimationFrame(() => {
@@ -475,7 +487,7 @@ export default function MixEventInsightsGrid({
       cancelled = true;
       clearTimeout(t);
     };
-  }, [events]);
+  }, [events, grouping]);
 
   const needsDistance = Object.values(settings).some(s => needsDistanceMetric(s.metric));
 
@@ -520,6 +532,7 @@ export default function MixEventInsightsGrid({
           chartsReady={chartsReady}
           distanceKm={distanceKm}
           settings={settings[id]}
+          grouping={grouping}
           onChangeSettings={next => setSettings(prev => ({ ...prev, [id]: next }))}
         />
       ))}

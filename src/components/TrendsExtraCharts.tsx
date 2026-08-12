@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown, ArrowUp, BarChart3, Car, Download, Info, MapPin, Settings, User,
 } from 'lucide-react';
@@ -11,11 +11,29 @@ import { buildDriverConsequenceCard } from '../lib/consequenceScore';
 import { isActiveDriver, isActiveDriverId, isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { sanitizeTripDriver } from '../lib/demoSanitize';
 import type { ConsumptionData } from '../lib/fuelConsumption';
-import { chartDef, type TrendsChartId, type TrendsScope } from '../lib/trendsDashboard';
+import { chartDef, type TrendsChartId, type TrendsGrouping, type TrendsScope } from '../lib/trendsDashboard';
+import {
+  bucketKeyFromDay,
+  bucketKeyFromIso,
+  bucketLabel,
+  downloadTextFile,
+  entityKey,
+  rowsToCsv,
+  sortBucketKeys,
+} from '../lib/trendsBucket';
 import { useFleet } from '../context/FleetContext';
 
 const BAND = { green: '#58b06d', amber: '#f0ad4e', red: '#e74c3c' };
 const SERIES = ['#2b71b1', '#50b2e1', '#58b06d', '#f0ad4e', '#9333ea', '#0d9488', '#64748b'];
+
+const TrendsViewCtx = createContext<{ grouping: TrendsGrouping; scope: TrendsScope }>({
+  grouping: 'day',
+  scope: 'asset',
+});
+
+function useTrendsView() {
+  return useContext(TrendsViewCtx);
+}
 
 /** Estimated minutes per event type when MiX duration is absent. */
 const DURATION_MIN: Record<string, number> = {
@@ -32,11 +50,9 @@ const DURATION_MIN: Record<string, number> = {
 function dayKey(iso: string) {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) {
-    // Already a YYYY-MM-DD?
     if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
     return '';
   }
-  // Lagos is UTC+1 year-round (no DST)
   const lagos = new Date(ms + 3_600_000);
   const y = lagos.getUTCFullYear();
   const m = String(lagos.getUTCMonth() + 1).padStart(2, '0');
@@ -48,16 +64,16 @@ function todayLagosKey() {
   return dayKey(new Date().toISOString());
 }
 
-function weekdayLabel(isoDay: string) {
-  // Noon Lagos keeps the weekday stable regardless of UTC offset edge cases
-  const ms = Date.parse(`${isoDay}T12:00:00+01:00`);
-  if (!Number.isFinite(ms)) return isoDay;
-  return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(ms).getUTCDay()];
-}
-
 function litersToGallons(l: number) {
   return l * 0.264172;
 }
+
+type ChartAction = 'edit' | 'remove';
+
+const ChartActionsCtx = createContext<{
+  onAction?: (action: ChartAction) => void;
+  infoText?: string;
+}>({});
 
 function cardShell({
   title,
@@ -67,6 +83,8 @@ function cardShell({
   children,
   wide,
   scope,
+  infoText,
+  onDownload,
 }: {
   title: string;
   icon?: React.ReactNode;
@@ -75,7 +93,14 @@ function cardShell({
   children: React.ReactNode;
   wide?: boolean;
   scope?: TrendsScope;
+  infoText?: string;
+  onDownload?: () => void;
 }) {
+  const actions = useContext(ChartActionsCtx);
+  const tip = infoText || actions.infoText || subtitle || title;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const canSettings = Boolean(actions.onAction);
+
   return (
     <div
       style={{
@@ -87,6 +112,7 @@ function cardShell({
         flexDirection: 'column',
         minHeight: 320,
         gridColumn: wide ? '1 / -1' : undefined,
+        position: 'relative',
       }}
     >
       <div style={{
@@ -103,20 +129,80 @@ function cardShell({
             {title}
           </strong>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-          {[Info, Download, Settings].map((Icon, i) => (
-            <span
-              key={i}
+        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, position: 'relative' }}>
+          <button
+            type="button"
+            title={tip}
+            aria-label={tip}
+            style={{
+              width: 34, height: 30, border: 'none', cursor: 'help',
+              background: 'transparent', color: '#6b7280',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Info size={14} />
+          </button>
+          <button
+            type="button"
+            title="Download CSV"
+            onClick={onDownload}
+            disabled={!onDownload}
+            style={{
+              width: 34, height: 30, border: 'none', cursor: onDownload ? 'pointer' : 'default',
+              borderLeft: '1px solid #e5e7eb',
+              background: 'transparent', color: onDownload ? '#6b7280' : '#d1d5db',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Download size={14} />
+          </button>
+          <button
+            type="button"
+            title="Chart settings"
+            onClick={() => canSettings && setMenuOpen(v => !v)}
+            disabled={!canSettings}
+            style={{
+              width: 34, height: 30, border: 'none', cursor: canSettings ? 'pointer' : 'default',
+              borderLeft: '1px solid #e5e7eb',
+              background: menuOpen ? '#f3f4f6' : 'transparent',
+              color: canSettings ? '#6b7280' : '#d1d5db',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Settings size={14} />
+          </button>
+          {menuOpen && actions.onAction && (
+            <div
               style={{
-                width: 34, height: 30,
-                borderLeft: i === 0 ? 'none' : '1px solid #e5e7eb',
-                color: '#6b7280',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                position: 'absolute', top: '100%', right: 0, zIndex: 20,
+                marginTop: 4, minWidth: 180, background: '#fff',
+                border: '1px solid #e5e7eb', borderRadius: 6,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.12)', overflow: 'hidden',
               }}
             >
-              <Icon size={14} />
-            </span>
-          ))}
+              <button
+                type="button"
+                onClick={() => { actions.onAction?.('edit'); setMenuOpen(false); }}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px',
+                  border: 'none', background: '#fff', fontSize: 13, color: '#374151', cursor: 'pointer',
+                }}
+              >
+                Customise dashboard
+              </button>
+              <button
+                type="button"
+                onClick={() => { actions.onAction?.('remove'); setMenuOpen(false); }}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px',
+                  border: 'none', borderTop: '1px solid #eef0f2', background: '#fff',
+                  fontSize: 13, color: '#b91c1c', cursor: 'pointer',
+                }}
+              >
+                Remove this chart
+              </button>
+            </div>
+          )}
         </div>
       </div>
       <div style={{ padding: '12px 14px 16px', flex: 1 }}>
@@ -263,34 +349,40 @@ function useDriverBands(events: LogEntry[]) {
 
 function EventValuesChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const caption = useCaption(events);
+  const { grouping } = useTrendsView();
   const { data, keys } = useMemo(() => {
-    const byDay = new Map<string, Record<string, number>>();
+    const byBucket = new Map<string, Record<string, number>>();
     const totals = new Map<string, number>();
     for (const e of events) {
       if (e.type === 'panic') continue;
-      const label = e.label || 'Other';
-      const day = dayKey(e.eventTime || e.timestamp);
-      if (!day) continue;
-      if (!byDay.has(day)) byDay.set(day, {});
-      const row = byDay.get(day)!;
-      row[label] = (row[label] || 0) + 1;
-      totals.set(label, (totals.get(label) || 0) + 1);
+      const seriesKey = entityKey(e, scope);
+      const bucket = bucketKeyFromIso(e.eventTime || e.timestamp, grouping);
+      if (!bucket) continue;
+      if (!byBucket.has(bucket)) byBucket.set(bucket, {});
+      const row = byBucket.get(bucket)!;
+      row[seriesKey] = (row[seriesKey] || 0) + 1;
+      totals.set(seriesKey, (totals.get(seriesKey) || 0) + 1);
     }
     const keys = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k]) => k);
-    const data = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, counts]) => {
-      const row: Record<string, string | number> = { label: weekdayLabel(day) };
+    const data = sortBucketKeys([...byBucket.keys()], grouping).map(bucket => {
+      const counts = byBucket.get(bucket) || {};
+      const row: Record<string, string | number> = { label: bucketLabel(bucket, grouping) };
       for (const k of keys) row[k] = counts[k] || 0;
       return row;
     });
     return { data, keys };
-  }, [events]);
+  }, [events, grouping, scope]);
 
   return cardShell({
     title: 'Event values',
     icon: <BarChart3 size={15} color="#6b7280" />,
-    subtitle: 'Event counts over time',
+    subtitle: scope === 'driver' ? 'Event counts by driver over time' : 'Event counts by asset over time',
     caption,
     scope,
+    infoText: 'Stacked event counts for the top entities in the selected period, grouped by the toolbar grouping.',
+    onDownload: data.length
+      ? () => downloadTextFile('event-values.csv', rowsToCsv(data))
+      : undefined,
     children: data.length === 0 ? (
       <Empty />
     ) : (
@@ -314,25 +406,29 @@ function EventValuesChart({ events, scope }: { events: LogEntry[]; scope: Trends
 
 function EventDurationChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const caption = useCaption(events);
+  const { grouping } = useTrendsView();
   const data = useMemo(() => {
-    const byDay = new Map<string, { totalMin: number; count: number }>();
+    const byBucket = new Map<string, { totalMin: number; count: number }>();
     for (const e of events) {
       if (e.type === 'panic') continue;
       const label = e.label || '';
-      const day = dayKey(e.eventTime || e.timestamp);
-      if (!day) continue;
+      const bucket = bucketKeyFromIso(e.eventTime || e.timestamp, grouping);
+      if (!bucket) continue;
       const mins = DURATION_MIN[label] ?? 1;
-      if (!byDay.has(day)) byDay.set(day, { totalMin: 0, count: 0 });
-      const row = byDay.get(day)!;
+      if (!byBucket.has(bucket)) byBucket.set(bucket, { totalMin: 0, count: 0 });
+      const row = byBucket.get(bucket)!;
       row.totalMin += mins;
       row.count += 1;
     }
-    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({
-      label: weekdayLabel(day),
-      avgMinutes: v.count ? +(v.totalMin / v.count).toFixed(2) : 0,
-      totalMinutes: +v.totalMin.toFixed(1),
-    }));
-  }, [events]);
+    return sortBucketKeys([...byBucket.keys()], grouping).map(bucket => {
+      const v = byBucket.get(bucket)!;
+      return {
+        label: bucketLabel(bucket, grouping),
+        avgMinutes: v.count ? +(v.totalMin / v.count).toFixed(2) : 0,
+        totalMinutes: +v.totalMin.toFixed(1),
+      };
+    });
+  }, [events, grouping]);
 
   return cardShell({
     title: 'Event duration',
@@ -340,6 +436,10 @@ function EventDurationChart({ events, scope }: { events: LogEntry[]; scope: Tren
     subtitle: 'Average event duration over time',
     caption,
     scope,
+    infoText: 'Estimated average and total event duration using typical durations per event type.',
+    onDownload: data.length
+      ? () => downloadTextFile('event-duration.csv', rowsToCsv(data))
+      : undefined,
     children: data.length === 0 ? (
       <Empty />
     ) : (
@@ -360,19 +460,19 @@ function EventDurationChart({ events, scope }: { events: LogEntry[]; scope: Tren
 function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const caption = useCaption(events);
   const cons = useConsumption('week');
+  const { grouping } = useTrendsView();
 
   const data = useMemo(() => {
     const byDay = new Map<string, { distance: number; gallons: number }>();
     const today = todayLagosKey();
     for (const t of cons?.trips || []) {
       const day = dayKey(t.tripStart || t.tripEnd);
-      if (!day || day > today) continue; // don't plot future Lagos calendar days
+      if (!day || day > today) continue;
       if (!byDay.has(day)) byDay.set(day, { distance: 0, gallons: 0 });
       const row = byDay.get(day)!;
       row.distance += t.distanceKm || 0;
       row.gallons += litersToGallons(t.fuelUsedLiters || 0);
     }
-    // Fallback: distribute summary across event days (through today only)
     if (byDay.size === 0 && cons?.summary) {
       const days = new Set<string>();
       for (const e of events) {
@@ -385,15 +485,25 @@ function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: Trend
       const gal = litersToGallons(cons.summary.totalFuelLiters || 0) / list.length;
       for (const d of list) byDay.set(d, { distance: dist, gallons: gal });
     }
-    return [...byDay.entries()]
-      .filter(([day]) => day <= today)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([day, v]) => ({
-        label: weekdayLabel(day),
+    const byBucket = new Map<string, { distance: number; gallons: number }>();
+    for (const [day, v] of byDay) {
+      if (day > today) continue;
+      const key = bucketKeyFromDay(day, grouping);
+      if (!key) continue;
+      if (!byBucket.has(key)) byBucket.set(key, { distance: 0, gallons: 0 });
+      const row = byBucket.get(key)!;
+      row.distance += v.distance;
+      row.gallons += v.gallons;
+    }
+    return sortBucketKeys([...byBucket.keys()], grouping).map(key => {
+      const v = byBucket.get(key)!;
+      return {
+        label: bucketLabel(key, grouping),
         distance: Math.round(v.distance),
         gallons: +v.gallons.toFixed(1),
-      }));
-  }, [cons, events]);
+      };
+    });
+  }, [cons, events, grouping]);
 
   return cardShell({
     title: 'Manage fuels and energy',
@@ -402,6 +512,10 @@ function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: Trend
     caption,
     scope,
     wide: true,
+    infoText: 'Distance and fuel from trip consumption data, bucketed by the selected grouping.',
+    onDownload: data.length
+      ? () => downloadTextFile('distance-fuel.csv', rowsToCsv(data))
+      : undefined,
     children: data.length === 0 ? (
       <Empty />
     ) : (
@@ -438,18 +552,30 @@ function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: Trend
 function FleetDistanceInsights({ scope }: { scope: TrendsScope }) {
   const stats = useTripStats();
   const { vehicles } = useFleet();
-  const assetCount = Math.max(stats.assets, vehicles.length || 1);
+  const entityCount = Math.max(
+    scope === 'driver' ? (stats.drivers.length || 1) : Math.max(stats.assets, vehicles.length || 1),
+    1,
+  );
   const days = 30;
-  const avgMiPerAssetDay = stats.km / assetCount / days;
-  const avgTripsPerAssetDay = stats.trips / assetCount / days;
+  const avgKmPerEntityDay = stats.km / entityCount / days;
+  const avgTripsPerEntityDay = stats.trips / entityCount / days;
   const avgMiPerTrip = stats.trips ? stats.km / stats.trips : 0;
+  const entityLabel = scope === 'driver' ? 'driver' : 'asset';
+  const rows = [
+    { metric: `Avg km/${entityLabel}/day`, value: avgKmPerEntityDay.toFixed(2) },
+    { metric: `Avg trips/${entityLabel}/day`, value: avgTripsPerEntityDay.toFixed(2) },
+    { metric: 'Avg km/trip', value: avgMiPerTrip.toFixed(2) },
+    { metric: 'Total km', value: Math.round(stats.km) },
+  ];
 
   return cardShell({
     title: 'Distance and trip insights',
-    icon: <Car size={15} color="#6b7280" />,
+    icon: scope === 'driver' ? <User size={15} color="#6b7280" /> : <Car size={15} color="#6b7280" />,
     subtitle: undefined,
     caption: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
     scope,
+    infoText: `Fleet distance KPIs averaged per ${entityLabel} over ~30 days.`,
+    onDownload: () => downloadTextFile('fleet-distance-insights.csv', rowsToCsv(rows)),
     children: (
       <div>
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Distance</div>
@@ -458,8 +584,8 @@ function FleetDistanceInsights({ scope }: { scope: TrendsScope }) {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
           {[
-            { icon: <Car size={16} color="#6b7280" />, value: avgMiPerAssetDay.toFixed(2), label: 'Avg km/asset/day' },
-            { icon: <MapPin size={16} color="#6b7280" />, value: avgTripsPerAssetDay.toFixed(2), label: 'Avg trips/asset/day' },
+            { icon: scope === 'driver' ? <User size={16} color="#6b7280" /> : <Car size={16} color="#6b7280" />, value: avgKmPerEntityDay.toFixed(2), label: `Avg km/${entityLabel}/day` },
+            { icon: <MapPin size={16} color="#6b7280" />, value: avgTripsPerEntityDay.toFixed(2), label: `Avg trips/${entityLabel}/day` },
             { icon: <BarChart3 size={16} color="#6b7280" />, value: avgMiPerTrip.toFixed(2), label: 'Avg km/trip' },
           ].map(m => (
             <div key={m.label} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -480,7 +606,12 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
   const caption = useCaption(events);
   const { vehicles } = useFleet();
   const cons = useConsumption('week');
-  const available = Math.max(vehicles.length, 1);
+  const { grouping } = useTrendsView();
+  const stats = useTripStats();
+  const available = Math.max(
+    scope === 'driver' ? (stats.drivers.length || 1) : Math.max(vehicles.length, 1),
+    1,
+  );
 
   const data = useMemo(() => {
     const byDay = new Map<string, Set<string>>();
@@ -488,25 +619,38 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
       const day = dayKey(t.tripStart || t.tripEnd);
       if (!day) continue;
       if (!byDay.has(day)) byDay.set(day, new Set());
-      byDay.get(day)!.add(t.assetId);
+      const trip = t as { assetId: string; driverName?: string; driverId?: string };
+      const id = scope === 'driver'
+        ? String(trip.driverName || trip.driverId || 'unknown')
+        : String(trip.assetId);
+      byDay.get(day)!.add(id);
     }
     if (byDay.size === 0) {
       for (const e of events) {
         const day = dayKey(e.eventTime || e.timestamp);
         if (!day) continue;
         if (!byDay.has(day)) byDay.set(day, new Set());
-        byDay.get(day)!.add(e.assetId);
+        byDay.get(day)!.add(entityKey(e, scope));
       }
     }
-    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, set]) => {
+    const byBucket = new Map<string, Set<string>>();
+    for (const [day, set] of byDay) {
+      const key = bucketKeyFromDay(day, grouping);
+      if (!key) continue;
+      if (!byBucket.has(key)) byBucket.set(key, new Set());
+      const merged = byBucket.get(key)!;
+      for (const id of set) merged.add(id);
+    }
+    return sortBucketKeys([...byBucket.keys()], grouping).map(key => {
+      const set = byBucket.get(key)!;
       const pct = Math.min(100, Math.round((set.size / available) * 100));
       return {
-        label: weekdayLabel(day),
+        label: bucketLabel(key, grouping),
         pct,
         fill: pct < 60 ? BAND.red : pct < 95 ? BAND.amber : BAND.green,
       };
     });
-  }, [cons, events, available]);
+  }, [cons, events, available, grouping, scope]);
 
   return cardShell({
     title: 'Fleet utilisation %',
@@ -514,6 +658,12 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
     subtitle: undefined,
     caption,
     scope,
+    infoText: scope === 'driver'
+      ? 'Drivers with activity / available drivers × 100'
+      : 'Assets with trips / available assets × 100',
+    onDownload: data.length
+      ? () => downloadTextFile('fleet-utilisation.csv', rowsToCsv(data.map(({ label, pct }) => ({ label, pct }))))
+      : undefined,
     children: data.length === 0 ? (
       <Empty />
     ) : (
@@ -535,7 +685,9 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
           ['>95%', BAND.green],
         ]} />
         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8, textAlign: 'center' }}>
-          (Calculation: Assets with trips / available assets × 100)
+          {scope === 'driver'
+            ? '(Calculation: Drivers with activity / available drivers × 100)'
+            : '(Calculation: Assets with trips / available assets × 100)'}
         </div>
       </>
     ),
@@ -545,36 +697,40 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
 function FleetDriveIdleChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const caption = useCaption(events);
   const stats = useTripStats();
+  const { grouping } = useTrendsView();
   const data = useMemo(() => {
-    const byDay = new Map<string, { drive: number; idle: number }>();
+    const byBucket = new Map<string, { drive: number; idle: number }>();
     for (const e of events) {
       if (e.type === 'panic') continue;
-      const day = dayKey(e.eventTime || e.timestamp);
-      if (!day) continue;
-      if (!byDay.has(day)) byDay.set(day, { drive: 0, idle: 0 });
-      const row = byDay.get(day)!;
+      const bucket = bucketKeyFromIso(e.eventTime || e.timestamp, grouping);
+      if (!bucket) continue;
+      if (!byBucket.has(bucket)) byBucket.set(bucket, { drive: 0, idle: 0 });
+      const row = byBucket.get(bucket)!;
       const label = (e.label || '').toLowerCase();
       if (label.includes('idle')) row.idle += 1;
       else row.drive += 1;
     }
-    // Scale drive counts with trip hours when available
-    const days = [...byDay.keys()];
-    const driveHoursPerDay = days.length ? stats.hours / days.length : 0;
-    return days.sort().map(day => {
-      const row = byDay.get(day)!;
+    const keys = sortBucketKeys([...byBucket.keys()], grouping);
+    const driveHoursPerBucket = keys.length ? stats.hours / keys.length : 0;
+    return keys.map(bucket => {
+      const row = byBucket.get(bucket)!;
       return {
-        label: weekdayLabel(day),
-        drive: Math.round(driveHoursPerDay * 60) || row.drive,
-        idle: row.idle * 5, // estimated idle minutes
+        label: bucketLabel(bucket, grouping),
+        drive: Math.round(driveHoursPerBucket * 60) || row.drive,
+        idle: row.idle * 5,
       };
     });
-  }, [events, stats.hours]);
+  }, [events, stats.hours, grouping]);
 
   return cardShell({
     title: 'Driving and idling time',
     icon: <Car size={15} color="#6b7280" />,
     caption,
     scope,
+    infoText: 'Estimated driving vs idling activity from events, grouped by the toolbar setting.',
+    onDownload: data.length
+      ? () => downloadTextFile('drive-idle.csv', rowsToCsv(data))
+      : undefined,
     children: data.length === 0 ? (
       <Empty />
     ) : (
@@ -614,6 +770,8 @@ function FleetHourChart({ events, scope }: { events: LogEntry[]; scope: TrendsSc
     icon: <Car size={15} color="#6b7280" />,
     caption,
     scope,
+    infoText: 'Event activity by hour of day (Lagos time). Grouping does not apply to this hour-of-day view.',
+    onDownload: () => downloadTextFile('movement-by-hour.csv', rowsToCsv(hourData)),
     children: (
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={hourData} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
@@ -776,23 +934,22 @@ function DriverPerformanceCard({ events, scope }: { events: LogEntry[]; scope: T
 function DriverAvgScoresChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const bands = useDriverBands(events);
   const caption = useCaption(events);
+  const { grouping } = useTrendsView();
   const data = useMemo(() => {
-    const byDay = new Map<string, { sum: number; n: number }>();
+    const byBucket = new Map<string, number>();
     for (const e of events) {
       if (e.type === 'panic' || !isKnownDriver(e.driverName)) continue;
-      const day = dayKey(e.eventTime || e.timestamp);
-      if (!day) continue;
-      if (!byDay.has(day)) byDay.set(day, { sum: 0, n: 0 });
+      const bucket = bucketKeyFromIso(e.eventTime || e.timestamp, grouping);
+      if (!bucket) continue;
+      byBucket.set(bucket, (byBucket.get(bucket) || 0) + 1);
     }
-    // Approximate: use overall avg distributed; better: score density by day from event volume
     const avg = bands.avg || 0;
-    return [...byDay.keys()].sort().map(day => {
-      const dayEvents = events.filter(e => dayKey(e.eventTime || e.timestamp) === day && e.type !== 'panic');
-      // Higher event volume → lower score proxy
-      const penalty = Math.min(40, dayEvents.length * 0.5);
-      return { label: weekdayLabel(day), score: Math.max(0, +(avg - penalty + 20).toFixed(1)) };
+    return sortBucketKeys([...byBucket.keys()], grouping).map(bucket => {
+      const count = byBucket.get(bucket) || 0;
+      const penalty = Math.min(40, count * 0.5);
+      return { label: bucketLabel(bucket, grouping), score: Math.max(0, +(avg - penalty + 20).toFixed(1)) };
     });
-  }, [events, bands.avg]);
+  }, [events, bands.avg, grouping]);
 
   return cardShell({
     title: 'Driver average scores',
@@ -800,6 +957,10 @@ function DriverAvgScoresChart({ events, scope }: { events: LogEntry[]; scope: Tr
     subtitle: 'Average safety score over time',
     caption,
     scope,
+    infoText: 'Approximate average safety score over time from event volume and fleet average.',
+    onDownload: data.length
+      ? () => downloadTextFile('driver-avg-scores.csv', rowsToCsv(data))
+      : undefined,
     children: data.length === 0 ? (
       <div style={{ padding: 24, textAlign: 'center' }}>
         <div style={{ fontSize: 40, fontWeight: 700, color: '#1f2937' }}>{bands.avg.toFixed(1)}</div>
@@ -821,22 +982,27 @@ function DriverAvgScoresChart({ events, scope }: { events: LogEntry[]; scope: Tr
 
 function DriverIdTrendChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const caption = useCaption(events);
+  const { grouping } = useTrendsView();
   const data = useMemo(() => {
-    const byDay = new Map<string, { identified: number; unidentified: number }>();
+    const byBucket = new Map<string, { identified: number; unidentified: number }>();
     for (const e of events) {
       if (e.type === 'panic') continue;
-      const day = dayKey(e.eventTime || e.timestamp);
-      if (!day) continue;
-      if (!byDay.has(day)) byDay.set(day, { identified: 0, unidentified: 0 });
-      const row = byDay.get(day)!;
+      const bucket = bucketKeyFromIso(e.eventTime || e.timestamp, grouping);
+      if (!bucket) continue;
+      if (!byBucket.has(bucket)) byBucket.set(bucket, { identified: 0, unidentified: 0 });
+      const row = byBucket.get(bucket)!;
       if (isKnownDriver(e.driverName)) row.identified++;
       else row.unidentified++;
     }
-    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({
-      label: weekdayLabel(day),
-      ...v,
-    }));
-  }, [events]);
+    return sortBucketKeys([...byBucket.keys()], grouping).map(bucket => {
+      const row = byBucket.get(bucket)!;
+      return {
+        label: bucketLabel(bucket, grouping),
+        identified: row.identified,
+        unidentified: row.unidentified,
+      };
+    });
+  }, [events, grouping]);
 
   return cardShell({
     title: 'Driver identification trends',
@@ -844,14 +1010,20 @@ function DriverIdTrendChart({ events, scope }: { events: LogEntry[]; scope: Tren
     subtitle: 'Identified / unidentified',
     caption,
     scope,
-    children: data.length === 0 ? <Empty /> : (
+    infoText: 'Events with a known driver vs unidentified, over the selected grouping.',
+    onDownload: data.length
+      ? () => downloadTextFile('driver-id-trends.csv', rowsToCsv(data))
+      : undefined,
+    children: data.length === 0 ? (
+      <Empty />
+    ) : (
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
           <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
           <XAxis dataKey="label" tick={{ fontSize: 11 }} />
           <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={40} />
           <Tooltip contentStyle={{ fontSize: 12 }} />
-          <Bar dataKey="identified" name="Identified" stackId="a" fill="#2b71b1" maxBarSize={56} isAnimationActive={false} />
+          <Bar dataKey="identified" name="Identified" stackId="a" fill="#0d9488" maxBarSize={56} isAnimationActive={false} />
           <Bar dataKey="unidentified" name="Unidentified" stackId="a" fill="#94a3b8" maxBarSize={56} isAnimationActive={false} />
         </BarChart>
       </ResponsiveContainer>
@@ -878,6 +1050,11 @@ function DriverIdAdherenceChart({ events, scope }: { events: LogEntry[]; scope: 
     subtitle: 'Driver identification adherence',
     caption,
     scope,
+    infoText: 'Share of events with a known driver identity in the selected period.',
+    onDownload: () => downloadTextFile(
+      'driver-adherence.csv',
+      rowsToCsv([{ identified, total, pct: +pct.toFixed(1) }]),
+    ),
     children: (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 220, gap: 12 }}>
         <div style={{ fontSize: 48, fontWeight: 700, color: '#0d9488' }}>{pct.toFixed(1)}%</div>
@@ -914,42 +1091,66 @@ export function TrendsExtraChart({
   chartId,
   events,
   scope,
+  grouping = 'day',
+  onEditDashboard,
+  onRemoveChart,
 }: {
   chartId: TrendsChartId;
   events: LogEntry[];
   scope: TrendsScope;
+  grouping?: TrendsGrouping;
+  onEditDashboard?: () => void;
+  onRemoveChart?: (id: TrendsChartId) => void;
 }) {
   const def = chartDef(chartId);
   if (!def || def.kind === 'mix') return null;
 
-  switch (def.kind) {
-    case 'event-values':
-      return <EventValuesChart events={events} scope={scope} />;
-    case 'event-duration':
-      return <EventDurationChart events={events} scope={scope} />;
-    case 'driver-band-distance':
-      return <DriverBandDistanceChart events={events} scope={scope} />;
-    case 'driver-band-score':
-      return <DriverBandScoreChart events={events} scope={scope} />;
-    case 'driver-performance':
-      return <DriverPerformanceCard events={events} scope={scope} />;
-    case 'driver-avg-scores':
-      return <DriverAvgScoresChart events={events} scope={scope} />;
-    case 'fleet-distance':
-      return <FleetDistanceInsights scope={scope} />;
-    case 'fleet-util-pct':
-      return <FleetUtilPctChart events={events} scope={scope} />;
-    case 'fleet-idle':
-      return <FleetDriveIdleChart events={events} scope={scope} />;
-    case 'fleet-hour':
-      return <FleetHourChart events={events} scope={scope} />;
-    case 'fuel-distance':
-      return <FuelDistanceChart events={events} scope={scope} />;
-    case 'driver-id-trend':
-      return <DriverIdTrendChart events={events} scope={scope} />;
-    case 'driver-id-adherence':
-      return <DriverIdAdherenceChart events={events} scope={scope} />;
-    default:
-      return null;
-  }
+  const body = (() => {
+    switch (def.kind) {
+      case 'event-values':
+        return <EventValuesChart events={events} scope={scope} />;
+      case 'event-duration':
+        return <EventDurationChart events={events} scope={scope} />;
+      case 'driver-band-distance':
+        return <DriverBandDistanceChart events={events} scope={scope} />;
+      case 'driver-band-score':
+        return <DriverBandScoreChart events={events} scope={scope} />;
+      case 'driver-performance':
+        return <DriverPerformanceCard events={events} scope={scope} />;
+      case 'driver-avg-scores':
+        return <DriverAvgScoresChart events={events} scope={scope} />;
+      case 'fleet-distance':
+        return <FleetDistanceInsights scope={scope} />;
+      case 'fleet-util-pct':
+        return <FleetUtilPctChart events={events} scope={scope} />;
+      case 'fleet-idle':
+        return <FleetDriveIdleChart events={events} scope={scope} />;
+      case 'fleet-hour':
+        return <FleetHourChart events={events} scope={scope} />;
+      case 'fuel-distance':
+        return <FuelDistanceChart events={events} scope={scope} />;
+      case 'driver-id-trend':
+        return <DriverIdTrendChart events={events} scope={scope} />;
+      case 'driver-id-adherence':
+        return <DriverIdAdherenceChart events={events} scope={scope} />;
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <TrendsViewCtx.Provider value={{ grouping, scope }}>
+      <ChartActionsCtx.Provider
+        value={{
+          infoText: def.subtitle,
+          onAction: action => {
+            if (action === 'edit') onEditDashboard?.();
+            if (action === 'remove') onRemoveChart?.(chartId);
+          },
+        }}
+      >
+        {body}
+      </ChartActionsCtx.Provider>
+    </TrendsViewCtx.Provider>
+  );
 }
