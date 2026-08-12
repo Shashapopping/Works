@@ -1,4 +1,5 @@
 import type { Vehicle } from '../context/FleetContext';
+import { brandLabel } from './branding';
 
 export interface FleetLocationHub {
   key: string;
@@ -73,11 +74,15 @@ export function deriveFleetLocationHubs(vehicles: Vehicle[], limit = 8): FleetLo
       : null;
     if (!key) return;
 
-    const label = zone && zone !== 'N/A' && zone !== 'UNKNOWN'
-      ? titleCaseZone(zone)
-      : city!;
-    const regionHint = (zone && REGION_HINTS[zone])
-      || (city ? `${city}, Nigeria` : 'Nigeria');
+    const label = brandLabel(
+      zone && zone !== 'N/A' && zone !== 'UNKNOWN'
+        ? titleCaseZone(zone)
+        : city!,
+    );
+    const regionHint = brandLabel(
+      (zone && REGION_HINTS[zone])
+        || (city ? `${city}, Nigeria` : 'Nigeria'),
+    );
 
     const lat = Number(v.position!.latitude);
     const lng = Number(v.position!.longitude);
@@ -109,7 +114,7 @@ export function deriveFleetLocationHubs(vehicles: Vehicle[], limit = 8): FleetLo
       key: a.key,
       label: a.label,
       regionHint: a.regionHint,
-      address: a.address,
+      address: brandLabel(a.address),
       latitude: a.latSum / a.n,
       longitude: a.lngSum / a.n,
       assetCount: a.n,

@@ -42,11 +42,18 @@
 }
 
 .bpl-status-metrics-col {
-  flex: 1;
+  flex: 1.6;
   min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.bpl-status-metrics-stack {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
 .bpl-status-period-select {
@@ -1780,5 +1787,8 @@
   .bpl-status-stats-grid > *:nth-child(-n+4),
   .bpl-status-stats-grid > *:nth-child(n+5) {
     grid-column: auto;
+  }
+  .bpl-status-metrics-col {
+    grid-template-columns: 1fr;
   }
 }

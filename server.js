@@ -3,7 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import * as dotenv from 'dotenv'
-import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary } from './scripts/mix-test.js'
+import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords } from './scripts/mix-test.js'
 import { getAcknowledged, addAcknowledged, clearAcknowledged, getAllEvents, getFuelHistory } from './scripts/db.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
@@ -250,6 +250,17 @@ app.get('/api/driver-distance', (req, res) => {
   })
   const slim = { ...summary, assets: summary.assets.map(({ journeys, ...rest }) => rest) }
   res.json(slim)
+})
+
+// Hours-of-Service — continuous-driving-time records for the day
+app.get('/api/hos', (req, res) => {
+  if (!isAuthorized(req)) return unauthorized(res)
+  try {
+    res.json(getHosRecords(req.query.date?.toString() || undefined))
+  } catch (err) {
+    console.error('hos records failed', err)
+    res.status(500).json({ error: 'Failed to compute HOS records' })
+  }
 })
 
 // Per-asset journey detail

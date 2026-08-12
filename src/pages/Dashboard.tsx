@@ -9,6 +9,7 @@ import FuelChartWidget from '../components/home/FuelChartWidget';
 import DriverPerformanceWidget from '../components/home/DriverPerformanceWidget';
 import AiInsightsWidget from '../components/home/AiInsightsWidget';
 import { EnvironmentStrip } from '../components/home/EnvironmentStrip';
+import { clientName } from '../lib/branding';
 
 export default function Dashboard() {
   const { setDistanceRange } = useFleet();
@@ -24,7 +25,7 @@ export default function Dashboard() {
     <div className="bpl-home-grid">
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Fleet Overview</h1>
-        <p className="bpl-page-subtitle">HBM Nigeria — Real-time fleet intelligence</p>
+        <p className="bpl-page-subtitle">{clientName()} — Real-time fleet intelligence</p>
       </div>
 
       <div className="bpl-home-score-row">
@@ -34,6 +35,7 @@ export default function Dashboard() {
           onFilterChange={setStatusFilter}
           metricPeriod={metricPeriod}
           onMetricPeriodChange={handleMetricPeriodChange}
+          navigateOnStatusClick
         />
       </div>
 

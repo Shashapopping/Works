@@ -8,7 +8,7 @@ import SafetyIncidentModal from '../SafetyIncidentModal';
 import { useFleet } from '../../context/FleetContext';
 import type { SafetyNotification } from '../../hooks/useSafeIQ';
 import EnvironmentBadge from '../EnvironmentBadge';
-import { isKnownDriver } from '../../lib/driverUtils';
+import { isKnownDriver, displayDriverName } from '../../lib/driverUtils';
 import { SAFEIQ_ENABLED } from '../../config/safeIq';
 
 function getPageTitle(pathname: string): { title: string; sub: string } {
@@ -20,6 +20,7 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/aria': { title: 'AI Insights', sub: '— SafeIQ analyses' },
     '/drivers': { title: 'Driver Management', sub: '— profiles and safety scores' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
+    '/trends': { title: 'Trends', sub: '— visual event insights & history' },
     '/incidents/response': { title: 'Incident Intelligence', sub: '— response tracking' },
     '/vault': { title: 'Safety Vault', sub: '— incident records' },
     '/vault/safeiq': { title: 'Safety Vault', sub: '— SafeIQ analysis' },
@@ -127,7 +128,7 @@ function NotifPanel({ notifications, onOpen, onDismiss, onClearAll, onClose, onV
                 <ShieldAlert size={14} style={{ color: accent, flexShrink: 0, marginTop: 2 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {n.driver.name}
+                    {displayDriverName(n.driver.name)}
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
                     {n.magnitude} · {n.vehicle.id}

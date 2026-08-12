@@ -136,7 +136,7 @@ export default function Quarry() {
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Quarry Haulage</h1>
         <p className="bpl-page-subtitle">
-          Ewekoro & Mfamosing — live status plus haul/fuel from HBM Availability (Jan–Jun 2026).
+          Ewekoro & Mfamosing — live status plus haul/fuel from Availability import (Jan–Jun 2026).
         </p>
       </div>
 
@@ -163,7 +163,7 @@ export default function Quarry() {
           sub="Availability window (CSV)"
           color="#059669"
           icon={Mountain}
-          tip="Sum of trip distance from HBM Availability import (excel source) for quarry assets, Jan–Jun 2026."
+          tip="Sum of trip distance from Availability import (excel source) for quarry assets, Jan–Jun 2026."
         />
         <KpiCard
           label="Utilization"

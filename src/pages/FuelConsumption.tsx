@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Fuel, MapPin, ChevronDown, ChevronRight, AlertTriangle, Route, Search } from 'lucide-react';
+import { Fuel, MapPin, ChevronDown, ChevronRight, AlertTriangle, Route, Search, Clock, Gauge, Zap, Truck } from 'lucide-react';
 import {
   QUARRY_SITE_KEYS,
   QUARRY_SITE_LABELS,
@@ -18,9 +18,20 @@ import {
   aggregateMetrics,
   defaultCustomRange,
 } from '../lib/fuelConsumption';
+import { displayDriverName } from '../lib/driverUtils';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
 
 const COL_COUNT = 10;
+
+const ASSET_COLUMN_DOTS: Record<string, string> = {
+  Trips: '#16a34a',
+  'Fuel (est.)': '#0078D4',
+  Distance: '#0d9488',
+  Duration: '#7c3aed',
+  'L/km': '#ea580c',
+  'L/h': '#d97706',
+  Refuels: '#dc2626',
+};
 
 function fmt(n: number | null | undefined, digits = 1) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -56,13 +67,13 @@ function fmtAddress(addr: string | null, max = 42) {
 
 function KpiStrip({ summary, initialLoading, scopeLabel }: { summary: SummaryMetrics; initialLoading: boolean; scopeLabel: string }) {
   const cards = [
-    { label: 'Trip fuel (est.)', value: `${fmt(summary.fuel, 0)} L` },
-    { label: 'Distance', value: `${fmt(summary.distance, 0)} km` },
-    { label: 'Duration', value: fmtDriveHours(summary.drivingHours, 1) },
-    { label: 'L/km', value: fmtRatio(summary.litersPerKm) },
-    { label: 'L/h', value: fmt(summary.litersPerHour) },
-    { label: 'Trips', value: String(summary.trips) },
-    { label: 'Refuel flags', value: String(summary.refuels) },
+    { label: 'Trip fuel (est.)', value: `${fmt(summary.fuel, 0)} L`, color: '#0078D4', icon: Fuel },
+    { label: 'Distance', value: `${fmt(summary.distance, 0)} km`, color: '#0d9488', icon: Route },
+    { label: 'Duration', value: fmtDriveHours(summary.drivingHours, 1), color: '#7c3aed', icon: Clock },
+    { label: 'L/km', value: fmtRatio(summary.litersPerKm), color: '#ea580c', icon: Gauge },
+    { label: 'L/h', value: fmt(summary.litersPerHour), color: '#d97706', icon: Zap },
+    { label: 'Trips', value: String(summary.trips), color: '#16a34a', icon: Truck },
+    { label: 'Refuel flags', value: String(summary.refuels), color: '#dc2626', icon: AlertTriangle },
   ];
 
   return (
@@ -74,10 +85,14 @@ function KpiStrip({ summary, initialLoading, scopeLabel }: { summary: SummaryMet
         {cards.map(k => (
           <div key={k.label} style={{
             padding: '14px 16px', borderRadius: 10,
-            background: 'var(--cd-surface)', border: '1px solid var(--cd-border)',
+            background: `linear-gradient(180deg, ${k.color}0d, var(--cd-surface) 55%)`,
+            border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}`,
           }}>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>{k.label}</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)' }}>{initialLoading ? '…' : k.value}</div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>{k.label}</div>
+              <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{initialLoading ? '…' : k.value}</div>
           </div>
         ))}
       </div>
@@ -154,7 +169,7 @@ function AssetDetailPanel({
               <tbody>
                 {trips.map(t => (
                   <tr key={t.tripId} style={{ borderTop: '1px solid var(--cd-border)' }}>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{t.driverName}</td>
+                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{displayDriverName(t.driverName)}</td>
                     <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(t.tripStart)}</td>
                     <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(t.tripEnd)}</td>
                     <td style={{ padding: '6px 10px', maxWidth: 180 }} title={t.startAddress || undefined}>{fmtAddress(t.startAddress)}</td>
@@ -408,20 +423,31 @@ export default function FuelConsumption() {
 
       {/* Asset table with expandable detail */}
       <div>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--cd-text)' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--cd-text)', display: 'flex', alignItems: 'center', gap: 7 }}>
+          <Truck size={15} color="#0078D4" />
           By asset
-          <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 8 }}>
+          <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 4 }}>
             Click a row to expand trips and refuels
           </span>
         </div>
         <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--cd-border)' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
-              <tr style={{ background: 'var(--cd-surface-2)', textAlign: 'left' }}>
+              <tr style={{ background: 'linear-gradient(180deg, rgba(0,120,212,0.07), var(--cd-surface-2))', textAlign: 'left' }}>
                 <th style={{ padding: '10px 8px', width: 28 }} />
-                {['Reg', 'Site', 'Trips', 'Fuel (est.)', 'Distance', 'Duration', 'L/km', 'L/h', 'Refuels'].map(h => (
-                  <th key={h} style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--cd-text-muted)' }}>{h}</th>
-                ))}
+                {['Reg', 'Site', 'Trips', 'Fuel (est.)', 'Distance', 'Duration', 'L/km', 'L/h', 'Refuels'].map(h => {
+                  const dot = ASSET_COLUMN_DOTS[h];
+                  return (
+                    <th key={h} style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>
+                      {dot ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                          <span aria-hidden style={{ width: 6, height: 6, borderRadius: '50%', background: dot, marginRight: 6, flexShrink: 0 }} />
+                          {h}
+                        </span>
+                      ) : h}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -457,12 +483,12 @@ export default function FuelConsumption() {
                       <td style={{ padding: '8px 12px', color: fuelZoneColor(a.zone) }}>
                         {QUARRY_SITE_LABELS[a.zone as QuarrySiteKey] || a.zone}
                       </td>
-                      <td style={{ padding: '8px 12px' }}>{a.tripCount}</td>
-                      <td style={{ padding: '8px 12px' }}>{fmt(a.totalFuelLiters, 0)}</td>
-                      <td style={{ padding: '8px 12px' }}>{fmt(a.totalDistanceKm, 0)}</td>
-                      <td style={{ padding: '8px 12px' }}>{fmtDriveHours(a.totalDrivingHours, 1)}</td>
-                      <td style={{ padding: '8px 12px' }}>{fmtRatio(a.litersPerKm)}</td>
-                      <td style={{ padding: '8px 12px' }}>{fmt(a.litersPerHour)}</td>
+                      <td style={{ padding: '8px 12px', color: '#16a34a', fontWeight: 600 }}>{a.tripCount}</td>
+                      <td style={{ padding: '8px 12px', color: '#0078D4', fontWeight: 600 }}>{fmt(a.totalFuelLiters, 0)}</td>
+                      <td style={{ padding: '8px 12px', color: '#0d9488' }}>{fmt(a.totalDistanceKm, 0)}</td>
+                      <td style={{ padding: '8px 12px', color: '#7c3aed' }}>{fmtDriveHours(a.totalDrivingHours, 1)}</td>
+                      <td style={{ padding: '8px 12px', color: '#ea580c' }}>{fmtRatio(a.litersPerKm)}</td>
+                      <td style={{ padding: '8px 12px', color: '#d97706' }}>{fmt(a.litersPerHour)}</td>
                       <td style={{ padding: '8px 12px' }}>
                         {a.refuelCount > 0 ? (
                           <span style={{ color: '#d97706', display: 'flex', alignItems: 'center', gap: 4 }}>

@@ -1,5 +1,7 @@
 import XLSX from 'xlsx-js-style';
 import { displayDriverName } from './driverUtils';
+import { brandLabel } from './branding';
+import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { authFetchInit } from './authApi';
 
 export interface LogEntry {
@@ -21,24 +23,28 @@ export interface LogEntry {
 export type ExportFormat = 'csv' | 'excel' | 'pdf';
 
 const COLUMNS = [
-  { header: 'Asset Name', get: (e: LogEntry) => e.assetName || 'N/A' },
+  { header: 'Asset Name', get: (e: LogEntry) => brandLabel(e.assetName) || 'N/A' },
   { header: 'Reg No', get: (e: LogEntry) => e.regNo || 'N/A' },
-  { header: 'Site', get: (e: LogEntry) => e.site || 'N/A' },
-  { header: 'Transporter', get: (e: LogEntry) => e.transporter || 'N/A' },
+  { header: 'Site', get: (e: LogEntry) => brandLabel(e.site) || 'N/A' },
+  { header: 'Transporter', get: (e: LogEntry) => brandLabel(e.transporter) || 'N/A' },
   { header: 'Driver', get: (e: LogEntry) => displayDriverName(e.driverName, 'N/A') },
-  { header: 'Phone', get: (e: LogEntry) => e.driverPhone || 'N/A' },
+  { header: 'Phone', get: (e: LogEntry) => scrubPhone(e.driverPhone) },
   { header: 'Event', get: (e: LogEntry) => e.label || 'Unknown' },
   { header: 'Event Time', get: (e: LogEntry) => (e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB') : 'N/A') },
   {
     header: 'Location',
     get: (e: LogEntry) => {
-      if (e.address && e.address !== 'N/A' && e.address !== 'null') return e.address;
+      if (e.address && e.address !== 'N/A' && e.address !== 'null') return brandLabel(e.address);
       return 'N/A';
     },
   },
 ];
 
-const TEXT_FORCE_COLUMNS = ['Phone', 'Reg No'];
+function scrubPhone(phone?: string) {
+  if (!phone) return 'N/A';
+  if (!DEMO_BRANDING) return phone;
+  return demoPhoneLabel(phone);
+}const TEXT_FORCE_COLUMNS = ['Phone', 'Reg No'];
 const COL_KEYS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
 
 function fileStamp() {

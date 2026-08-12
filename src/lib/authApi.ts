@@ -230,6 +230,7 @@ export function permissionForPath(pathname: string): string | null {
     ['/reports/documents', 'documents'],
     ['/reports', 'reports'],
     ['/incidents', 'incidents'],
+    ['/trends', 'incidents'],
     ['/drivers', 'drivers'],
     ['/tankers', 'tankers'],
     ['/quarry', 'quarry'],

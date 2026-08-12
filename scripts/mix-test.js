@@ -34,9 +34,16 @@ const LAFARGE_ORG_ID = process.env.LAFARGE_ORG_ID;
 
 /** 30s poll — positions + active events. Trips are on a slower cadence below. */
 const POLL_INTERVAL_MS = 30 * 1000;
-/** Aggressive RAM/API relief: trips are heavy — poll every 30 minutes, smaller pages. */
-const TRIPS_POLL_INTERVAL_MS = 30 * 60 * 1000;
-const TRIPS_PAGE_SIZE = 250;
+/** Trips cadence — keep reasonably fresh for HOS / distance. */
+const TRIPS_POLL_INTERVAL_MS = 5 * 60 * 1000;
+/** While the sinceToken is >2h behind (within the live window), poll more often. */
+const TRIPS_CATCHUP_POLL_MS = 30 * 1000;
+const TRIPS_PAGE_SIZE = 1000;
+/** Keep trip sync light — only a few pages per cycle (no multi-day backfill drain). */
+const TRIPS_MAX_PAGES_PER_CYCLE = 8;
+const TRIPS_CATCHUP_BUDGET_MS = 20_000;
+/** Only sync recent trips for live HOS/distance. Older history stays in SQLite as-is. */
+const TRIPS_LIVE_LOOKBACK_HOURS = 24;
 const MAX_RUNS = 1200;
 const DRIVER_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const VEHICLE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -64,7 +71,8 @@ let lastDbPrune = 0;
 // Trips state — history lives in fleet.db (not RAM)
 const TRIPS_SESSION_FILE = path.join(process.cwd(), 'public', 'trips-session.json');
 const TRIP_MERGE_GAP_MS  = 5 * 60 * 1000;
-const TRIPS_MAX_LOOKBACK_DAYS = 6; // MiX rejects sinceTokens older than 7 days
+/** MiX rejects sinceTokens older than ~7 days — validity ceiling only. */
+const TRIPS_MAX_LOOKBACK_DAYS = 6;
 
 /** Unknown EventTypeIds already sampled this process — avoid unbounded unknown-events.log growth. */
 const unknownEventTypesLogged = new Set();
@@ -90,8 +98,13 @@ function getSinceToken(date) {
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}000`;
 }
 
+function getTripsLiveSinceToken() {
+  return getSinceToken(new Date(Date.now() - TRIPS_LIVE_LOOKBACK_HOURS * 60 * 60 * 1000));
+}
+
 function getTripsInitialSinceToken() {
-  return getSinceToken(new Date(Date.now() - TRIPS_MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000));
+  // Cold start / reset: only the live window — do not backfill multi-day fleets.
+  return getTripsLiveSinceToken();
 }
 
 function parseSinceToken(token) {
@@ -110,8 +123,15 @@ function isTripSinceTokenValid(token) {
   return ageMs >= 0 && ageMs < TRIPS_MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
 }
 
+function isTripSinceTokenInLiveWindow(token) {
+  const date = parseSinceToken(token);
+  if (!date || isNaN(date.getTime())) return false;
+  const ageMs = Date.now() - date.getTime();
+  return ageMs >= 0 && ageMs <= TRIPS_LIVE_LOOKBACK_HOURS * 60 * 60 * 1000;
+}
+
 function resetTripSinceToken(reason) {
-  tripSinceToken = getTripsInitialSinceToken();
+  tripSinceToken = getTripsLiveSinceToken();
   console.log(`🛣️ Trip sinceToken reset (${reason}): ${tripSinceToken}`);
 }
 
@@ -192,8 +212,16 @@ function loadTripSession() {
     if (fs.existsSync(TRIPS_SESSION_FILE)) {
       const session = JSON.parse(fs.readFileSync(TRIPS_SESSION_FILE, 'utf8'));
       if (session?.sinceToken && isTripSinceTokenValid(session.sinceToken)) {
-        tripSinceToken = session.sinceToken;
-        console.log(`🛣️ Trip sinceToken restored from session: ${tripSinceToken}`);
+        if (isTripSinceTokenInLiveWindow(session.sinceToken)) {
+          tripSinceToken = session.sinceToken;
+          console.log(`🛣️ Trip sinceToken restored from session: ${tripSinceToken}`);
+        } else {
+          // Skip multi-day backlog — jump to last 24h so live HOS can fill without crushing the box.
+          resetTripSinceToken(
+            `session cursor too old for live window (${session.sinceToken}); using last ${TRIPS_LIVE_LOOKBACK_HOURS}h`,
+          );
+          saveSessionTrips();
+        }
       }
     }
   } catch {
@@ -242,9 +270,25 @@ const triggeredWarningEvents = new Map();
 const idleEventVehicles = new Set();
 const excessiveIdleVehicles = new Set();
 
-// assetId (string) → { level: number, timestamp: string }
+// assetId (string) → { level: number, timestamp: string } — smoothed live display level
 const fuelLevels = new Map();
 let fuelProbeRawLogged = false;
+
+/** Live fuel display smoothing — probe tickers spike; history stays raw for refuel math. */
+const FUEL_SMOOTH_ALPHA = 0.2;       // 0..1 — lower = steadier (more lag)
+const FUEL_MAX_STEP_L = 8;           // max liters the live reading can move per sample
+const FUEL_SNAP_REFUEL_L = 40;       // upward jump this large → treat as refill, snap through
+
+function smoothLiveFuelLevel(prevLevel, rawLevel) {
+  if (!Number.isFinite(rawLevel)) return prevLevel ?? 0;
+  if (prevLevel == null || !Number.isFinite(prevLevel)) return rawLevel;
+  const delta = rawLevel - prevLevel;
+  // Clear refill: accept immediately so the UI doesn't crawl up over many minutes
+  if (delta >= FUEL_SNAP_REFUEL_L) return rawLevel;
+  // Cap one-step movement, then blend — kills single-tick spikes without freezing the gauge
+  const capped = prevLevel + Math.sign(delta) * Math.min(Math.abs(delta), FUEL_MAX_STEP_L);
+  return prevLevel * (1 - FUEL_SMOOTH_ALPHA) + capped * FUEL_SMOOTH_ALPHA;
+}
 
 let driverLookup = new Map();
 let vehicleLookup = new Map();
@@ -708,7 +752,8 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
       const ts = e.EventDateTime ?? new Date().toISOString();
       if (level !== null && level !== undefined) {
         const parsedLevel = Math.max(0, parseFloat(level));
-        fuelLevels.set(assetId, { level: parsedLevel, timestamp: ts });
+        if (!Number.isFinite(parsedLevel)) return;
+        // Persist raw probe for consumption / refuel detection
         historyRows.push({
           assetId,
           level: parsedLevel,
@@ -717,7 +762,11 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
           eventId: e.EventId?.toString() || null,
           driverId: e.DriverId?.toString() || null,
         });
-        console.log(`⛽ Fuel Probe — AssetId: ${assetId} | Level: ${parsedLevel}`);
+        // Live fleet card / Fuel Monitoring uses a smoothed level so noisy probes don't spike
+        const prev = fuelLevels.get(assetId)?.level;
+        const smoothed = Math.round(smoothLiveFuelLevel(prev, parsedLevel) * 10) / 10;
+        fuelLevels.set(assetId, { level: smoothed, timestamp: ts });
+        console.log(`⛽ Fuel Probe — AssetId: ${assetId} | Raw: ${parsedLevel} | Live: ${smoothed}`);
       }
       if (!fuelProbeRawLogged) {
         fuelProbeRawLogged = true;
@@ -868,59 +917,105 @@ function saveSessionTrips() {
 }
 
 async function getLatestTrips(token) {
-  const url = `${API_BASE}/trips/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/${tripSinceToken}/quantity/${TRIPS_PAGE_SIZE}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-  });
-
-  if (res.status === 401) {
-    cachedToken = null; tokenExpiresAt = 0;
-    console.log('⚠️ Token rejected by trips endpoint — will re-auth next poll');
-    return { fetched: 0, inserted: 0 };
+  // If the cursor aged past MiX's lookback while the process stayed up, reset so we catch up.
+  if (!isTripSinceTokenValid(tripSinceToken)) {
+    resetTripSinceToken('sinceToken older than lookback window');
+  } else if (!isTripSinceTokenInLiveWindow(tripSinceToken)) {
+    // Never grind a multi-day backlog on the live poller — jump to last 24h.
+    resetTripSinceToken(`cursor outside live ${TRIPS_LIVE_LOOKBACK_HOURS}h window`);
   }
 
-  const newToken = res.headers.get('GetSinceToken');
+  let totalReceived = 0;
+  let totalInserted = 0;
+  let pages = 0;
+  const started = Date.now();
+  let morePending = false;
 
-  if (res.status === 204) {
-    if (newToken) tripSinceToken = newToken;
-    saveSessionTrips();
-    return { fetched: 0, inserted: 0 };
-  }
-
-  if (!res.ok) {
-    const errText = await res.text();
-    console.log(`⚠️ Trips endpoint ${res.status}: ${errText.slice(0, 200)}`);
-    if (res.status === 400 && /SinceToken/i.test(errText)) {
-      resetTripSinceToken('stale token rejected by MiX');
-      saveSessionTrips();
+  while (pages < TRIPS_MAX_PAGES_PER_CYCLE && (Date.now() - started) < TRIPS_CATCHUP_BUDGET_MS) {
+    pages += 1;
+    const url = `${API_BASE}/trips/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/${tripSinceToken}/quantity/${TRIPS_PAGE_SIZE}`;
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+    } catch (e) {
+      console.log(`⚠️ Trips fetch failed: ${e?.message || e}`);
+      break;
     }
-    return { fetched: 0, inserted: 0 };
-  }
 
-  const text = await res.text();
-  const safe = text.replace(/:\s*(-?\d{16,})/g, ': "$1"');
-  let trips;
-  try { trips = JSON.parse(safe); } catch (e) {
-    console.log(`⚠️ Failed to parse trips response: ${e.message}`);
-    return { fetched: 0, inserted: 0 };
-  }
+    if (res.status === 401) {
+      cachedToken = null; tokenExpiresAt = 0;
+      console.log('⚠️ Token rejected by trips endpoint — will re-auth next poll');
+      break;
+    }
 
-  if (newToken) {
-    tripSinceToken = newToken;
-    console.log(`📌 Updated tripSinceToken: ${tripSinceToken}`);
-  }
+    const newToken = res.headers.get('GetSinceToken');
 
-  let inserted = 0;
-  if (Array.isArray(trips) && trips.length) {
+    if (res.status === 204) {
+      if (newToken) tripSinceToken = newToken;
+      else {
+        const tokenAgeMs = Date.now() - (parseSinceToken(tripSinceToken)?.getTime() || 0);
+        if (tokenAgeMs > 24 * 60 * 60 * 1000) {
+          resetTripSinceToken('204 with stale sinceToken and no GetSinceToken');
+        }
+      }
+      break;
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.log(`⚠️ Trips endpoint ${res.status}: ${errText.slice(0, 200)}`);
+      if (res.status === 400 && /SinceToken/i.test(errText)) {
+        resetTripSinceToken('stale token rejected by MiX');
+      }
+      break;
+    }
+
+    const text = await res.text();
+    const safe = text.replace(/:\s*(-?\d{16,})/g, ': "$1"');
+    let trips;
+    try { trips = JSON.parse(safe); } catch (e) {
+      console.log(`⚠️ Failed to parse trips response: ${e.message}`);
+      break;
+    }
+
+    if (newToken) tripSinceToken = newToken;
+
+    if (!Array.isArray(trips) || trips.length === 0) {
+      if (!newToken) {
+        const tokenAgeMs = Date.now() - (parseSinceToken(tripSinceToken)?.getTime() || 0);
+        if (tokenAgeMs > 24 * 60 * 60 * 1000) {
+          resetTripSinceToken('empty trips body with stale sinceToken');
+        }
+      }
+      break;
+    }
+
     const slimList = trips.map(slimTrip);
-    // Drop the fat MiX array ASAP — only slim rows go to SQLite
-    trips = null;
-    inserted = upsertTrips(slimList, 'mix');
-    console.log(`🛣️ Trips: ${slimList.length} received, ${inserted} upserted — db: ${countTrips()}`);
+    const inserted = upsertTrips(slimList, 'mix');
+    totalReceived += slimList.length;
+    totalInserted += inserted;
+
+    // Full page usually means more backlog remains — keep draining.
+    if (slimList.length >= TRIPS_PAGE_SIZE) {
+      morePending = true;
+      continue;
+    }
+    morePending = false;
+    break;
   }
 
   saveSessionTrips();
-  return { fetched: inserted ? inserted : 0, inserted };
+  if (totalReceived > 0 || pages > 1) {
+    console.log(
+      `🛣️ Trips: ${pages} page(s), ${totalReceived} received, ${totalInserted} upserted — cursor ${tripSinceToken}`
+      + (morePending && pages >= TRIPS_MAX_PAGES_PER_CYCLE ? ' (more pending next cycle)' : ''),
+    );
+  } else {
+    console.log(`🛣️ Trips: caught up (no new) — cursor ${tripSinceToken}`);
+  }
+  return { fetched: totalReceived, inserted: totalInserted, morePending };
 }
 
 /** Session API — recent window only (avoid loading a full week into RAM). */
@@ -1065,6 +1160,233 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
   };
 }
 
+/**
+ * Walk one driver-day's trips (chronological). Rest = a >=30 min gap between trips
+ * (vehicle parked / ignition off). Lafarge trips have no sub-trip telemetry, so — unlike
+ * an ELD — a stop *within* a single trip (traffic, loading) can't be distinguished from a
+ * genuine break; only inter-trip gaps reset the continuous-driving clock.
+ */
+function analyzeDriverTripBlocks(trips, { isToday, nowMs, driveLimitMin, restGapMin }) {
+  if (!trips.length) {
+    return { maxContinuousMin: 0, currentBlockMin: 0, breaches: 0, violationDriveMinutes: 0, violationTripMinutes: 0, violationHistory: [] };
+  }
+
+  const restSec = restGapMin * 60;
+  const blocks = [];
+  let cur = { driveMin: 0, breachAtMs: null };
+
+  const flushBlock = (endMs) => {
+    if (cur.driveMin <= 0) return;
+    blocks.push({ driveMin: cur.driveMin, breachAtMs: cur.breachAtMs, endMs });
+    cur = { driveMin: 0, breachAtMs: null };
+  };
+
+  for (let i = 0; i < trips.length; i++) {
+    const t = trips[i];
+    if (i > 0) {
+      const gapSec = (t.startMs - trips[i - 1].endMs) / 1000;
+      if (gapSec >= restSec) flushBlock(trips[i - 1].endMs);
+    }
+
+    const before = cur.driveMin;
+    const pulseMin = t.driveSec / 60;
+    cur.driveMin += pulseMin;
+
+    if (before < driveLimitMin && cur.driveMin >= driveLimitMin) {
+      const needMin = driveLimitMin - before;
+      const frac = pulseMin > 0 ? needMin / pulseMin : 1;
+      cur.breachAtMs = t.startMs + frac * (t.endMs - t.startMs);
+    }
+  }
+
+  const lastTrip = trips[trips.length - 1];
+  const gapSinceLastMin = isToday ? (nowMs - lastTrip.endMs) / 60000 : Infinity;
+  if (isToday && gapSinceLastMin >= restGapMin) {
+    flushBlock(lastTrip.endMs);
+  } else if (cur.driveMin > 0) {
+    flushBlock(isToday ? nowMs : lastTrip.endMs);
+  }
+
+  let maxContinuousMin = 0;
+  let currentBlockMin = 0;
+  let breaches = 0;
+  let violationDriveMinutes = 0;
+  let violationTripMinutes = 0;
+  const violationHistory = [];
+
+  blocks.forEach((b, idx) => {
+    const rounded = Math.round(b.driveMin);
+    if (rounded > maxContinuousMin) maxContinuousMin = rounded;
+    if (idx === blocks.length - 1 && !(isToday && gapSinceLastMin >= restGapMin)) currentBlockMin = rounded;
+    if (b.breachAtMs != null) {
+      breaches++;
+      const vDrive = Math.round(Math.max(0, b.driveMin - driveLimitMin));
+      const vTrip = Math.max(0, Math.round((b.endMs - b.breachAtMs) / 60000));
+      violationDriveMinutes += vDrive;
+      violationTripMinutes += vTrip;
+      violationHistory.push({
+        breachAt: new Date(b.breachAtMs).toISOString(),
+        violationDriveMinutes: vDrive,
+        violationTripMinutes: vTrip,
+      });
+    }
+  });
+
+  if (isToday && gapSinceLastMin >= restGapMin) currentBlockMin = 0;
+
+  return { maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory };
+}
+
+/**
+ * Hours-of-Service — 4 hours continuous driving requires a >=30-minute rest.
+ * A rest resets the continuous block; a rest is a >=30 min gap between trips (parked).
+ * "Today" = since 00:00 Africa/Lagos (UTC+1, no DST).
+ */
+export function getHosRecords(dayStr) {
+  // HOS can be called from the API without a poll cycle having run yet (or after HMR).
+  if (driverLookup.size === 0) loadDriverLookup();
+  if (vehicleLookup.size === 0) loadVehicleLookup();
+
+  const liveZoneByAsset = new Map();
+  try {
+    const dataPath = path.join(process.cwd(), 'public', 'data.json');
+    if (fs.existsSync(dataPath)) {
+      const rows = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+      rows.forEach(v => {
+        if (v.id && v.zone) liveZoneByAsset.set(String(v.id), v.zone);
+      });
+    }
+  } catch { /* ignore */ }
+
+  const DRIVE_LIMIT_MIN = 240; // 4 hours
+  const DUTY_LIMIT_MIN = 720;  // 12 hours (display only)
+  const REST_GAP_MIN = 30;     // a >=30m gap counts as a rest / break
+  const WARN_MIN = 210;        // "approaching 4h" (within 30 min of the limit)
+
+  const nowMs = Date.now();
+  const LAGOS_OFFSET_MS = 60 * 60 * 1000; // UTC+1
+
+  const todayStr = new Date(nowMs + LAGOS_OFFSET_MS).toISOString().slice(0, 10);
+  const targetStr = /^\d{4}-\d{2}-\d{2}$/.test(dayStr || '') ? dayStr : todayStr;
+  const isToday = targetStr === todayStr;
+
+  const [ty, tm, td] = targetStr.split('-').map(Number);
+  const startOfDay = Date.UTC(ty, tm - 1, td, 0, 0, 0) - LAGOS_OFFSET_MS;
+  const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+
+  let lastTripDay = null;
+  try {
+    const latest = getDb().prepare(`
+      SELECT COALESCE(trip_end, trip_start) AS t
+      FROM trips
+      WHERE COALESCE(trip_end, trip_start) IS NOT NULL
+      ORDER BY t DESC
+      LIMIT 1
+    `).get();
+    if (latest?.t) {
+      lastTripDay = new Date(new Date(latest.t).getTime() + LAGOS_OFFSET_MS).toISOString().slice(0, 10);
+    }
+  } catch { /* ignore */ }
+
+  const byDriver = new Map();
+  for (const raw of getTripsInRange(new Date(startOfDay).toISOString(), new Date(endOfDay).toISOString())) {
+    const t = normalizeTripForDistance(raw);
+    const startMs = t.tripStart ? new Date(t.tripStart).getTime() : NaN;
+    const endMs = t.tripEnd ? new Date(t.tripEnd).getTime() : NaN;
+    const anchor = Number.isFinite(endMs) ? endMs : startMs;
+    if (!Number.isFinite(anchor) || anchor < startOfDay || anchor >= endOfDay) continue;
+    if (!t.driverId && (!t.driverName || t.driverName === 'N/A')) continue;
+
+    const key = t.driverId || t.driverName;
+    const spanSec = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+      ? (endMs - startMs) / 1000
+      : 0;
+    const driveSecRaw = Number(t.drivingTimeSeconds);
+    const driveSec = Number.isFinite(driveSecRaw) && driveSecRaw > 0 ? driveSecRaw : spanSec;
+    const tStartMs = Number.isFinite(startMs) ? startMs : anchor;
+    const tEndMs = Number.isFinite(endMs) ? endMs : anchor;
+    if (tEndMs <= tStartMs) continue;
+
+    if (!byDriver.has(key)) byDriver.set(key, []);
+    byDriver.get(key).push({
+      startMs: tStartMs,
+      endMs: tEndMs,
+      driveSec,
+      driverName: t.driverName,
+      assetId: t.assetId,
+      regNo: t.regNo,
+    });
+  }
+
+  const records = [];
+  for (const [key, trips] of byDriver.entries()) {
+    trips.sort((a, b) => a.startMs - b.startMs);
+
+    const driveMinutesToday = Math.round(trips.reduce((s, t) => s + t.driveSec, 0) / 60);
+    const firstStart = trips[0].startMs;
+    const lastEnd = trips[trips.length - 1].endMs;
+    const dutyMinutesToday = Math.max(driveMinutesToday, Math.round((lastEnd - firstStart) / 60000));
+
+    const analysis = analyzeDriverTripBlocks(trips, {
+      isToday, nowMs, driveLimitMin: DRIVE_LIMIT_MIN, restGapMin: REST_GAP_MIN,
+    });
+    const { maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory } = analysis;
+
+    const continuousMin = isToday ? currentBlockMin : maxContinuousMin;
+
+    let status = 'compliant';
+    if (continuousMin >= DRIVE_LIMIT_MIN) status = 'violation';
+    else if (continuousMin >= WARN_MIN) status = 'warning';
+
+    const restMinutesRemaining = isToday ? Math.max(0, DRIVE_LIMIT_MIN - currentBlockMin) : 0;
+    const restDueAt = isToday && restMinutesRemaining > 0
+      ? new Date(nowMs + restMinutesRemaining * 60000).toISOString()
+      : null;
+
+    const lastTrip = trips[trips.length - 1];
+    const resolvedName = (lastTrip.driverName && lastTrip.driverName !== 'N/A')
+      ? lastTrip.driverName
+      : (driverLookup.get(String(key))?.name || lastTrip.driverName || 'N/A');
+    const site = (lastTrip.assetId && liveZoneByAsset.get(lastTrip.assetId)) || 'HBM';
+
+    records.push({
+      id: String(key),
+      driverName: resolvedName,
+      vehicleReg: lastTrip.regNo || 'N/A',
+      site,
+      driveMinutesToday,
+      dutyMinutesToday,
+      continuousMinutes: continuousMin,
+      maxContinuousMinutes: maxContinuousMin,
+      currentBlockMinutes: currentBlockMin,
+      breaches,
+      violationDriveMinutes,
+      violationTripMinutes,
+      violationHistory,
+      driveLimitMinutes: DRIVE_LIMIT_MIN,
+      dutyLimitMinutes: DUTY_LIMIT_MIN,
+      restMinutesRemaining,
+      status,
+      restDueAt,
+      lastUpdated: new Date(nowMs).toISOString(),
+    });
+  }
+
+  const statusOrder = { violation: 0, warning: 1, compliant: 2 };
+  records.sort((a, b) => {
+    if (statusOrder[a.status] !== statusOrder[b.status]) return statusOrder[a.status] - statusOrder[b.status];
+    return b.driveMinutesToday - a.driveMinutesToday;
+  });
+
+  return {
+    updatedAt: new Date(nowMs).toISOString(),
+    day: targetStr,
+    isToday,
+    lastTripDay,
+    records,
+  };
+}
+
 export async function pollOnce() {
   if (inFlight) return inFlight;
 
@@ -1092,9 +1414,11 @@ export async function pollOnce() {
         await fetchAndCacheSites(token);
       }
 
-      // Positions every poll; trips only on the slow cadence (RAM + MiX quota)
+      // Positions every poll; trips on a slower cadence — accelerate while cursor is behind.
       const positions = await getLatestPositions(token);
-      if (Date.now() - lastTripsFetch >= TRIPS_POLL_INTERVAL_MS || lastTripsFetch === 0) {
+      const tripTokenAgeMs = Date.now() - (parseSinceToken(tripSinceToken)?.getTime() || 0);
+      const tripsDueMs = tripTokenAgeMs > 2 * 60 * 60 * 1000 ? TRIPS_CATCHUP_POLL_MS : TRIPS_POLL_INTERVAL_MS;
+      if (Date.now() - lastTripsFetch >= tripsDueMs || lastTripsFetch === 0) {
         await getLatestTrips(token);
         lastTripsFetch = Date.now();
       }
@@ -1204,7 +1528,7 @@ export function startPolling(options = {}) {
   console.log("🚀 MiX Auto-Polling Started");
   console.log("=".repeat(70));
   console.log(`Polling interval: ${intervalMs / 1000} seconds (positions/events)`);
-  console.log(`Trips cadence: every ${TRIPS_POLL_INTERVAL_MS / 60000} min · page ${TRIPS_PAGE_SIZE}`);
+  console.log(`Trips cadence: every ${TRIPS_POLL_INTERVAL_MS / 60000} min (catch-up every ${TRIPS_CATCHUP_POLL_MS / 1000}s when behind) · live window ${TRIPS_LIVE_LOOKBACK_HOURS}h · page ${TRIPS_PAGE_SIZE} · up to ${TRIPS_MAX_PAGES_PER_CYCLE} pages/cycle`);
   console.log(`SQLite retention: ${DB_RETENTION_DAYS.trips}d · prune every ${DB_PRUNE_INTERVAL_MS / 3600000}h`);
   console.log(`Total runs: ${pollingMaxRuns ?? "∞"}`);
   if (pollingMaxRuns) {

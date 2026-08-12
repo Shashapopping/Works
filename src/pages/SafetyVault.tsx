@@ -5,7 +5,9 @@ import type { VaultRecord } from '../context/FleetContext';
 import SafetyIncidentModal from '../components/SafetyIncidentModal';
 import type { SafetyNotification } from '../hooks/useSafeIQ';
 import { formatEnvironmentLine } from '../components/EnvironmentBadge';
-import { isKnownDriver } from '../lib/driverUtils';
+import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
+import { brandLabel } from '../lib/branding';
+import MockNamesBadge from '../components/MockNamesBadge';
 
 type StatusFilter = 'all' | 'open' | 'in_review' | 'resolved';
 type SeverityFilter = 'all' | 'RED' | 'YELLOW' | 'GREEN';
@@ -195,11 +197,11 @@ function RecordRow({ record, onUpdate }: { record: VaultRecord; onUpdate: (id: s
         {/* Main info */}
         <div>
           <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 13 }}>
-            {record.type} — {record.driverName}
+            {record.type} — {displayDriverName(record.driverName)}
             {record.vehicleId && <span style={{ fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 6 }}>({record.vehicleId})</span>}
           </div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
-            {record.location && <span>{record.location} · </span>}
+            {record.location && <span>{brandLabel(record.location)} · </span>}
             {new Date(record.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
           </div>
         </div>
@@ -552,7 +554,7 @@ function SafeIQTab({ notifications, onOpen, onDismiss }: {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <ShieldAlert size={16} style={{ color: accent }} />
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)' }}>{n.driver.name}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)' }}>{displayDriverName(n.driver.name)}</div>
                   <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
                     {n.vehicle.id}{n.vehicle.make ? ` · ${n.vehicle.make}` : ''} · {timeAgo(n.timestamp)}
                   </div>

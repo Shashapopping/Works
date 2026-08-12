@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { MapPin, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
 import { CEMENT_SITE_TREE, allMatchKeys, nodeCount, nodeMatchesQuery, type SiteTreeNode } from '../../lib/cementSiteTree';
+import { brandLabel } from '../../lib/branding';
 
 export default function SiteSelector() {
   const { selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions } = useFleet();
@@ -288,7 +289,7 @@ function SiteTreeRow({ node, depth, query, zoneOptions, siteOptions, selectedSet
           color: allSelected ? '#fff' : 'rgba(255,255,255,0.7)',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
-          {node.label}
+          {brandLabel(node.label)}
         </span>
         <span style={{
           fontSize: 10, fontWeight: 700, borderRadius: 99, padding: '1px 7px', flexShrink: 0,
@@ -352,7 +353,7 @@ function SiteCheckRow({ label, count, checked, onClick }: {
         color: checked ? '#fff' : 'rgba(255,255,255,0.7)',
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
       }}>
-        {label}
+        {brandLabel(label)}
       </span>
       <span style={{
         fontSize: 10, fontWeight: 700, borderRadius: 99, padding: '1px 7px', flexShrink: 0,

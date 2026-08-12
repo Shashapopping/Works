@@ -1,5 +1,6 @@
 import type { Vehicle, TripAsset, LogEntry } from '../context/FleetContext';
 import { filterVehiclesBySegment, type FleetSegmentId } from './fleetSegments';
+import { brandLabel } from './branding';
 
 export const STATUS_COLOR: Record<string, string> = {
   Moving: '#16a34a',
@@ -104,9 +105,9 @@ export function readyMixPlant(v: Pick<Vehicle, 'site' | 'zone'> | string | null 
 /** Prefer reverse-geocoded address; if MiX returns "Unknown", use site/zone then coordinates. */
 export function locationLabel(v: Pick<Vehicle, 'position' | 'zone' | 'site'>) {
   const addr = v.position?.address?.trim();
-  if (addr && addr !== 'Unknown' && addr.toLowerCase() !== 'n/a') return addr;
+  if (addr && addr !== 'Unknown' && addr.toLowerCase() !== 'n/a') return brandLabel(addr);
   const siteOrZone = (v.site || v.zone || '').trim();
-  if (siteOrZone) return siteOrZone;
+  if (siteOrZone) return brandLabel(siteOrZone);
   const lat = v.position?.latitude;
   const lng = v.position?.longitude;
   if (lat != null && lng != null && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {

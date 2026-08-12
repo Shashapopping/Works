@@ -17,7 +17,10 @@ const DriverManagement = lazy(() => import('./pages/DriverManagement'));
 const CoachingPage = lazy(() => import('./pages/driver/CoachingPage'));
 const TrainingPage = lazy(() => import('./pages/driver/TrainingPage'));
 const CertificatesPage = lazy(() => import('./pages/driver/CertificatesPage'));
+const FatigueManagementPage = lazy(() => import('./pages/driver/FatigueManagementPage'));
+const VisionPage = lazy(() => import('./pages/driver/VisionPage'));
 const IncidentIntelligence = lazy(() => import('./pages/IncidentIntelligence'));
+const TrendsPage = lazy(() => import('./pages/TrendsPage'));
 const Safety = lazy(() => import('./pages/Safety'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Maintenance = lazy(() => import('./pages/Maintenance'));
@@ -55,12 +58,15 @@ export default function App() {
                 <Route path="/drivers/coaching" element={<CoachingPage />} />
                 <Route path="/drivers/training" element={<TrainingPage />} />
                 <Route path="/drivers/certifications" element={<CertificatesPage />} />
+                <Route path="/drivers/fatigue" element={<FatigueManagementPage />} />
+                <Route path="/drivers/vision" element={<VisionPage />} />
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
 
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
-                <Route path="/incidents/trends" element={<IncidentIntelligence tab="trends" />} />
-                <Route path="/incidents/analysis" element={<Navigate to="/incidents/trends" replace />} />
+                <Route path="/incidents/trends" element={<Navigate to="/trends" replace />} />
+                <Route path="/incidents/analysis" element={<Navigate to="/trends" replace />} />
                 <Route path="/incidents/response" element={<IncidentIntelligence tab="patterns" />} />
+                <Route path="/trends" element={<TrendsPage />} />
 
                 <Route path="/safety" element={<Safety />} />
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { X, Search } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
+import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 
 interface LogEntry {
   timestamp: string;
@@ -418,7 +419,7 @@ export default function EventLogPanel({ open, onClose, authFetch, isMobile }: Pr
                   )}
                   {hasDriver && (
                     <div style={{ fontSize: '11px', color: 'var(--cd-text-muted)', marginBottom: address ? '2px' : '0' }}>
-                      👤 {displayDriverName(entry.driverName)}{entry.driverPhone && entry.driverPhone !== 'N/A' ? ` · ${entry.driverPhone}` : ''}
+                      👤 {displayDriverName(entry.driverName)}{entry.driverPhone && entry.driverPhone !== 'N/A' ? ` · ${DEMO_BRANDING ? demoPhoneLabel(entry.driverPhone) : entry.driverPhone}` : ''}
                     </div>
                   )}
                   {address && (

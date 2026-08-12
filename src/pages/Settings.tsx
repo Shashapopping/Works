@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useBlocker } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import {
@@ -32,6 +32,7 @@ import {
 } from '../lib/authApi';
 import { useAuth } from '../context/AuthContext';
 import LicenseUpgradeModal from '../components/LicenseUpgradeModal';
+import { clientName as brandClientName, productName } from '../lib/branding';
 
 type Tab = 'general' | 'thresholds' | 'roles' | 'users' | 'dev';
 
@@ -63,8 +64,8 @@ function GeneralSettings() {
   const { theme, setTheme } = useFleet();
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState({
-    clientName: 'HBM Nigeria',
-    platform: 'BPL Fleet Intelligence Platform',
+    clientName: brandClientName(),
+    platform: productName(),
     timezone: 'Africa/Lagos',
     currency: 'NGN',
   });
@@ -340,7 +341,7 @@ function ThresholdSettings() {
               <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>points deducted each time</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              Raise this to punish violations harder. HBM policy default is 2.
+              Raise this to punish violations harder. Policy default is 2.
             </div>
           </div>
           <div>
@@ -610,6 +611,7 @@ function RoleSettings() {
     return () => { cancelled = true; };
   }, []);
 
+  // HashRouter has no data-router blocker; warn on tab close/refresh when dirty.
   useEffect(() => {
     if (!dirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -619,14 +621,6 @@ function RoleSettings() {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
-
-  const blocker = useBlocker(dirty);
-  useEffect(() => {
-    if (blocker.state !== 'blocked') return;
-    const leave = window.confirm('You have unsaved role changes. Leave without saving?');
-    if (leave) blocker.proceed();
-    else blocker.reset();
-  }, [blocker]);
 
   const assignPermission = (roleId: string, permissionId: string, fromRoleId: string | null) => {
     setConfig(prev => ({

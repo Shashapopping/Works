@@ -7,6 +7,8 @@ import {
   certificateStatus,
   type DriverCertificate,
 } from '../../lib/driverInterventions';
+import { displayDriverName } from '../../lib/driverUtils';
+import MockNamesBadge from '../../components/MockNamesBadge';
 import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import PageControls from '../../components/PageControls';
@@ -112,7 +114,7 @@ export default function CertificatesPage() {
       <div>
         <div className="bpl-page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <h1 className="bpl-page-title">Driver Management — Certificates</h1>
+            <h1 className="bpl-page-title">Driver Management — Certificates <MockNamesBadge /></h1>
             <p className="bpl-page-subtitle">Driver training and licence certificate records, tracked manually</p>
           </div>
           <button
@@ -177,7 +179,7 @@ export default function CertificatesPage() {
                   const status = certificateStatus(c.expiryDate);
                   return (
                     <tr key={c.id} style={{ borderBottom: '1px solid var(--cd-border)' }}>
-                      <td style={{ padding: '11px 16px', fontWeight: 600, color: 'var(--cd-text)' }}>{c.driverName}</td>
+                      <td style={{ padding: '11px 16px', fontWeight: 600, color: 'var(--cd-text)' }}>{displayDriverName(c.driverName)}</td>
                       <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)' }}>{c.certType}</td>
                       <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)' }}>{c.certNumber || '—'}</td>
                       <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{c.issueDate || '—'}</td>

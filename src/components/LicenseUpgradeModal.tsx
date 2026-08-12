@@ -1,3 +1,5 @@
+import { productName } from '../lib/branding';
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -51,7 +53,7 @@ export default function LicenseUpgradeModal({ open, onClose, used = 3, limit = 3
             color: '#64748b',
             marginBottom: 12,
           }}>
-            HBM Fleet Intelligence
+            {productName()}
           </div>
           <h2
             id="license-upgrade-title"

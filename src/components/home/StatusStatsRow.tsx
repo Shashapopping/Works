@@ -1,13 +1,14 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Truck, Navigation, Clock, MapPin, ParkingCircle, WifiOff, Ban, Fuel, Route,
+  Truck, Navigation, Clock, MapPin, ParkingCircle, WifiOff, Ban, Fuel, Route, ShieldAlert,
 } from 'lucide-react';
 import { useFleet, type StatusFilter, type DistanceRange } from '../../context/FleetContext';
 import WidgetStatGraphic from './WidgetStatGraphic';
 import InfoTip from '../InfoTip';
 import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
+import { useHosRecords } from '../../hooks/useHosRecords';
 
 export type MetricPeriod = DistanceRange;
 
@@ -18,13 +19,13 @@ const DISTANCE_PERIOD_LABELS: Record<DistanceRange, string> = {
 };
 
 const STATUS_STATS = [
-  { key: 'totalVehicles' as const, label: 'Total', filter: 'All' as StatusFilter, color: '#7c3aed', icon: Truck, tip: STATUS_DEFINITIONS.total },
-  { key: 'moving' as const, label: 'Moving', filter: 'Moving' as StatusFilter, color: '#16a34a', icon: Navigation, tip: STATUS_DEFINITIONS.moving },
-  { key: 'idle' as const, label: 'Idle', filter: 'Idle' as StatusFilter, color: '#d97706', icon: Clock, tip: STATUS_DEFINITIONS.idle },
-  { key: 'stationary' as const, label: 'Stationary', filter: 'Stationary' as StatusFilter, color: '#0d9488', icon: MapPin, tip: STATUS_DEFINITIONS.stationary },
-  { key: 'parked' as const, label: 'Parked', filter: 'Parked' as StatusFilter, color: '#ea580c', icon: ParkingCircle, tip: STATUS_DEFINITIONS.parked },
-  { key: 'offline' as const, label: 'Offline', filter: 'Offline' as StatusFilter, color: '#64748b', icon: WifiOff, tip: STATUS_DEFINITIONS.offline },
-  { key: 'inactive' as const, label: 'Non-Operational', filter: 'Inactive' as StatusFilter, color: '#2563eb', icon: Ban, tip: STATUS_DEFINITIONS.nonOperational },
+  { key: 'totalVehicles' as const, label: 'Total', filter: 'All' as StatusFilter, color: '#7c3aed', icon: Truck, tip: STATUS_DEFINITIONS.total, href: '/fleet' },
+  { key: 'moving' as const, label: 'Moving', filter: 'Moving' as StatusFilter, color: '#16a34a', icon: Navigation, tip: STATUS_DEFINITIONS.moving, href: '/fleet?status=Moving' },
+  { key: 'idle' as const, label: 'Idle', filter: 'Idle' as StatusFilter, color: '#d97706', icon: Clock, tip: STATUS_DEFINITIONS.idle, href: '/fleet?status=Idle' },
+  { key: 'stationary' as const, label: 'Stationary', filter: 'Stationary' as StatusFilter, color: '#0d9488', icon: MapPin, tip: STATUS_DEFINITIONS.stationary, href: '/fleet?status=Stationary' },
+  { key: 'parked' as const, label: 'Parked', filter: 'Parked' as StatusFilter, color: '#ea580c', icon: ParkingCircle, tip: STATUS_DEFINITIONS.parked, href: '/fleet?status=Parked' },
+  { key: 'offline' as const, label: 'Offline', filter: 'Offline' as StatusFilter, color: '#64748b', icon: WifiOff, tip: STATUS_DEFINITIONS.offline, href: '/fleet?status=Offline' },
+  { key: 'inactive' as const, label: 'Non-Operational', filter: 'Inactive' as StatusFilter, color: '#2563eb', icon: Ban, tip: STATUS_DEFINITIONS.nonOperational, href: '/fleet?status=Inactive' },
 ];
 
 interface Props {
@@ -32,6 +33,8 @@ interface Props {
   onFilterChange: (f: StatusFilter) => void;
   metricPeriod: MetricPeriod;
   onMetricPeriodChange: (p: MetricPeriod) => void;
+  /** When true (Dashboard/home), status cards navigate to Fleet with a status query. When false (Fleet page itself), they just set the local filter. */
+  navigateOnStatusClick?: boolean;
 }
 
 export default function StatusStatsRow({
@@ -39,10 +42,12 @@ export default function StatusStatsRow({
   onFilterChange,
   metricPeriod,
   onMetricPeriodChange,
+  navigateOnStatusClick = false,
 }: Props) {
   const navigate = useNavigate();
   const { metadata, totalDistanceKm } = useFleet();
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(metricPeriod);
+  const { violationCount: hosViolations, loading: hosLoading } = useHosRecords();
 
   const quarryFuelLiters = useMemo(() => {
     if (tripFuelLiters > 0) return tripFuelLiters;
@@ -51,6 +56,10 @@ export default function StatusStatsRow({
     if (periodDrop > 0) return Math.round(periodDrop);
     return tripFuelLiters;
   }, [tripFuelLiters, fuelData]);
+
+  const fuelDistanceKm = useMemo(() => {
+    return Math.round((fuelData?.assets ?? []).reduce((s, a) => s + (a.totalDistanceKm || 0), 0));
+  }, [fuelData]);
 
   const getValue = (key: typeof STATUS_STATS[number]['key']) => {
     if (key === 'totalVehicles') return metadata.totalVehicles;
@@ -63,7 +72,7 @@ export default function StatusStatsRow({
         {STATUS_STATS.map(stat => {
           const Icon = stat.icon;
           const value = getValue(stat.key);
-          const isActive = stat.filter === 'All' ? statusFilter === 'All' : statusFilter === stat.filter;
+          const isActive = !navigateOnStatusClick && (stat.filter === 'All' ? statusFilter === 'All' : statusFilter === stat.filter);
           const pct = stat.filter !== 'All' && metadata.totalVehicles > 0
             ? Math.round((value / metadata.totalVehicles) * 100)
             : null;
@@ -79,7 +88,10 @@ export default function StatusStatsRow({
                 background: isActive ? `${stat.color}10` : undefined,
                 outline: isActive ? `1.5px solid ${stat.color}40` : 'none',
               }}
-              onClick={() => onFilterChange(stat.filter)}
+              onClick={() => {
+                if (navigateOnStatusClick) { navigate(stat.href); return; }
+                onFilterChange(stat.filter);
+              }}
             >
               <div className="bpl-status-stat-inner">
                 <div className="bpl-status-stat-copy">
@@ -102,62 +114,132 @@ export default function StatusStatsRow({
       </div>
 
       <div className="bpl-status-metrics-col">
-        <button
-          type="button"
-          className="bpl-card bpl-status-stat bpl-status-metric-card"
-          style={{ borderTopColor: '#f97316', cursor: 'pointer', textAlign: 'left', width: '100%' }}
-          title="Open quarry fuel consumption"
-          onClick={() => navigate('/fuel/consumption')}
-        >
-          <div className="bpl-status-stat-inner">
-            <div className="bpl-status-stat-copy">
-              <span className="bpl-status-stat-label">Quarry Total Fuel Used</span>
-              <div className="bpl-status-stat-value" style={{ color: '#f97316' }}>
-                {fuelLoading && quarryFuelLiters === 0 ? '…' : quarryFuelLiters.toLocaleString()}
-                <span className="bpl-status-metric-unit">L</span>
+        <div className="bpl-status-metrics-stack">
+          <button
+            type="button"
+            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            style={{ borderTopColor: '#8b5cf6', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            title="Open trips"
+            onClick={() => navigate('/trips')}
+          >
+            <div className="bpl-status-stat-inner">
+              <div className="bpl-status-stat-copy">
+                <span className="bpl-status-stat-label">Fleet Distance</span>
+                <div className="bpl-status-stat-value" style={{ color: '#8b5cf6' }}>
+                  {totalDistanceKm.toLocaleString()}
+                  <span className="bpl-status-metric-unit">km</span>
+                </div>
+                <div className="bpl-status-stat-sub">
+                  <select
+                    className="bpl-status-period-select"
+                    value={metricPeriod}
+                    onChange={e => onMetricPeriodChange(e.target.value as MetricPeriod)}
+                    onClick={e => e.stopPropagation()}
+                    aria-label="Distance time period"
+                  >
+                    {(Object.keys(DISTANCE_PERIOD_LABELS) as DistanceRange[]).map(p => (
+                      <option key={p} value={p}>{DISTANCE_PERIOD_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <div className="bpl-status-stat-sub">
-                <select
-                  className="bpl-status-period-select"
-                  value={metricPeriod}
-                  onChange={e => onMetricPeriodChange(e.target.value as MetricPeriod)}
-                  onClick={e => e.stopPropagation()}
-                  aria-label="Fuel time period"
-                >
-                  {(Object.keys(DISTANCE_PERIOD_LABELS) as DistanceRange[]).map(p => (
-                    <option key={p} value={p}>{DISTANCE_PERIOD_LABELS[p]}</option>
-                  ))}
-                </select>
-              </div>
+              <WidgetStatGraphic color="#8b5cf6" icon={Route} />
             </div>
-            <WidgetStatGraphic color="#f97316" icon={Fuel} />
-          </div>
-        </button>
+          </button>
 
-        <div className="bpl-card bpl-status-stat bpl-status-metric-card" style={{ borderTopColor: '#8b5cf6' }}>
-          <div className="bpl-status-stat-inner">
-            <div className="bpl-status-stat-copy">
-              <span className="bpl-status-stat-label">Total Distance</span>
-              <div className="bpl-status-stat-value" style={{ color: '#8b5cf6' }}>
-                {totalDistanceKm.toLocaleString()}
-                <span className="bpl-status-metric-unit">km</span>
-              </div>
-              <div className="bpl-status-stat-sub">
-                <select
-                  className="bpl-status-period-select"
-                  value={metricPeriod}
-                  onChange={e => onMetricPeriodChange(e.target.value as MetricPeriod)}
-                  onClick={e => e.stopPropagation()}
-                  aria-label="Distance time period"
+          <button
+            type="button"
+            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            style={{ borderTopColor: '#CC0000', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            title="Open hours-of-service tracking"
+            onClick={() => navigate('/drivers/fatigue')}
+          >
+            <div className="bpl-status-stat-inner">
+              <div className="bpl-status-stat-copy">
+                <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  HOS Violations
+                  <InfoTip text="Drivers currently over 4 hours continuous driving (hours of service). Clock resets after a 30+ min rest (parked gap)." label="HOS Violations" />
+                </span>
+                <div
+                  className="bpl-status-stat-value"
+                  style={{ color: '#CC0000', animation: hosViolations > 0 ? 'pulse 1.5s infinite' : 'none' }}
                 >
-                  {(Object.keys(DISTANCE_PERIOD_LABELS) as DistanceRange[]).map(p => (
-                    <option key={p} value={p}>{DISTANCE_PERIOD_LABELS[p]}</option>
-                  ))}
-                </select>
+                  {hosLoading ? '…' : hosViolations}
+                </div>
+                <div className="bpl-status-stat-sub">over 4h continuous</div>
               </div>
+              <WidgetStatGraphic color="#CC0000" icon={ShieldAlert} />
             </div>
-            <WidgetStatGraphic color="#8b5cf6" icon={Route} />
-          </div>
+          </button>
+        </div>
+
+        <div className="bpl-status-metrics-stack">
+          <button
+            type="button"
+            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            style={{ borderTopColor: '#0891b2', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            title="Open fuel consumption"
+            onClick={() => navigate('/fuel/consumption')}
+          >
+            <div className="bpl-status-stat-inner">
+              <div className="bpl-status-stat-copy">
+                <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  Fuel Distance
+                  <InfoTip text="Distance covered only by vehicles that reported fuel probe data in this period — pair with Fuel Used for a fair L/km." label="Fuel Distance" />
+                </span>
+                <div className="bpl-status-stat-value" style={{ color: '#0891b2' }}>
+                  {fuelLoading && fuelDistanceKm === 0 ? '…' : fuelDistanceKm.toLocaleString()}
+                  <span className="bpl-status-metric-unit">km</span>
+                </div>
+                <div className="bpl-status-stat-sub">
+                  <select
+                    className="bpl-status-period-select"
+                    value={metricPeriod}
+                    onChange={e => onMetricPeriodChange(e.target.value as MetricPeriod)}
+                    onClick={e => e.stopPropagation()}
+                    aria-label="Fuel time period"
+                  >
+                    {(Object.keys(DISTANCE_PERIOD_LABELS) as DistanceRange[]).map(p => (
+                      <option key={p} value={p}>{DISTANCE_PERIOD_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <WidgetStatGraphic color="#0891b2" icon={Route} />
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            style={{ borderTopColor: '#f97316', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            title="Open quarry fuel consumption"
+            onClick={() => navigate('/fuel/consumption')}
+          >
+            <div className="bpl-status-stat-inner">
+              <div className="bpl-status-stat-copy">
+                <span className="bpl-status-stat-label">Fuel Used</span>
+                <div className="bpl-status-stat-value" style={{ color: '#f97316' }}>
+                  {fuelLoading && quarryFuelLiters === 0 ? '…' : quarryFuelLiters.toLocaleString()}
+                  <span className="bpl-status-metric-unit">L</span>
+                </div>
+                <div className="bpl-status-stat-sub">
+                  <select
+                    className="bpl-status-period-select"
+                    value={metricPeriod}
+                    onChange={e => onMetricPeriodChange(e.target.value as MetricPeriod)}
+                    onClick={e => e.stopPropagation()}
+                    aria-label="Fuel time period"
+                  >
+                    {(Object.keys(DISTANCE_PERIOD_LABELS) as DistanceRange[]).map(p => (
+                      <option key={p} value={p}>{DISTANCE_PERIOD_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <WidgetStatGraphic color="#f97316" icon={Fuel} />
+            </div>
+          </button>
         </div>
       </div>
     </div>

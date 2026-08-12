@@ -244,19 +244,36 @@ export function saveRoles(roles) {
     }
   }
 
+  // Upsert roles — never DELETE roles that users still reference (FK on users.role_id).
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM role_permissions').run();
-    db.prepare('DELETE FROM roles').run();
+
+    const existingIds = new Set(
+      db.prepare('SELECT id FROM roles').all().map(r => r.id),
+    );
+    const updateRole = db.prepare(
+      'UPDATE roles SET name = ?, description = ? WHERE id = ?',
+    );
     const insertRole = db.prepare(
       'INSERT INTO roles (id, name, description, created_at) VALUES (?, ?, ?, ?)',
     );
     const insertPerm = db.prepare(
       'INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
     );
+    const deleteRole = db.prepare('DELETE FROM roles WHERE id = ?');
     const ts = nowIso();
+
     for (const role of normalized) {
-      insertRole.run(role.id, role.name, role.description, ts);
+      if (existingIds.has(role.id)) {
+        updateRole.run(role.name, role.description, role.id);
+      } else {
+        insertRole.run(role.id, role.name, role.description, ts);
+      }
       for (const pid of role.permissions) insertPerm.run(role.id, pid);
+    }
+
+    for (const id of existingIds) {
+      if (!nextIds.has(id)) deleteRole.run(id);
     }
   });
   tx();

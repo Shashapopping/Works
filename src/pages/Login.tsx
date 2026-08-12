@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { fetchOAuthProviders, startGoogleOAuth } from '../lib/authApi';
+import { brandLogoAlt, brandLogoSrc, productName } from '../lib/branding';
 import { Lock, Check } from 'lucide-react';
 
 export default function Login() {
@@ -97,15 +98,26 @@ export default function Login() {
         boxShadow: '0 20px 50px rgba(0,0,0,0.35)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-          <div style={{
-            background: '#fff', borderRadius: 6, padding: '6px 10px',
-            display: 'flex', alignItems: 'center',
-          }}>
-            <img src="/HBM-logo.jpeg" alt="HBM" style={{ height: 28, display: 'block' }} />
-          </div>
+          {brandLogoSrc() ? (
+            <div style={{
+              background: '#fff', borderRadius: 6, padding: '6px 10px',
+              display: 'flex', alignItems: 'center',
+            }}>
+              <img src={brandLogoSrc()!} alt={brandLogoAlt()} style={{ height: 28, display: 'block' }} />
+            </div>
+          ) : (
+            <div style={{
+              width: 36, height: 36, borderRadius: 8,
+              background: 'var(--bpl-blue, #0078D4)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontWeight: 700, fontSize: 14,
+            }}>
+              F
+            </div>
+          )}
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
-              HBM Fleet Intelligence
+              {productName()}
             </div>
             <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>Sign in to continue</div>
           </div>

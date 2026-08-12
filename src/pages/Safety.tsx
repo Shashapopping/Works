@@ -11,7 +11,9 @@ import {
 } from 'recharts';
 import { useFleet } from '../context/FleetContext';
 import type { LogEntry } from '../context/FleetContext';
-import { isKnownDriver } from '../lib/driverUtils';
+import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
+import { clientName } from '../lib/branding';
+import MockNamesBadge from '../components/MockNamesBadge';
 import ConsequenceExplainerModal from '../components/ConsequenceExplainerModal';
 import {
   scoreFromEvents,
@@ -277,7 +279,7 @@ function WorstPerformers({ events, vehicleCount }: { events: LogEntry[]; vehicle
 
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {d.name}
+                    {displayDriverName(d.name)}
                   </div>
                   <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 1 }}>
                     {Object.entries(d.types).map(([t, c]) => `${t} ×${c}`).join(' · ')}
@@ -565,8 +567,8 @@ export default function Safety() {
   return (
     <div>
       <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Safety</h1>
-        <p className="bpl-page-subtitle">Fleet score vs leading fleets + driver consequence tiers · HBM Nigeria</p>
+        <h1 className="bpl-page-title">Safety <MockNamesBadge /></h1>
+        <p className="bpl-page-subtitle">Fleet score vs leading fleets + driver consequence tiers · {clientName()}</p>
       </div>
 
       {/* KPI strip */}

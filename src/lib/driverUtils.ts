@@ -1,3 +1,5 @@
+import { DEMO_BRANDING, demoDriverLabel } from '../config/demoBranding';
+
 const SYSTEM_DRIVER_IDS = new Set([
   '-7564450339336730068', // MiX "Unknown"
   '-4331286019934761070', // No Driver Assigned
@@ -26,5 +28,7 @@ export function isActiveDriver(name?: string | null, driverId?: string | null): 
 }
 
 export function displayDriverName(name?: string | null, fallback = '—'): string {
-  return isKnownDriver(name) ? name!.trim() : fallback;
+  if (!isKnownDriver(name)) return fallback;
+  if (DEMO_BRANDING) return demoDriverLabel(name!.trim());
+  return name!.trim();
 }

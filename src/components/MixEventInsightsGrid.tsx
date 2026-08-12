@@ -438,7 +438,14 @@ const EMPTY_AGG: EventDayAggregate = {
   eventCount: 0,
 };
 
-export default function MixEventInsightsGrid({ events }: { events: LogEntry[] }) {
+export default function MixEventInsightsGrid({
+  events,
+  visibleIds,
+}: {
+  events: LogEntry[];
+  /** When set, only render these widgets (order preserved). */
+  visibleIds?: WidgetId[];
+}) {
   const [distanceKm, setDistanceKm] = useState(0);
   const [distanceLoaded, setDistanceLoaded] = useState(false);
   const [chartsReady, setChartsReady] = useState(false);
@@ -491,32 +498,31 @@ export default function MixEventInsightsGrid({ events }: { events: LogEntry[] })
   }, [needsDistance, distanceLoaded]);
 
   const caption = useMemo(() => formatDateCaptionFromAggregate(agg), [agg]);
-  const ids = Object.keys(WIDGET_DEFAULTS) as WidgetId[];
+  const ids = (visibleIds && visibleIds.length > 0
+    ? visibleIds
+    : (Object.keys(WIDGET_DEFAULTS) as WidgetId[])
+  ).filter(id => id in WIDGET_DEFAULTS);
+
+  if (ids.length === 0) return null;
 
   return (
-    <div>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
-        gap: 14,
-      }}>
-        {ids.map(id => (
-          <MixWidgetCard
-            key={id}
-            id={id}
-            agg={agg}
-            caption={caption}
-            chartsReady={chartsReady}
-            distanceKm={distanceKm}
-            settings={settings[id]}
-            onChangeSettings={next => setSettings(prev => ({ ...prev, [id]: next }))}
-          />
-        ))}
-      </div>
-      <p style={{ marginTop: 10, fontSize: 11, color: 'var(--cd-text-muted)' }}>
-        Settings match MiX Events modal (metric + event multi-select). Catalog limited to events we ingest.
-        Distance-rate metrics use trip kilometres when selected.
-      </p>
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+      gap: 14,
+    }}>
+      {ids.map(id => (
+        <MixWidgetCard
+          key={id}
+          id={id}
+          agg={agg}
+          caption={caption}
+          chartsReady={chartsReady}
+          distanceKm={distanceKm}
+          settings={settings[id]}
+          onChangeSettings={next => setSettings(prev => ({ ...prev, [id]: next }))}
+        />
+      ))}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import type { SafetyNotification, Severity } from '../hooks/useSafeIQ';
 import { formatEnvironmentLine } from './EnvironmentBadge';
-import { isKnownDriver } from '../lib/driverUtils';
+import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
+import { brandLabel } from '../lib/branding';
 
 interface Props {
   notifications: SafetyNotification[];
@@ -126,7 +127,7 @@ function ToastCard({ n, onDismiss, onOpen }: ToastCardProps) {
         <div style={{ padding: '14px 14px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={pillStyle}>{severityLabel(severity)}</span>
           <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--cd-text)', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {n.driver.name}
+            {displayDriverName(n.driver.name)}
           </span>
           <button
             onClick={e => { e.stopPropagation(); onDismiss(n.id); }}
@@ -159,7 +160,7 @@ function ToastCard({ n, onDismiss, onOpen }: ToastCardProps) {
         {/* Third row — location */}
         {n.location && (
           <div style={{ padding: '0 14px 4px', fontSize: '12px', color: 'var(--cd-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {n.location}
+            {brandLabel(n.location)}
           </div>
         )}
 

@@ -2,6 +2,8 @@ import { ShieldAlert, X, ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { SafetyNotification, Severity } from '../hooks/useSafeIQ';
 import EnvironmentBadge from './EnvironmentBadge';
+import { displayDriverName } from '../lib/driverUtils';
+import { brandLabel } from '../lib/branding';
 
 // ─── keyword highlight ────────────────────────────────────────────────────────
 const DANGER_PATTERN = /\b(harsh braking|harsh acceleration|overspeeding|overspeed tiered|overspeed|cornering|panic alert|panic|tailgating|following distance|speeding|collision|near.miss|critical|immediate action|intervention required)\b/gi;
@@ -130,7 +132,7 @@ export default function SafetyIncidentModal({ notification: n, onClose }: Props)
 
   const goToDriver = () => {
     onClose();
-    navigate(`/drivers?q=${encodeURIComponent(n.driver.name)}`);
+    navigate(`/drivers?q=${encodeURIComponent(displayDriverName(n.driver.name))}`);
   };
 
   const overlayStyle: React.CSSProperties = {
@@ -231,7 +233,7 @@ export default function SafetyIncidentModal({ notification: n, onClose }: Props)
                   }}
                 >
                   <span style={{ fontSize: '14px', fontWeight: '700', color: 'var(--cd-accent)', textDecoration: 'underline', textUnderlineOffset: 3 }}>
-                    {n.driver.name}
+                    {displayDriverName(n.driver.name)}
                   </span>
                   <ExternalLink size={11} color="var(--cd-accent)" />
                 </button>

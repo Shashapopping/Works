@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { X, Search, ChevronDown, ChevronUp } from 'lucide-react';
-import { isKnownDriver } from '../lib/driverUtils';
+import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
+import { brandLabel } from '../lib/branding';
+import { DEMO_BRANDING } from '../config/demoBranding';
 
 declare const jspdf: any;
 
@@ -212,7 +214,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
     { header: 'Asset Name', getSummary: (d: DriverRisk) => d.assetName, getEvent: (_d: DriverRisk, e: LogEntry) => e.assetName || 'N/A' },
     { header: 'Reg No', getSummary: (d: DriverRisk) => d.regNo, getEvent: (_d: DriverRisk, e: LogEntry) => e.regNo || 'N/A' },
     { header: 'Transporter', getSummary: (d: DriverRisk) => d.transporter, getEvent: (_d: DriverRisk, e: LogEntry) => e.transporter || 'N/A' },
-    { header: 'Driver', getSummary: (d: DriverRisk) => d.driverName, getEvent: (d: DriverRisk, _e: LogEntry) => d.driverName },
+    { header: 'Driver', getSummary: (d: DriverRisk) => displayDriverName(d.driverName), getEvent: (d: DriverRisk, _e: LogEntry) => displayDriverName(d.driverName) },
     { header: 'Phone', getSummary: (d: DriverRisk) => d.driverPhone, getEvent: (d: DriverRisk, _e: LogEntry) => d.driverPhone },
     { header: 'H.Brake', getSummary: (d: DriverRisk) => String(d.harshBraking), getEvent: (_d: DriverRisk, e: LogEntry) => e.label === 'Harsh Braking' ? '1' : '—' },
     { header: 'H.Accel', getSummary: (d: DriverRisk) => String(d.harshAcceleration), getEvent: (_d: DriverRisk, e: LogEntry) => e.label === 'Harsh Acceleration' ? '1' : '—' },
@@ -297,7 +299,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
         (doc as any).autoTable({
           startY: y,
           body: [[
-            `${d.driverName}  •  ${d.driverPhone}`,
+            `${displayDriverName(d.driverName)}  •  ${DEMO_BRANDING ? '***' : d.driverPhone}`,
             `H.Brk: ${d.harshBraking}  H.Acc: ${d.harshAcceleration}  Ovspd: ${d.overspeeding}  Tier: ${d.overspeedTiered}  Cnr: ${d.harshCornering}  Panic: ${d.panic}`,
             `Total: ${d.total}`
           ]],
@@ -473,15 +475,15 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
                   {/* Driver + Asset info */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: '13px', fontWeight: '600', color: hasInfractions ? '#854F0B' : 'var(--cd-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {driver.driverName}
+                      {displayDriverName(driver.driverName)}
                       {driver.driverPhone && driver.driverPhone !== 'N/A' && (
                         <span style={{ fontSize: '11px', fontWeight: '400', color: 'var(--cd-text-muted)', marginLeft: '8px' }}>
-                          · {driver.driverPhone}
+                          · {DEMO_BRANDING ? '***' : driver.driverPhone}
                         </span>
                       )}
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {driver.regNo} · {driver.assetName} · {driver.transporter}
+                      {driver.regNo} · {brandLabel(driver.assetName)} · {brandLabel(driver.transporter)}
                     </div>
                   </div>
 

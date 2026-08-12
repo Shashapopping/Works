@@ -5,6 +5,7 @@ import FeatureGate from '../components/FeatureGate';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import PageControls from '../components/PageControls';
+import { brandLabel } from '../lib/branding';
 
 const DEMO_SERVICE: Record<string, { lastService: string; intervalDays: number; tech?: string; inProgress?: boolean; progress?: number }> = {
   'AAB428XC': { lastService: '2025-12-10', intervalDays: 90 },
@@ -184,11 +185,11 @@ export default function Maintenance() {
                     onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
                   >
                     <td style={{ padding: '11px 16px', fontWeight: 700, color: 'var(--cd-text)', whiteSpace: 'nowrap' }}>{v.regNo || '—'}</td>
-                    <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.assetName || '—'}</td>
+                    <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{brandLabel(v.assetName) || '—'}</td>
                     <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>
                       {v.make && v.model ? `${v.make} · ${v.model}` : v.make || v.model || '—'}
                     </td>
-                    <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{v.transporter || '—'}</td>
+                    <td style={{ padding: '11px 16px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{brandLabel(v.transporter) || '—'}</td>
                     <td style={{ padding: '11px 16px', whiteSpace: 'nowrap' }}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                         <span style={{ width: 6, height: 6, borderRadius: '50%', background: opStatusColor(v.status), flexShrink: 0 }} />

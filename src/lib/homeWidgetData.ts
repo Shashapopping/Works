@@ -115,7 +115,7 @@ export function deriveDriverScores(events: LogEntry[], penaltyPerEvent = 3): Dri
 
   return [...byDriver.entries()]
     .map(([name, row]) => ({
-      name,
+      name: displayDriverName(name),
       score: Math.max(35, Math.min(100, 100 - row.recent * penaltyPerEvent)),
       trend: row.recent < row.prev ? 'up' as const : row.recent > row.prev ? 'down' as const : 'stable' as const,
       incidents: row.recent,

@@ -19,6 +19,15 @@ import {
   DEMO_TRIPS,
 } from '../lib/homeWidgetData';
 import { isKnownDriver } from '../lib/driverUtils';
+import { DEMO_BRANDING, demoDriverLabel, demoPlaceLabel } from '../config/demoBranding';
+import {
+  sanitizeLogEntry,
+  sanitizeVehicle,
+  sanitizeNotification,
+  sanitizeDriverDistance,
+  sanitizeVaultRecord,
+  sanitizeDriverScore,
+} from '../lib/demoSanitize';
 import {
   computeFleetScore,
   loadFleetScoreConfig,
@@ -45,12 +54,16 @@ async function generateSafeIQAnalysis(
   if (!SAFEIQ_ENABLED || !ANTHROPIC_API_KEY) return null;
 
   const eventType = e.label || 'Unknown';
-  const driver = e.driverName || 'Unknown Driver';
+  const driver = (DEMO_BRANDING && e.driverName)
+    ? demoDriverLabel(e.driverName)
+    : (e.driverName || 'Unknown Driver');
   const vehicle = e.regNo || e.assetId;
-  const location = e.address || 'Location not available';
+  const location = (DEMO_BRANDING && e.address)
+    ? demoPlaceLabel(e.address)
+    : (e.address || 'Location not available');
   const time = new Date(e.eventTime).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
 
-  const prompt = `You are SafeIQ, a safety advisor for BPL Fleet Intelligence Platform (HBM Nigeria). Your tone is calm, observational, and advisory — you present findings and let the fleet manager decide. Never command. Suggest, reason, and reference policy as context not instruction.
+  const prompt = `You are SafeIQ, a safety advisor for BPL Fleet Intelligence Platform (${DEMO_BRANDING ? 'Demo Fleet' : 'HBM Nigeria'}). Your tone is calm, observational, and advisory — you present findings and let the fleet manager decide. Never command. Suggest, reason, and reference policy as context not instruction.
 
 Return a JSON object with exactly these fields:
 - severity: "RED", "YELLOW", or "GREEN"
@@ -791,18 +804,49 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const demoVehicles = useMemo(
+    () => (DEMO_BRANDING ? filteredVehicles.map(sanitizeVehicle) : filteredVehicles),
+    [filteredVehicles],
+  );
+  const demoEvents = useMemo(
+    () => (DEMO_BRANDING ? filteredEvents.map(sanitizeLogEntry) : filteredEvents),
+    [filteredEvents],
+  );
+  const demoDriverDistance = useMemo(
+    () => sanitizeDriverDistance(driverDistance),
+    [driverDistance],
+  );
+  const demoDrivers = useMemo(
+    () => (DEMO_BRANDING ? drivers.map(sanitizeDriverScore) : drivers),
+    [drivers],
+  );
+  const demoNotifications = useMemo(
+    () => (DEMO_BRANDING ? notifications.map(sanitizeNotification) : notifications),
+    [notifications],
+  );
+  const demoSelectedNotification = useMemo(
+    () => (selectedNotification && DEMO_BRANDING
+      ? sanitizeNotification(selectedNotification)
+      : selectedNotification),
+    [selectedNotification],
+  );
+  const demoVaultRecords = useMemo(
+    () => (DEMO_BRANDING ? vaultRecords.map(sanitizeVaultRecord) : vaultRecords),
+    [vaultRecords],
+  );
+
   return (
     <FleetContext.Provider value={{
-      authFetch, metadata: effectiveMetadata, vehicles: filteredVehicles, events: filteredEvents, driverDistance,
+      authFetch, metadata: effectiveMetadata, vehicles: demoVehicles, events: demoEvents, driverDistance: demoDriverDistance,
       fleetSafetyScore, fleetScoreDelta,
       safetyScore: fleetSafetyScore,
       safetyDelta: fleetScoreDelta,
-      alerts, drivers, maintenance, fuelSeries, insights, trips,
+      alerts, drivers: demoDrivers, maintenance, fuelSeries, insights, trips,
       distanceRange, setDistanceRange, totalDistanceKm, environment,
       redAlertCount,
-      notifications, dismissNotification, clearAllNotifications, selectedNotification,
+      notifications: demoNotifications, dismissNotification, clearAllNotifications, selectedNotification: demoSelectedNotification,
       openNotification, closeNotification,
-      vaultRecords, addVaultRecord, updateVaultRecord,
+      vaultRecords: demoVaultRecords, addVaultRecord, updateVaultRecord,
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
       selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,

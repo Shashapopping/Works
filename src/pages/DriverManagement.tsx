@@ -3,7 +3,9 @@ import { useSearchParams } from 'react-router-dom';
 import { Search, ChevronDown, ChevronUp } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
-import { isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
+import { isActiveDriver, isActiveDriverId, displayDriverName } from '../lib/driverUtils';
+import { sanitizeTripDriver } from '../lib/demoSanitize';
+import MockNamesBadge from '../components/MockNamesBadge';
 import {
   buildDriverConsequenceCard,
   type ConsequenceCard,
@@ -12,6 +14,8 @@ import {
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import PageControls from '../components/PageControls';
+import { brandLabel } from '../lib/branding';
+import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 
 const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 
@@ -54,9 +58,12 @@ function fmtDistanceKm(km: number) {
   return Math.round(km).toLocaleString();
 }
 
-function fmtHosHours(seconds: number) {
+const HOS_WINDOW_TIP = 'Total drive time this month and last month from telematics drive segments. Short GPS blips are ignored. Gaps in the feed can split one real journey into several pieces — this is drive time, not a trip count.';
+
+function fmtHosHours(seconds: number, journeyCount: number) {
+  if (seconds <= 0 && journeyCount <= 0) return '—';
   const h = seconds / 3600;
-  if (h <= 0) return '0h';
+  if (h <= 0) return '<0.1h';
   if (h < 10) return `${h.toFixed(1)}h`;
   return `${Math.round(h)}h`;
 }
@@ -99,7 +106,8 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
   const recentEvents = driver.events.slice(0, 10);
   const infractions = driver.total;
   const distanceLabel = fmtDistanceKm(driver.distanceKm);
-  const hosLabel = fmtHosHours(driver.drivingTimeSeconds);
+  const hosLabel = fmtHosHours(driver.drivingTimeSeconds, driver.journeyCount);
+  const hosHasData = driver.drivingTimeSeconds > 0 || driver.journeyCount > 0;
 
   return (
     <div className="bpl-card" style={{ overflow: 'hidden', borderLeft: `4px solid ${color}` }}>
@@ -117,16 +125,18 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 15, fontWeight: 700, color,
         }}>
-          {driver.name.charAt(0)}
+          {displayDriverName(driver.name).charAt(0) || '?'}
         </div>
 
         <div style={{ flex: '1 1 160px', minWidth: 140 }}>
-          <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{driver.name}</div>
+          <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{displayDriverName(driver.name)}</div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', display: 'flex', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
             <span>{driver.regNo}</span>
             <span>·</span>
-            <span>{driver.assetName}</span>
-            {driver.phone && driver.phone !== 'N/A' && <><span>·</span><span>{driver.phone}</span></>}
+            <span>{brandLabel(driver.assetName)}</span>
+            {driver.phone && driver.phone !== 'N/A' && (
+              <><span>·</span><span>{DEMO_BRANDING ? demoPhoneLabel(driver.phone) : driver.phone}</span></>
+            )}
           </div>
           <div style={{ width: 140, marginTop: 8 }}>
             <ScoreBar score={consequence.displayScore} category={consequence.category} />
@@ -156,14 +166,14 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
             {
               label: 'HOS',
               value: hosLabel,
-              sub: driver.journeyCount > 0
-                ? `${driver.journeyCount} trip${driver.journeyCount === 1 ? '' : 's'}`
-                : 'drive time',
-              valueColor: 'var(--cd-text)',
+              sub: hosHasData ? 'drive time' : 'no drive data',
+              valueColor: hosHasData ? 'var(--cd-text)' : 'var(--cd-text-muted)',
+              tip: HOS_WINDOW_TIP,
             },
           ].map(m => (
             <div
               key={m.label}
+              title={m.tip}
               style={{
                 padding: '8px 10px',
                 borderRadius: 8,
@@ -171,6 +181,7 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
                 border: '1px solid var(--cd-border)',
                 textAlign: 'center',
                 minWidth: 0,
+                cursor: m.tip ? 'help' : undefined,
               }}
             >
               <div style={{
@@ -216,10 +227,10 @@ function DriverCard({ driver, expanded, onToggle }: { driver: DriverProfile; exp
             {[
               { label: 'Penalty points', value: consequence.penaltyPoints },
               { label: 'Distance (km)', value: Math.round(consequence.distanceKm).toLocaleString() },
-              { label: 'HOS (hours)', value: (driver.drivingTimeSeconds / 3600).toFixed(1) },
+              { label: 'HOS (hours)', value: hosHasData ? (driver.drivingTimeSeconds / 3600).toFixed(1) : '—', tip: HOS_WINDOW_TIP },
               { label: 'Score / 100 km', value: consequence.driverScore.toFixed(1) },
             ].map(s => (
-              <div key={s.label} style={{ textAlign: 'center', padding: '10px 8px', background: 'var(--cd-surface)', borderRadius: 8, border: '1px solid var(--cd-border)' }}>
+              <div key={s.label} title={s.tip} style={{ textAlign: 'center', padding: '10px 8px', background: 'var(--cd-surface)', borderRadius: 8, border: '1px solid var(--cd-border)', cursor: s.tip ? 'help' : undefined }}>
                 <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>{s.value}</div>
                 <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: 2 }}>{s.label}</div>
               </div>
@@ -303,7 +314,7 @@ export default function DriverManagement() {
             const key = d.driverId || d.driverName;
             if (!key) continue;
             const prev = map.get(key);
-            if (!prev) map.set(key, { ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 });
+            if (!prev) map.set(key, sanitizeTripDriver({ ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 }));
             else {
               prev.totalDistanceKm += d.totalDistanceKm;
               prev.journeyCount += d.journeyCount;
@@ -419,7 +430,7 @@ export default function DriverManagement() {
   return (
     <div>
       <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Driver Management</h1>
+        <h1 className="bpl-page-title">Driver Management <MockNamesBadge /></h1>
         <p className="bpl-page-subtitle">Consequence Management scorecards — penalty points normalized per 100 km</p>
       </div>
 

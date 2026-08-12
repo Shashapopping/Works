@@ -19,6 +19,7 @@ import {
   type LogEntry,
 } from '../lib/reportExport';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
+import { reportTitle as brandReportTitle } from '../lib/branding';
 
 interface TrendDay {
   date: string;
@@ -300,7 +301,7 @@ export default function ReportsPage() {
   const [showTotal, setShowTotal] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
 
-  const reportTitle = 'HBM Nigeria Event Report';
+  const reportTitle = brandReportTitle();
 
   useEffect(() => {
     const load = async () => {

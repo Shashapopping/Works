@@ -1,25 +1,29 @@
 import { useState, useMemo, useEffect, useCallback, useDeferredValue, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, ClipboardCheck, ChevronDown, ChevronRight } from 'lucide-react';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
+import { useAuth } from '../context/AuthContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
+import { sanitizeTripDriver } from '../lib/demoSanitize';
 import {
   buildDriverConsequenceCard,
   loadConsequenceOccurrences,
   logConsequenceResponse,
   nextOccurrenceIndex,
   getOccurrenceCount,
+  getResponseLogForDriver,
+  addResponseLogEntry,
   type OccurrenceStore,
   type ConsequenceCategory,
 } from '../lib/consequenceScore';
-import MixEventInsightsGrid from '../components/MixEventInsightsGrid';
 import { brandLabel, eventLocationLabel } from '../lib/branding';
+import MockNamesBadge from '../components/MockNamesBadge';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useTableSort } from '../hooks/useTableSort';
 
-type Tab = 'events' | 'by-driver' | 'trends' | 'patterns';
+type Tab = 'events' | 'by-driver' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
 type EventFilter = 'All' | 'Harsh Braking' | 'Harsh Acceleration' | 'Overspeeding' | 'Overspeed Tiered' | 'Harsh Cornering';
 
@@ -271,17 +275,18 @@ function ByDriverTab({ events }: { events: LogEntry[] }) {
   );
 }
 
-function TrendsTab({ events }: { events: LogEntry[] }) {
-  return <MixEventInsightsGrid events={events} />;
-}
-
 type TrackingSortKey = 'driver' | 'vehicle' | 'score';
 
 function PatternsTab({ events }: { events: LogEntry[] }) {
+  const { user } = useAuth();
+  const loggedInAs = user?.name || user?.email || 'You';
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [pendingLogKey, setPendingLogKey] = useState<string | null>(null);
+  const [responseNote, setResponseNote] = useState('');
+  const [, setLogRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -300,7 +305,7 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
             const key = d.driverId || d.driverName;
             if (!key) continue;
             const prev = map.get(key);
-            if (!prev) map.set(key, { ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 });
+            if (!prev) map.set(key, sanitizeTripDriver({ ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 }));
             else {
               prev.totalDistanceKm += d.totalDistanceKm;
               prev.journeyCount += d.journeyCount;
@@ -360,9 +365,30 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
       .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore);
   }, [events, tripDrivers, distanceByKey, occurrences]);
 
-  const handleLogResponse = useCallback((driverKey: string, category: ConsequenceCategory) => {
+  const openLogForm = (driverKey: string) => {
+    setPendingLogKey(driverKey);
+    setResponseNote('');
+  };
+
+  const cancelLogForm = () => {
+    setPendingLogKey(null);
+    setResponseNote('');
+  };
+
+  const confirmLogResponse = useCallback((
+    driverKey: string,
+    driverName: string,
+    category: ConsequenceCategory,
+    occurrenceIndex: number,
+  ) => {
+    const note = responseNote.trim();
+    if (!note) return;
     setOccurrences(prev => logConsequenceResponse(prev, driverKey, category));
-  }, []);
+    addResponseLogEntry(driverKey, driverName, category, occurrenceIndex, note, loggedInAs);
+    setPendingLogKey(null);
+    setResponseNote('');
+    setLogRefreshTick(t => t + 1);
+  }, [responseNote, loggedInAs]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -455,7 +481,7 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
                     <td style={{ color: 'var(--cd-text-muted)' }}>
                       {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </td>
-                    <td style={{ fontWeight: 600 }}>{row.name}</td>
+                    <td style={{ fontWeight: 600 }}>{displayDriverName(row.name)}</td>
                     <td>
                       <div>{Math.round(row.distanceKm).toLocaleString()} km</div>
                       <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{consequence.counts.eventCount} scored events</div>
@@ -476,22 +502,77 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
                       {consequence.occurrenceIndex === 1 ? '1st' : '2nd+'} occurrence: {consequence.recommendedConsequence}
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        className="bpl-btn-secondary"
-                        onClick={e => { e.stopPropagation(); handleLogResponse(row.key, consequence.category); }}
-                        style={{ fontSize: 11, padding: '4px 8px' }}
-                      >
-                        Log response
-                      </button>
+                      {pendingLogKey === row.key ? (
+                        <button
+                          type="button"
+                          className="bpl-btn-secondary"
+                          onClick={e => { e.stopPropagation(); cancelLogForm(); }}
+                          style={{ fontSize: 11, padding: '4px 8px' }}
+                        >
+                          Cancel
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="bpl-btn-secondary"
+                          onClick={e => { e.stopPropagation(); openLogForm(row.key); }}
+                          style={{ fontSize: 11, padding: '4px 8px' }}
+                        >
+                          Log response
+                        </button>
+                      )}
                     </td>
                   </tr>
+                  {pendingLogKey === row.key && (
+                    <tr>
+                      <td colSpan={7} style={{ padding: '10px 16px 12px 48px', background: 'var(--cd-bg, var(--cd-surface))' }}>
+                        <div
+                          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', maxWidth: 720 }}
+                          onClick={e => e.stopPropagation()}
+                        >
+                          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text-muted)' }}>
+                            What response was taken for {displayDriverName(row.name)}?
+                          </span>
+                          <input
+                            type="text"
+                            value={responseNote}
+                            onChange={e => setResponseNote(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') confirmLogResponse(row.key, row.name, consequence.category, consequence.occurrenceIndex); }}
+                            placeholder="e.g. Verbal warning given, driver acknowledged"
+                            autoFocus
+                            style={{
+                              flex: '1 1 260px', padding: '7px 10px', borderRadius: 8,
+                              border: '1px solid var(--cd-border)', background: 'var(--cd-surface)',
+                              color: 'var(--cd-text)', fontSize: 13,
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="bpl-btn-primary"
+                            disabled={!responseNote.trim()}
+                            onClick={() => confirmLogResponse(row.key, row.name, consequence.category, consequence.occurrenceIndex)}
+                            style={{ fontSize: 12, padding: '7px 12px', opacity: responseNote.trim() ? 1 : 0.6 }}
+                          >
+                            Confirm log
+                          </button>
+                          <button
+                            type="button"
+                            className="bpl-btn-secondary"
+                            onClick={cancelLogForm}
+                            style={{ fontSize: 12, padding: '7px 12px' }}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {open && (
                     <tr>
                       <td colSpan={7} style={{ padding: '12px 16px 16px 48px', background: 'var(--cd-bg, var(--cd-surface))' }}>
                         <div style={{
                           display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-                          gap: 10, maxWidth: 560,
+                          gap: 10, maxWidth: 560, marginBottom: 14,
                         }}>
                           {[
                             { label: 'Penalty points', value: consequence.penaltyPoints },
@@ -507,6 +588,24 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
                             </div>
                           ))}
                         </div>
+
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--cd-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+                          Response history
+                        </div>
+                        {getResponseLogForDriver(row.key).length === 0 ? (
+                          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>No responses logged yet.</div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 560 }}>
+                            {getResponseLogForDriver(row.key).map(entry => (
+                              <div key={entry.id} style={{ padding: '8px 10px', background: 'var(--cd-surface)', borderRadius: 8, border: '1px solid var(--cd-border)' }}>
+                                <div style={{ fontSize: 12, color: 'var(--cd-text)' }}>{entry.note}</div>
+                                <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+                                  {entry.loggedBy} · {entry.category} occurrence {entry.occurrenceIndex} · {new Date(entry.loggedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   )}
@@ -554,7 +653,6 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
   const TAB_TITLES: Record<Tab, string> = {
     'events': 'Event Explorer',
     'by-driver': 'By Driver',
-    'trends': 'Trends',
     'patterns': 'Response Tracking',
   };
 
@@ -562,7 +660,7 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
     <div>
       <div className="bpl-page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <h1 className="bpl-page-title">Incident Intelligence — {TAB_TITLES[tab]}</h1>
+          <h1 className="bpl-page-title">Incident Intelligence — {TAB_TITLES[tab]} <MockNamesBadge /></h1>
           <p className="bpl-page-subtitle">Investigate and understand safety events across the fleet</p>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -597,7 +695,6 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
 
       {tab === 'events' && <EventsTab events={filtered} />}
       {tab === 'by-driver' && <ByDriverTab events={filtered} />}
-      {tab === 'trends' && <TrendsTab events={filtered} />}
       {tab === 'patterns' && <PatternsTab events={filtered} />}
     </div>
   );

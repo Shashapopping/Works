@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect, useDeferredValue } from 'react';
 import { GraduationCap, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { useFleet, authFetch } from '../../context/FleetContext';
 import type { TripDriver } from '../../context/FleetContext';
-import { isActiveDriver, isActiveDriverId } from '../../lib/driverUtils';
+import { isActiveDriver, isActiveDriverId, displayDriverName } from '../../lib/driverUtils';
+import { sanitizeTripDriver } from '../../lib/demoSanitize';
+import MockNamesBadge from '../../components/MockNamesBadge';
 import {
   buildDriverSnapshots,
   qualifyCoaching,
@@ -16,6 +18,7 @@ import { COACHING_WINDOW_DAYS } from '../../config/interventionRules';
 import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import PageControls from '../../components/PageControls';
+import { brandLabel } from '../../lib/branding';
 
 function NoteForm({ driver, onSaved }: { driver: DriverSnapshot; onSaved: () => void }) {
   const [comment, setComment] = useState('');
@@ -71,9 +74,9 @@ function CoachingRow({ driver, expanded, onToggle, onChanged }: {
         style={{ padding: '14px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}
       >
         <div style={{ flex: '1 1 180px', minWidth: 160 }}>
-          <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{driver.name}</div>
+          <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{displayDriverName(driver.name)}</div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
-            {driver.regNo} · {driver.assetName}
+            {driver.regNo} · {brandLabel(driver.assetName)}
           </div>
         </div>
         <div style={{ textAlign: 'center', minWidth: 70 }}>
@@ -162,7 +165,7 @@ export default function CoachingPage() {
             const key = d.driverId || d.driverName;
             if (!key) continue;
             const prev = map.get(key);
-            if (!prev) map.set(key, { ...d });
+            if (!prev) map.set(key, sanitizeTripDriver({ ...d }));
             else prev.totalDistanceKm += d.totalDistanceKm;
           }
         }
@@ -204,7 +207,7 @@ export default function CoachingPage() {
   return (
       <div>
         <div className="bpl-page-header">
-          <h1 className="bpl-page-title">Driver Management — Coaching</h1>
+          <h1 className="bpl-page-title">Driver Management — Coaching <MockNamesBadge /></h1>
           <p className="bpl-page-subtitle">
             Drivers at or below a score of {70} or with 8+ scored events in the last {COACHING_WINDOW_DAYS} days
           </p>

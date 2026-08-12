@@ -19,6 +19,8 @@ export const CACHE_TTL = {
   /** Heavy: scans fuel-history for refill + trip fuel. */
   fuelConsumption: 60_000,
   fuelHistory: 45_000,
+  /** Live continuous-driving clock — keep fairly fresh. */
+  hos: 20_000,
 } as const;
 
 export const CACHE_KEYS = {
@@ -28,6 +30,7 @@ export const CACHE_KEYS = {
   kpi: (url: string) => `kpi:${url}`,
   fuelConsumption: (url: string) => `fuel:consumption:${url}`,
   fuelHistory: (url: string) => `fuel:history:${url}`,
+  hos: (url: string) => `hos:${url}`,
 } as const;
 
 function readSession(key: string): CacheEntry | null {

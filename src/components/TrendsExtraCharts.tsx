@@ -1,0 +1,955 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowDown, ArrowUp, BarChart3, Car, Download, Info, MapPin, Settings, User,
+} from 'lucide-react';
+import {
+  Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts';
+import { authFetch, type LogEntry, type TripDriver } from '../context/FleetContext';
+import { buildDriverConsequenceCard } from '../lib/consequenceScore';
+import { isActiveDriver, isActiveDriverId, isKnownDriver, displayDriverName } from '../lib/driverUtils';
+import { sanitizeTripDriver } from '../lib/demoSanitize';
+import type { ConsumptionData } from '../lib/fuelConsumption';
+import { chartDef, type TrendsChartId, type TrendsScope } from '../lib/trendsDashboard';
+import { useFleet } from '../context/FleetContext';
+
+const BAND = { green: '#58b06d', amber: '#f0ad4e', red: '#e74c3c' };
+const SERIES = ['#2b71b1', '#50b2e1', '#58b06d', '#f0ad4e', '#9333ea', '#0d9488', '#64748b'];
+
+/** Estimated minutes per event type when MiX duration is absent. */
+const DURATION_MIN: Record<string, number> = {
+  'Harsh Braking': 0.2,
+  'Harsh Acceleration': 0.2,
+  'Harsh Cornering': 0.3,
+  Overspeeding: 2,
+  'Overspeed Tiered': 3,
+  Idle: 5,
+  'Excessive Idle': 10,
+};
+
+/** Calendar day in Africa/Lagos (WAT, UTC+1) — not raw UTC from ISO slice. */
+function dayKey(iso: string) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) {
+    // Already a YYYY-MM-DD?
+    if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    return '';
+  }
+  // Lagos is UTC+1 year-round (no DST)
+  const lagos = new Date(ms + 3_600_000);
+  const y = lagos.getUTCFullYear();
+  const m = String(lagos.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(lagos.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function todayLagosKey() {
+  return dayKey(new Date().toISOString());
+}
+
+function weekdayLabel(isoDay: string) {
+  // Noon Lagos keeps the weekday stable regardless of UTC offset edge cases
+  const ms = Date.parse(`${isoDay}T12:00:00+01:00`);
+  if (!Number.isFinite(ms)) return isoDay;
+  return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(ms).getUTCDay()];
+}
+
+function litersToGallons(l: number) {
+  return l * 0.264172;
+}
+
+function cardShell({
+  title,
+  icon,
+  subtitle,
+  caption,
+  children,
+  wide,
+  scope,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  subtitle?: string;
+  caption?: string;
+  children: React.ReactNode;
+  wide?: boolean;
+  scope?: TrendsScope;
+}) {
+  return (
+    <div
+      style={{
+        background: '#fff',
+        border: '1px solid #e5e7eb',
+        borderRadius: 6,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 320,
+        gridColumn: wide ? '1 / -1' : undefined,
+      }}
+    >
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 12px', borderBottom: '1px solid #eef0f2', gap: 8,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          {icon}
+          <strong style={{
+            fontSize: 12, letterSpacing: '0.02em', color: '#374151',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            textTransform: 'uppercase',
+          }}>
+            {title}
+          </strong>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+          {[Info, Download, Settings].map((Icon, i) => (
+            <span
+              key={i}
+              style={{
+                width: 34, height: 30,
+                borderLeft: i === 0 ? 'none' : '1px solid #e5e7eb',
+                color: '#6b7280',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              <Icon size={14} />
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={{ padding: '12px 14px 16px', flex: 1 }}>
+        {(subtitle || caption) && (
+          <>
+            {subtitle && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#1f2937' }}>{subtitle}</div>
+                {scope === 'driver' ? <User size={13} color="#9ca3af" /> : <Car size={13} color="#9ca3af" />}
+              </div>
+            )}
+            {caption && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>{caption}</div>}
+          </>
+        )}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function useCaption(events: LogEntry[]) {
+  return useMemo(() => {
+    let min = '';
+    let max = '';
+    for (const e of events) {
+      const d = dayKey(e.eventTime || e.timestamp);
+      if (!d) continue;
+      if (!min || d < min) min = d;
+      if (!max || d > max) max = d;
+    }
+    if (!min) {
+      const now = new Date();
+      return now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    }
+    const fmt = (iso: string) => {
+      const dt = new Date(`${iso}T12:00:00`);
+      return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    };
+    return min === max ? fmt(min) : `${fmt(min)} – ${fmt(max)}`;
+  }, [events]);
+}
+
+function useTripStats() {
+  const [stats, setStats] = useState({
+    km: 0, trips: 0, hours: 0, assets: 0, drivers: [] as TripDriver[],
+  });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch('/api/driver-distance?range=currentMonth');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const drivers = ((data.drivers || []) as TripDriver[]).map(sanitizeTripDriver);
+        const assets = new Set(drivers.flatMap(d => d.vehicles || [])).size;
+        setStats({
+          km: Number(data.totalDistanceKm || drivers.reduce((s, d) => s + (d.totalDistanceKm || 0), 0)),
+          trips: drivers.reduce((s, d) => s + (d.journeyCount || 0), 0),
+          hours: drivers.reduce((s, d) => s + ((d.totalDrivingTimeSeconds || 0) / 3600), 0),
+          assets: assets || drivers.length,
+          drivers,
+        });
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return stats;
+}
+
+function useConsumption(period: 'week' | 'month' = 'week') {
+  const [data, setData] = useState<ConsumptionData | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(`/api/fuel/consumption?period=${period}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setData(json as ConsumptionData);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [period]);
+  return data;
+}
+
+function useDriverBands(events: LogEntry[]) {
+  const tripStats = useTripStats();
+  return useMemo(() => {
+    const byDriver = new Map<string, { name: string; events: LogEntry[]; km: number }>();
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      if (!isActiveDriver(e.driverName, e.driverId)) continue;
+      const key = (e.driverId && isActiveDriverId(e.driverId)) ? e.driverId : e.driverName!;
+      if (!byDriver.has(key)) byDriver.set(key, { name: e.driverName!, events: [], km: 0 });
+      byDriver.get(key)!.events.push(e);
+    }
+    for (const t of tripStats.drivers) {
+      if (!isActiveDriver(t.driverName, t.driverId)) continue;
+      const key = (t.driverId && isActiveDriverId(t.driverId)) ? t.driverId : t.driverName;
+      const row = byDriver.get(key);
+      if (row) row.km += t.totalDistanceKm || 0;
+      else byDriver.set(key, { name: t.driverName, events: [], km: t.totalDistanceKm || 0 });
+    }
+
+    const counts = { Green: 0, Amber: 0, Red: 0 };
+    const distance = { Green: 0, Amber: 0, Red: 0 };
+    const scored: { name: string; score: number; category: 'Green' | 'Amber' | 'Red'; km: number }[] = [];
+
+    for (const row of byDriver.values()) {
+      const card = buildDriverConsequenceCard({ events: row.events, distanceKm: row.km || 1 });
+      const band: 'Green' | 'Amber' | 'Red' =
+        card.category === 'Green' ? 'Green' : card.category === 'Red' ? 'Red' : 'Amber';
+      counts[band]++;
+      distance[band] += row.km;
+      scored.push({ name: displayDriverName(row.name), score: card.displayScore, category: band, km: row.km });
+    }
+
+    const total = counts.Green + counts.Amber + counts.Red || 1;
+    scored.sort((a, b) => a.score - b.score);
+    const n = Math.max(1, Math.ceil(scored.length * 0.1));
+    const bottom = scored.slice(0, n);
+    const top = scored.slice(-n).reverse();
+    const avg = scored.length ? scored.reduce((s, d) => s + d.score, 0) / scored.length : 0;
+
+    return {
+      counts,
+      distance,
+      totalDrivers: counts.Green + counts.Amber + counts.Red,
+      pct: {
+        green: (counts.Green / total) * 100,
+        amber: (counts.Amber / total) * 100,
+        red: (counts.Red / total) * 100,
+      },
+      top,
+      bottom,
+      avg,
+      dayLabel: new Date().toLocaleDateString('en-GB', { weekday: 'long' }),
+      scored,
+    };
+  }, [events, tripStats.drivers]);
+}
+
+function EventValuesChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const { data, keys } = useMemo(() => {
+    const byDay = new Map<string, Record<string, number>>();
+    const totals = new Map<string, number>();
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      const label = e.label || 'Other';
+      const day = dayKey(e.eventTime || e.timestamp);
+      if (!day) continue;
+      if (!byDay.has(day)) byDay.set(day, {});
+      const row = byDay.get(day)!;
+      row[label] = (row[label] || 0) + 1;
+      totals.set(label, (totals.get(label) || 0) + 1);
+    }
+    const keys = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k]) => k);
+    const data = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, counts]) => {
+      const row: Record<string, string | number> = { label: weekdayLabel(day) };
+      for (const k of keys) row[k] = counts[k] || 0;
+      return row;
+    });
+    return { data, keys };
+  }, [events]);
+
+  return cardShell({
+    title: 'Event values',
+    icon: <BarChart3 size={15} color="#6b7280" />,
+    subtitle: 'Event counts over time',
+    caption,
+    scope,
+    children: data.length === 0 ? (
+      <Empty />
+    ) : (
+      <>
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={40} />
+            <Tooltip contentStyle={{ fontSize: 12 }} />
+            {keys.map((k, i) => (
+              <Bar key={k} dataKey={k} stackId="a" fill={SERIES[i % SERIES.length]} maxBarSize={56} isAnimationActive={false} />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+        <LegendRow items={keys.map((k, i) => [k, SERIES[i % SERIES.length]] as [string, string])} />
+      </>
+    ),
+  });
+}
+
+function EventDurationChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const data = useMemo(() => {
+    const byDay = new Map<string, { totalMin: number; count: number }>();
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      const label = e.label || '';
+      const day = dayKey(e.eventTime || e.timestamp);
+      if (!day) continue;
+      const mins = DURATION_MIN[label] ?? 1;
+      if (!byDay.has(day)) byDay.set(day, { totalMin: 0, count: 0 });
+      const row = byDay.get(day)!;
+      row.totalMin += mins;
+      row.count += 1;
+    }
+    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({
+      label: weekdayLabel(day),
+      avgMinutes: v.count ? +(v.totalMin / v.count).toFixed(2) : 0,
+      totalMinutes: +v.totalMin.toFixed(1),
+    }));
+  }, [events]);
+
+  return cardShell({
+    title: 'Event duration',
+    icon: <BarChart3 size={15} color="#6b7280" />,
+    subtitle: 'Average event duration over time',
+    caption,
+    scope,
+    children: data.length === 0 ? (
+      <Empty />
+    ) : (
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+          <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} width={40} />
+          <Tooltip contentStyle={{ fontSize: 12 }} />
+          <Bar dataKey="avgMinutes" name="Avg minutes" fill="#2b71b1" maxBarSize={48} isAnimationActive={false} />
+          <Line type="monotone" dataKey="totalMinutes" name="Total minutes" stroke="#50b2e1" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    ),
+  });
+}
+
+function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const cons = useConsumption('week');
+
+  const data = useMemo(() => {
+    const byDay = new Map<string, { distance: number; gallons: number }>();
+    const today = todayLagosKey();
+    for (const t of cons?.trips || []) {
+      const day = dayKey(t.tripStart || t.tripEnd);
+      if (!day || day > today) continue; // don't plot future Lagos calendar days
+      if (!byDay.has(day)) byDay.set(day, { distance: 0, gallons: 0 });
+      const row = byDay.get(day)!;
+      row.distance += t.distanceKm || 0;
+      row.gallons += litersToGallons(t.fuelUsedLiters || 0);
+    }
+    // Fallback: distribute summary across event days (through today only)
+    if (byDay.size === 0 && cons?.summary) {
+      const days = new Set<string>();
+      for (const e of events) {
+        const d = dayKey(e.eventTime || e.timestamp);
+        if (d && d <= today) days.add(d);
+      }
+      const list = [...days].sort();
+      if (list.length === 0) list.push(today);
+      const dist = (cons.summary.totalDistanceKm || 0) / list.length;
+      const gal = litersToGallons(cons.summary.totalFuelLiters || 0) / list.length;
+      for (const d of list) byDay.set(d, { distance: dist, gallons: gal });
+    }
+    return [...byDay.entries()]
+      .filter(([day]) => day <= today)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([day, v]) => ({
+        label: weekdayLabel(day),
+        distance: Math.round(v.distance),
+        gallons: +v.gallons.toFixed(1),
+      }));
+  }, [cons, events]);
+
+  return cardShell({
+    title: 'Manage fuels and energy',
+    icon: <Info size={15} color="#6b7280" />,
+    subtitle: 'Total distance and fuel used (gallons)',
+    caption,
+    scope,
+    wide: true,
+    children: data.length === 0 ? (
+      <Empty />
+    ) : (
+      <>
+        <ResponsiveContainer width="100%" height={300}>
+          <ComposedChart data={data} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis
+              yAxisId="left"
+              tick={{ fontSize: 11 }}
+              width={52}
+              tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v)}
+              label={{ value: 'Total distance', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#6b7280' } }}
+            />
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tick={{ fontSize: 11 }}
+              width={48}
+              label={{ value: 'Fuel used (gallons)', angle: 90, position: 'insideRight', style: { fontSize: 11, fill: '#6b7280' } }}
+            />
+            <Tooltip contentStyle={{ fontSize: 12 }} />
+            <Legend />
+            <Bar yAxisId="left" dataKey="distance" name="Total distance" fill="#2b71b1" maxBarSize={64} isAnimationActive={false} />
+            <Line yAxisId="right" type="monotone" dataKey="gallons" name="Fuel used (gallons)" stroke="#50b2e1" strokeWidth={2} dot={{ r: 4, fill: '#50b2e1' }} isAnimationActive={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </>
+    ),
+  });
+}
+
+function FleetDistanceInsights({ scope }: { scope: TrendsScope }) {
+  const stats = useTripStats();
+  const { vehicles } = useFleet();
+  const assetCount = Math.max(stats.assets, vehicles.length || 1);
+  const days = 30;
+  const avgMiPerAssetDay = stats.km / assetCount / days;
+  const avgTripsPerAssetDay = stats.trips / assetCount / days;
+  const avgMiPerTrip = stats.trips ? stats.km / stats.trips : 0;
+
+  return cardShell({
+    title: 'Distance and trip insights',
+    icon: <Car size={15} color="#6b7280" />,
+    subtitle: undefined,
+    caption: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+    scope,
+    children: (
+      <div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Distance</div>
+        <div style={{ fontSize: 36, fontWeight: 700, color: '#1f2937', marginBottom: 20 }}>
+          {Math.round(stats.km).toLocaleString()} km
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          {[
+            { icon: <Car size={16} color="#6b7280" />, value: avgMiPerAssetDay.toFixed(2), label: 'Avg km/asset/day' },
+            { icon: <MapPin size={16} color="#6b7280" />, value: avgTripsPerAssetDay.toFixed(2), label: 'Avg trips/asset/day' },
+            { icon: <BarChart3 size={16} color="#6b7280" />, value: avgMiPerTrip.toFixed(2), label: 'Avg km/trip' },
+          ].map(m => (
+            <div key={m.label} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              {m.icon}
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{m.value}</div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>{m.label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+  });
+}
+
+function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const { vehicles } = useFleet();
+  const cons = useConsumption('week');
+  const available = Math.max(vehicles.length, 1);
+
+  const data = useMemo(() => {
+    const byDay = new Map<string, Set<string>>();
+    for (const t of cons?.trips || []) {
+      const day = dayKey(t.tripStart || t.tripEnd);
+      if (!day) continue;
+      if (!byDay.has(day)) byDay.set(day, new Set());
+      byDay.get(day)!.add(t.assetId);
+    }
+    if (byDay.size === 0) {
+      for (const e of events) {
+        const day = dayKey(e.eventTime || e.timestamp);
+        if (!day) continue;
+        if (!byDay.has(day)) byDay.set(day, new Set());
+        byDay.get(day)!.add(e.assetId);
+      }
+    }
+    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, set]) => {
+      const pct = Math.min(100, Math.round((set.size / available) * 100));
+      return {
+        label: weekdayLabel(day),
+        pct,
+        fill: pct < 60 ? BAND.red : pct < 95 ? BAND.amber : BAND.green,
+      };
+    });
+  }, [cons, events, available]);
+
+  return cardShell({
+    title: 'Fleet utilisation %',
+    icon: <Car size={15} color="#6b7280" />,
+    subtitle: undefined,
+    caption,
+    scope,
+    children: data.length === 0 ? (
+      <Empty />
+    ) : (
+      <>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} width={36} />
+            <Tooltip contentStyle={{ fontSize: 12 }} />
+            <Bar dataKey="pct" name="Utilisation %" maxBarSize={56} isAnimationActive={false}>
+              {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        <LegendRow items={[
+          ['0–59%', BAND.red],
+          ['60–94%', BAND.amber],
+          ['>95%', BAND.green],
+        ]} />
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8, textAlign: 'center' }}>
+          (Calculation: Assets with trips / available assets × 100)
+        </div>
+      </>
+    ),
+  });
+}
+
+function FleetDriveIdleChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const stats = useTripStats();
+  const data = useMemo(() => {
+    const byDay = new Map<string, { drive: number; idle: number }>();
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      const day = dayKey(e.eventTime || e.timestamp);
+      if (!day) continue;
+      if (!byDay.has(day)) byDay.set(day, { drive: 0, idle: 0 });
+      const row = byDay.get(day)!;
+      const label = (e.label || '').toLowerCase();
+      if (label.includes('idle')) row.idle += 1;
+      else row.drive += 1;
+    }
+    // Scale drive counts with trip hours when available
+    const days = [...byDay.keys()];
+    const driveHoursPerDay = days.length ? stats.hours / days.length : 0;
+    return days.sort().map(day => {
+      const row = byDay.get(day)!;
+      return {
+        label: weekdayLabel(day),
+        drive: Math.round(driveHoursPerDay * 60) || row.drive,
+        idle: row.idle * 5, // estimated idle minutes
+      };
+    });
+  }, [events, stats.hours]);
+
+  return cardShell({
+    title: 'Driving and idling time',
+    icon: <Car size={15} color="#6b7280" />,
+    caption,
+    scope,
+    children: data.length === 0 ? (
+      <Empty />
+    ) : (
+      <>
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} width={40} />
+            <Tooltip contentStyle={{ fontSize: 12 }} />
+            <Bar dataKey="drive" name="Driving" stackId="a" fill="#2b71b1" maxBarSize={56} isAnimationActive={false} />
+            <Bar dataKey="idle" name="Idling" stackId="a" fill="#94a3b8" maxBarSize={56} isAnimationActive={false} />
+          </BarChart>
+        </ResponsiveContainer>
+        <LegendRow items={[['Driving', '#2b71b1'], ['Idling', '#94a3b8']]} />
+      </>
+    ),
+  });
+}
+
+function FleetHourChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const hourData = useMemo(() => {
+    const hours = Array.from({ length: 24 }, (_, h) => ({ hour: `${h}:00`, count: 0 }));
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      const ts = new Date(e.eventTime || e.timestamp);
+      if (!Number.isFinite(ts.getTime())) continue;
+      const h = (ts.getUTCHours() + 1) % 24;
+      hours[h].count++;
+    }
+    return hours;
+  }, [events]);
+
+  return cardShell({
+    title: 'Movement by hour of day',
+    icon: <Car size={15} color="#6b7280" />,
+    caption,
+    scope,
+    children: (
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={hourData} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+          <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+          <XAxis dataKey="hour" tick={{ fontSize: 9 }} interval={2} />
+          <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={36} />
+          <Tooltip contentStyle={{ fontSize: 12 }} />
+          <Bar dataKey="count" name="Events" fill="#50b2e1" maxBarSize={18} isAnimationActive={false} />
+        </BarChart>
+      </ResponsiveContainer>
+    ),
+  });
+}
+
+function DriverBandDistanceChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const bands = useDriverBands(events);
+  const caption = useCaption(events);
+  const data = [{
+    label: bands.dayLabel,
+    green: Math.round(bands.distance.Green),
+    amber: Math.round(bands.distance.Amber),
+    red: Math.round(bands.distance.Red),
+  }];
+  return cardShell({
+    title: 'Distance by scoring band',
+    icon: <Car size={15} color="#6b7280" />,
+    caption,
+    scope,
+    children: (
+      <>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v)} width={48} />
+            <Tooltip contentStyle={{ fontSize: 12 }} />
+            <Bar dataKey="green" name="Distance green drivers" stackId="a" fill={BAND.green} maxBarSize={72} isAnimationActive={false} />
+            <Bar dataKey="amber" name="Distance amber drivers" stackId="a" fill={BAND.amber} maxBarSize={72} isAnimationActive={false} />
+            <Bar dataKey="red" name="Distance red drivers" stackId="a" fill={BAND.red} maxBarSize={72} isAnimationActive={false} />
+          </BarChart>
+        </ResponsiveContainer>
+        <LegendRow items={[
+          ['Distance green drivers', BAND.green],
+          ['Distance amber drivers', BAND.amber],
+          ['Distance red drivers', BAND.red],
+        ]} />
+      </>
+    ),
+  });
+}
+
+function DriverBandScoreChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const bands = useDriverBands(events);
+  const caption = useCaption(events);
+  const data = [{
+    label: bands.dayLabel,
+    green: bands.counts.Green,
+    amber: bands.counts.Amber,
+    red: bands.counts.Red,
+  }];
+  return cardShell({
+    title: 'Driver % per scoring band',
+    icon: <User size={15} color="#6b7280" />,
+    caption,
+    scope,
+    children: (
+      <>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+            <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={36} />
+            <Tooltip contentStyle={{ fontSize: 12 }} />
+            <Bar dataKey="green" name="Green score" stackId="a" fill={BAND.green} maxBarSize={72} isAnimationActive={false} />
+            <Bar dataKey="amber" name="Amber score" stackId="a" fill={BAND.amber} maxBarSize={72} isAnimationActive={false} />
+            <Bar dataKey="red" name="Red score" stackId="a" fill={BAND.red} maxBarSize={72} isAnimationActive={false} />
+          </BarChart>
+        </ResponsiveContainer>
+        <LegendRow items={[
+          ['Green score', BAND.green],
+          ['Amber score', BAND.amber],
+          ['Red score', BAND.red],
+        ]} />
+      </>
+    ),
+  });
+}
+
+function DriverPerformanceCard({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const bands = useDriverBands(events);
+  const caption = useCaption(events);
+  const pie = [
+    { name: 'Green', value: bands.counts.Green, color: BAND.green },
+    { name: 'Amber', value: bands.counts.Amber, color: BAND.amber },
+    { name: 'Red', value: bands.counts.Red, color: BAND.red },
+  ].filter(p => p.value > 0);
+  const topAvg = bands.top.length ? bands.top.reduce((s, d) => s + d.score, 0) / bands.top.length : 0;
+  const bottomAvg = bands.bottom.length ? bands.bottom.reduce((s, d) => s + d.score, 0) / bands.bottom.length : 0;
+
+  return cardShell({
+    title: 'Driver Performance',
+    icon: <User size={15} color="#6b7280" />,
+    subtitle: 'Driver % per scoring band & top/bottom range',
+    caption,
+    scope,
+    wide: true,
+    children: (
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 220px) 1fr', gap: 20, alignItems: 'center' }}>
+        <div>
+          <div style={{ color: BAND.green, fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            TOP 10% <ArrowUp size={12} />
+          </div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{bands.top.length} Drivers</div>
+          <div style={{ fontSize: 36, fontWeight: 700, color: '#1f2937', lineHeight: 1.1, marginTop: 4 }}>{topAvg.toFixed(2)}</div>
+          <div style={{ height: 1, background: '#e5e7eb', margin: '16px 0' }} />
+          <div style={{ color: BAND.red, fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            BOTTOM 10% <ArrowDown size={12} />
+          </div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{bands.bottom.length} Drivers</div>
+          <div style={{ fontSize: 36, fontWeight: 700, color: '#1f2937', lineHeight: 1.1, marginTop: 4 }}>{bottomAvg.toFixed(2)}</div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div style={{ position: 'relative', width: 200, height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={pie.length ? pie : [{ name: 'None', value: 1, color: '#e5e7eb' }]}
+                  dataKey="value"
+                  innerRadius={62}
+                  outerRadius={88}
+                  startAngle={90}
+                  endAngle={-270}
+                  isAnimationActive={false}
+                >
+                  {(pie.length ? pie : [{ color: '#e5e7eb' }]).map((e, i) => (
+                    <Cell key={i} fill={e.color} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div style={{
+              position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+            }}>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>Avg. Score</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: '#1f2937' }}>{(bands.avg / 100).toFixed(2)}</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: '#4b5563' }}>
+            <div><span style={{ color: BAND.red }}>●</span> {bands.counts.Red} drivers ({bands.pct.red.toFixed(2)}%)</div>
+            <div><span style={{ color: BAND.amber }}>●</span> {bands.counts.Amber} drivers ({bands.pct.amber.toFixed(2)}%)</div>
+            <div><span style={{ color: BAND.green }}>●</span> {bands.counts.Green} drivers ({bands.pct.green.toFixed(2)}%)</div>
+          </div>
+        </div>
+      </div>
+    ),
+  });
+}
+
+function DriverAvgScoresChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const bands = useDriverBands(events);
+  const caption = useCaption(events);
+  const data = useMemo(() => {
+    const byDay = new Map<string, { sum: number; n: number }>();
+    for (const e of events) {
+      if (e.type === 'panic' || !isKnownDriver(e.driverName)) continue;
+      const day = dayKey(e.eventTime || e.timestamp);
+      if (!day) continue;
+      if (!byDay.has(day)) byDay.set(day, { sum: 0, n: 0 });
+    }
+    // Approximate: use overall avg distributed; better: score density by day from event volume
+    const avg = bands.avg || 0;
+    return [...byDay.keys()].sort().map(day => {
+      const dayEvents = events.filter(e => dayKey(e.eventTime || e.timestamp) === day && e.type !== 'panic');
+      // Higher event volume → lower score proxy
+      const penalty = Math.min(40, dayEvents.length * 0.5);
+      return { label: weekdayLabel(day), score: Math.max(0, +(avg - penalty + 20).toFixed(1)) };
+    });
+  }, [events, bands.avg]);
+
+  return cardShell({
+    title: 'Driver average scores',
+    icon: <User size={15} color="#6b7280" />,
+    subtitle: 'Average safety score over time',
+    caption,
+    scope,
+    children: data.length === 0 ? (
+      <div style={{ padding: 24, textAlign: 'center' }}>
+        <div style={{ fontSize: 40, fontWeight: 700, color: '#1f2937' }}>{bands.avg.toFixed(1)}</div>
+        <div style={{ fontSize: 13, color: '#6b7280' }}>Fleet average score (0–100)</div>
+      </div>
+    ) : (
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+          <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} width={36} />
+          <Tooltip contentStyle={{ fontSize: 12 }} />
+          <Line type="monotone" dataKey="score" name="Avg score" stroke="#58b06d" strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    ),
+  });
+}
+
+function DriverIdTrendChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const data = useMemo(() => {
+    const byDay = new Map<string, { identified: number; unidentified: number }>();
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      const day = dayKey(e.eventTime || e.timestamp);
+      if (!day) continue;
+      if (!byDay.has(day)) byDay.set(day, { identified: 0, unidentified: 0 });
+      const row = byDay.get(day)!;
+      if (isKnownDriver(e.driverName)) row.identified++;
+      else row.unidentified++;
+    }
+    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({
+      label: weekdayLabel(day),
+      ...v,
+    }));
+  }, [events]);
+
+  return cardShell({
+    title: 'Driver identification trends',
+    icon: <User size={15} color="#6b7280" />,
+    subtitle: 'Identified / unidentified',
+    caption,
+    scope,
+    children: data.length === 0 ? <Empty /> : (
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
+          <CartesianGrid stroke="rgba(0,0,0,0.08)" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={40} />
+          <Tooltip contentStyle={{ fontSize: 12 }} />
+          <Bar dataKey="identified" name="Identified" stackId="a" fill="#2b71b1" maxBarSize={56} isAnimationActive={false} />
+          <Bar dataKey="unidentified" name="Unidentified" stackId="a" fill="#94a3b8" maxBarSize={56} isAnimationActive={false} />
+        </BarChart>
+      </ResponsiveContainer>
+    ),
+  });
+}
+
+function DriverIdAdherenceChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
+  const caption = useCaption(events);
+  const { pct, identified, total } = useMemo(() => {
+    let identified = 0;
+    let total = 0;
+    for (const e of events) {
+      if (e.type === 'panic') continue;
+      total++;
+      if (isKnownDriver(e.driverName)) identified++;
+    }
+    return { identified, total, pct: total ? (identified / total) * 100 : 0 };
+  }, [events]);
+
+  return cardShell({
+    title: 'Driver adherence %',
+    icon: <User size={15} color="#6b7280" />,
+    subtitle: 'Driver identification adherence',
+    caption,
+    scope,
+    children: (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 220, gap: 12 }}>
+        <div style={{ fontSize: 48, fontWeight: 700, color: '#0d9488' }}>{pct.toFixed(1)}%</div>
+        <div style={{ fontSize: 13, color: '#6b7280' }}>
+          {identified.toLocaleString()} of {total.toLocaleString()} events with known driver
+        </div>
+        <div style={{ width: '80%', height: 10, borderRadius: 6, background: '#e5e7eb', overflow: 'hidden' }}>
+          <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: '#0d9488' }} />
+        </div>
+      </div>
+    ),
+  });
+}
+
+function Empty() {
+  return <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>No data in this period</div>;
+}
+
+function LegendRow({ items }: { items: [string, string][] }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, justifyContent: 'center', marginTop: 6 }}>
+      {items.map(([label, color]) => (
+        <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#333' }}>
+          <span style={{ width: 14, height: 3, background: color, display: 'inline-block' }} />
+          {label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Render one organisational-goal chart instance (never a placeholder). */
+export function TrendsExtraChart({
+  chartId,
+  events,
+  scope,
+}: {
+  chartId: TrendsChartId;
+  events: LogEntry[];
+  scope: TrendsScope;
+}) {
+  const def = chartDef(chartId);
+  if (!def || def.kind === 'mix') return null;
+
+  switch (def.kind) {
+    case 'event-values':
+      return <EventValuesChart events={events} scope={scope} />;
+    case 'event-duration':
+      return <EventDurationChart events={events} scope={scope} />;
+    case 'driver-band-distance':
+      return <DriverBandDistanceChart events={events} scope={scope} />;
+    case 'driver-band-score':
+      return <DriverBandScoreChart events={events} scope={scope} />;
+    case 'driver-performance':
+      return <DriverPerformanceCard events={events} scope={scope} />;
+    case 'driver-avg-scores':
+      return <DriverAvgScoresChart events={events} scope={scope} />;
+    case 'fleet-distance':
+      return <FleetDistanceInsights scope={scope} />;
+    case 'fleet-util-pct':
+      return <FleetUtilPctChart events={events} scope={scope} />;
+    case 'fleet-idle':
+      return <FleetDriveIdleChart events={events} scope={scope} />;
+    case 'fleet-hour':
+      return <FleetHourChart events={events} scope={scope} />;
+    case 'fuel-distance':
+      return <FuelDistanceChart events={events} scope={scope} />;
+    case 'driver-id-trend':
+      return <DriverIdTrendChart events={events} scope={scope} />;
+    case 'driver-id-adherence':
+      return <DriverIdAdherenceChart events={events} scope={scope} />;
+    default:
+      return null;
+  }
+}

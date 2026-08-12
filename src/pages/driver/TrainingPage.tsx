@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect, useDeferredValue } from 'react';
 import { Award, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { useFleet, authFetch } from '../../context/FleetContext';
 import type { TripDriver } from '../../context/FleetContext';
-import { isActiveDriver, isActiveDriverId } from '../../lib/driverUtils';
+import { isActiveDriver, isActiveDriverId, displayDriverName } from '../../lib/driverUtils';
+import { sanitizeTripDriver } from '../../lib/demoSanitize';
+import MockNamesBadge from '../../components/MockNamesBadge';
 import {
   buildDriverSnapshots,
   qualifyTraining,
@@ -15,6 +17,7 @@ import { COACHING_WINDOW_DAYS, TRAINING_SAME_LABEL_COUNT, TRAINING_SAME_LABEL_DA
 import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import PageControls from '../../components/PageControls';
+import { brandLabel } from '../../lib/branding';
 
 function TrainingRow({ driver, recurring, expanded, onToggle, onChanged }: {
   driver: DriverSnapshot; recurring: { label: string; count: number }; expanded: boolean; onToggle: () => void; onChanged: () => void;
@@ -30,9 +33,9 @@ function TrainingRow({ driver, recurring, expanded, onToggle, onChanged }: {
         style={{ padding: '14px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}
       >
         <div style={{ flex: '1 1 180px', minWidth: 160 }}>
-          <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{driver.name}</div>
+          <div style={{ fontWeight: 600, color: 'var(--cd-text)', fontSize: 14 }}>{displayDriverName(driver.name)}</div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
-            {driver.regNo} · {driver.assetName}
+            {driver.regNo} · {brandLabel(driver.assetName)}
           </div>
         </div>
         <div style={{ textAlign: 'center', minWidth: 150 }}>
@@ -125,7 +128,7 @@ export default function TrainingPage() {
             const key = d.driverId || d.driverName;
             if (!key) continue;
             const prev = map.get(key);
-            if (!prev) map.set(key, { ...d });
+            if (!prev) map.set(key, sanitizeTripDriver({ ...d }));
             else prev.totalDistanceKm += d.totalDistanceKm;
           }
         }
@@ -171,7 +174,7 @@ export default function TrainingPage() {
   return (
       <div>
         <div className="bpl-page-header">
-          <h1 className="bpl-page-title">Driver Management — Training</h1>
+          <h1 className="bpl-page-title">Driver Management — Training <MockNamesBadge /></h1>
           <p className="bpl-page-subtitle">
             Drivers repeating the same violation {TRAINING_SAME_LABEL_COUNT}+ times within {TRAINING_SAME_LABEL_DAYS} days
           </p>

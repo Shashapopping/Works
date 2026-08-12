@@ -5,11 +5,12 @@ import {
   AlertTriangle, Search, ListChecks, TrendingUp,
   Shield, Wrench, FileBarChart2, Folder, BarChart3, Fuel,
   Truck, Map, Navigation, Route, Brain, Lock, Gauge,
-  Mountain, Package, Droplets, Settings, ChevronDown, Sun, Moon, LogOut,
+  Mountain, Package, Droplets, Settings, ChevronDown, Sun, Moon, LogOut, Camera,
 } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
 import { useAuth } from '../../context/AuthContext';
 import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
+import { brandLogoAlt, brandLogoSrc } from '../../lib/branding';
 
 interface SubItem {
   path: string;
@@ -39,16 +40,18 @@ const NAV: NavGroup[] = [
       { path: '/drivers/coaching', label: 'Coaching', icon: GraduationCap },
       { path: '/drivers/training', label: 'Training', icon: Award },
       { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
+      { path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon },
+      { path: '/drivers/vision', label: 'Vision', icon: Camera },
     ],
   },
   {
     path: '/incidents', icon: AlertTriangle, label: 'Incident Intelligence',
     children: [
       { path: '/incidents', label: 'Event Explorer', icon: Search },
-      { path: '/incidents/trends', label: 'Trends', icon: TrendingUp },
       { path: '/incidents/response', label: 'Response Tracking', icon: ListChecks },
     ],
   },
+  { path: '/trends', icon: TrendingUp, label: 'Trends' },
   { path: '/tankers', icon: Truck, label: 'Bulk Tankers', accent: '#f59e0b' },
   {
     path: '/quarry', icon: Mountain, label: 'Quarry', accent: '#84cc16',
@@ -60,6 +63,7 @@ const NAV: NavGroup[] = [
   { path: '/cement', icon: Package, label: 'Cement', accent: '#94a3b8' },
   { path: '/ready-mix', icon: Droplets, label: 'Ready Mix', accent: '#22d3ee' },
   { path: '/safety', icon: Shield, label: 'Safety' },
+  { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
   {
     path: '/fuel', icon: Fuel, label: 'Fuel',
     children: [
@@ -74,7 +78,6 @@ const NAV: NavGroup[] = [
       { path: '/reports/documents', label: 'Documents', icon: Folder },
     ],
   },
-  { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
   // Locked / upcoming — keep at bottom of nav
   {
     path: '/trips', icon: Route, label: 'Journey Management', locked: true,
@@ -179,21 +182,32 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
     >
       <div style={{ padding: '16px 16px 12px', borderBottom: '0.5px solid rgba(255,255,255,0.08)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 6,
-            padding: '5px 10px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-          }}>
-            <img
-              src="/HBM-logo.jpeg"
-              alt="HBM Nigeria"
-              style={{ height: 32, width: 'auto', objectFit: 'contain', display: 'block' }}
-            />
-          </div>
+          {brandLogoSrc() ? (
+            <div style={{
+              background: '#fff',
+              borderRadius: 6,
+              padding: '5px 10px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}>
+              <img
+                src={brandLogoSrc()!}
+                alt={brandLogoAlt()}
+                style={{ height: 32, width: 'auto', objectFit: 'contain', display: 'block' }}
+              />
+            </div>
+          ) : (
+            <div style={{
+              width: 40, height: 40, borderRadius: 8, flexShrink: 0,
+              background: '#0078D4',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontWeight: 700, fontSize: 16,
+            }}>
+              F
+            </div>
+          )}
           <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', lineHeight: 1.4 }}>
             Fleet Intelligence<br />Platform
           </div>

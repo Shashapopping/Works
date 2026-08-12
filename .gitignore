@@ -92,3 +92,9 @@ panic.log
 events.log
 backfill.js
 enrich.js
+
+# Demo branding — keep ON only in local .env.local (never commit true)
+# VITE_DEMO_BRANDING is read by src/config/demoBranding.ts
+.env.demo.local
+src/config/demoBranding.local.ts
+docs/DEMO-BRANDING-RESTORE.local.md

@@ -1,16 +1,32 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { LayoutGrid, Map, Table } from 'lucide-react';
-import { useFleet, type StatusFilter } from '../context/FleetContext';
+import { useFleet, type StatusFilter, type DistanceRange } from '../context/FleetContext';
 import AnomaliesTable from '../components/AnomaliesTable';
 import MapView from '../components/MapView';
 import GroupedView from '../components/GroupedView';
+import StatusStatsRow from '../components/home/StatusStatsRow';
 
 type ViewMode = 'table' | 'map' | 'grouped';
 
+const VALID_STATUSES: StatusFilter[] = ['All', 'Moving', 'Idle', 'Excessive Idle', 'Stationary', 'Parked', 'Offline', 'Inactive'];
+
+function parseStatusParam(value: string | null): StatusFilter {
+  const match = VALID_STATUSES.find(s => s === value);
+  return match || 'All';
+}
+
 export default function FleetPage() {
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
+  const [searchParams] = useSearchParams();
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => parseStatusParam(searchParams.get('status')));
   const [viewMode, setViewMode] = useState<ViewMode>('table');
-  const { authFetch, metadata, vehicles } = useFleet();
+  const [metricPeriod, setMetricPeriod] = useState<DistanceRange>('24h');
+  const { authFetch, metadata, vehicles, setDistanceRange } = useFleet();
+
+  const handleMetricPeriodChange = useCallback((period: DistanceRange) => {
+    setMetricPeriod(period);
+    setDistanceRange(period);
+  }, [setDistanceRange]);
 
   const handleMapAcknowledge = async (id: string) => {
     try {
@@ -29,6 +45,15 @@ export default function FleetPage() {
         <p className="bpl-page-subtitle">
           {vehicles.length} assets · {metadata.moving} moving · table, grouped, and map views
         </p>
+      </div>
+
+      <div className="bpl-home-score-row" style={{ gridTemplateColumns: '1fr', marginBottom: 14 }}>
+        <StatusStatsRow
+          statusFilter={statusFilter}
+          onFilterChange={setStatusFilter}
+          metricPeriod={metricPeriod}
+          onMetricPeriodChange={handleMetricPeriodChange}
+        />
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 10 }}>

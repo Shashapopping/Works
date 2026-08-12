@@ -1,7 +1,7 @@
 import { ShieldAlert, TrendingDown, TrendingUp, Minus } from 'lucide-react';
 import type { SafetyNotification } from '../hooks/useSafeIQ';
 import { formatEnvironmentLine } from './EnvironmentBadge';
-import { isKnownDriver } from '../lib/driverUtils';
+import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
 
 function severityColor(s: string) {
   if (s === 'RED') return '#dc2626';
@@ -55,7 +55,7 @@ export default function SafeIQFeed({ notifications, onOpen, onDismiss, showDismi
               <div className="bpl-safeiq-feed-card-ident">
                 <ShieldAlert size={16} style={{ color: accent }} />
                 <div>
-                  <div className="bpl-safeiq-feed-driver">{n.driver.name}</div>
+                  <div className="bpl-safeiq-feed-driver">{displayDriverName(n.driver.name)}</div>
                   <div className="bpl-safeiq-feed-meta">
                     {n.vehicle.id} · {timeAgo(n.timestamp)}
                   </div>

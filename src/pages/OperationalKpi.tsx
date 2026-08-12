@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Gauge, AlertTriangle, Search, Truck } from 'lucide-react';
+import { Gauge, AlertTriangle, Search, Truck, Activity, Clock, Package, Zap } from 'lucide-react';
 import { authFetch } from '../context/FleetContext';
 import {
   type KpiPeriodMode,
@@ -135,24 +135,24 @@ export default function OperationalKpi() {
   };
 
   const kpiCards = [
-    { label: 'Utilization (avg)', value: fmtPct(summary?.avgUtilizationPct), hint: 'Working while in use', tip: KPI_DEFINITIONS.utilization },
-    { label: 'Availability (avg)', value: fmtPct(summary?.avgAvailabilityPct), hint: 'Engine runtime / period hours', tip: KPI_DEFINITIONS.availability },
-    { label: 'Engine runtime', value: fmtHours(summary?.totalEngineHours ?? 0), hint: `${summary?.assetCount ?? 0} assets`, tip: KPI_DEFINITIONS.engineRuntime },
-    { label: 'Loaded duration', value: fmtHours(summary?.totalLoadedHours ?? 0), hint: 'From loaded-truck events', tip: KPI_DEFINITIONS.loadedDuration },
-    { label: 'Harsh braking', value: String(summary?.harshBrakingTotal ?? 0), hint: 'Event count', tip: KPI_DEFINITIONS.harshBraking },
-    { label: 'Overspeeding', value: String(summary?.overspeedTotal ?? 0), hint: `${fmtHours(summary?.overspeedHoursTotal ?? 0)} duration`, tip: KPI_DEFINITIONS.overspeeding },
+    { label: 'Utilization (avg)', value: fmtPct(summary?.avgUtilizationPct), hint: 'Working while in use', tip: KPI_DEFINITIONS.utilization, color: '#0078D4', icon: Gauge },
+    { label: 'Availability (avg)', value: fmtPct(summary?.avgAvailabilityPct), hint: 'Engine runtime / period hours', tip: KPI_DEFINITIONS.availability, color: '#0d9488', icon: Activity },
+    { label: 'Engine runtime', value: fmtHours(summary?.totalEngineHours ?? 0), hint: `${summary?.assetCount ?? 0} assets`, tip: KPI_DEFINITIONS.engineRuntime, color: '#7c3aed', icon: Clock },
+    { label: 'Loaded duration', value: fmtHours(summary?.totalLoadedHours ?? 0), hint: 'From loaded-truck events', tip: KPI_DEFINITIONS.loadedDuration, color: '#ea580c', icon: Package },
+    { label: 'Harsh braking', value: String(summary?.harshBrakingTotal ?? 0), hint: 'Event count', tip: KPI_DEFINITIONS.harshBraking, color: '#dc2626', icon: AlertTriangle },
+    { label: 'Overspeeding', value: String(summary?.overspeedTotal ?? 0), hint: `${fmtHours(summary?.overspeedHoursTotal ?? 0)} duration`, tip: KPI_DEFINITIONS.overspeeding, color: '#d97706', icon: Zap },
   ];
 
-  const columns: { key: keyof KpiAssetRow; label: string; tip?: string }[] = [
+  const columns: { key: keyof KpiAssetRow; label: string; tip?: string; dot?: string }[] = [
     { key: 'regNo', label: 'Reg' },
     { key: 'assetClass', label: 'Class' },
-    { key: 'engineHours', label: 'Engine h', tip: KPI_DEFINITIONS.engineRuntime },
-    { key: 'loadedHours', label: 'Loaded h', tip: KPI_DEFINITIONS.loadedDuration },
+    { key: 'engineHours', label: 'Engine h', tip: KPI_DEFINITIONS.engineRuntime, dot: '#7c3aed' },
+    { key: 'loadedHours', label: 'Loaded h', tip: KPI_DEFINITIONS.loadedDuration, dot: '#ea580c' },
     { key: 'loadCount', label: 'Loads' },
-    { key: 'utilizationPct', label: 'Utilization', tip: KPI_DEFINITIONS.utilization },
-    { key: 'availabilityPct', label: 'Availability', tip: KPI_DEFINITIONS.availability },
-    { key: 'harshBrakingCount', label: 'Harsh braking', tip: KPI_DEFINITIONS.harshBraking },
-    { key: 'overspeedCount', label: 'Overspeed', tip: KPI_DEFINITIONS.overspeeding },
+    { key: 'utilizationPct', label: 'Utilization', tip: KPI_DEFINITIONS.utilization, dot: '#0078D4' },
+    { key: 'availabilityPct', label: 'Availability', tip: KPI_DEFINITIONS.availability, dot: '#0d9488' },
+    { key: 'harshBrakingCount', label: 'Harsh braking', tip: KPI_DEFINITIONS.harshBraking, dot: '#dc2626' },
+    { key: 'overspeedCount', label: 'Overspeed', tip: KPI_DEFINITIONS.overspeeding, dot: '#d97706' },
   ];
 
   return (
@@ -246,13 +246,17 @@ export default function OperationalKpi() {
         {kpiCards.map(k => (
           <div key={k.label} style={{
             padding: '14px 16px', borderRadius: 10,
-            background: 'var(--cd-surface)', border: '1px solid var(--cd-border)',
+            background: `linear-gradient(180deg, ${k.color}0d, var(--cd-surface) 55%)`,
+            border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}`,
           }}>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center' }}>
-              {k.label}
-              <InfoTip text={k.tip} label={k.label} />
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center' }}>
+                {k.label}
+                <InfoTip text={k.tip} label={k.label} />
+              </div>
+              <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)' }}>{initialLoading ? '…' : k.value}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{initialLoading ? '…' : k.value}</div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{k.hint}</div>
           </div>
         ))}
@@ -273,23 +277,30 @@ export default function OperationalKpi() {
 
       {/* Asset table */}
       <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--cd-text)' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--cd-text)', display: 'flex', alignItems: 'center', gap: 7 }}>
+          <Truck size={14} color="#0078D4" />
           By asset
-          <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 8 }}>
+          <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 4 }}>
             Click a column to sort · harsh braking score = count ÷ 3 · overspeed score = count ÷ 1
           </span>
         </div>
         <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--cd-border)' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
-              <tr style={{ background: 'var(--cd-surface-2)', textAlign: 'left' }}>
+              <tr style={{ background: 'linear-gradient(180deg, rgba(0,120,212,0.07), var(--cd-surface-2))', textAlign: 'left' }}>
                 {columns.map(c => (
                   <th
                     key={c.key}
                     onClick={() => toggleSort(c.key)}
-                    style={{ padding: '10px 12px', fontWeight: 600, color: sortKey === c.key ? '#0078D4' : 'var(--cd-text-muted)', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}
+                    style={{ padding: '10px 12px', fontWeight: 600, color: sortKey === c.key ? (c.dot ?? '#0078D4') : 'var(--cd-text-muted)', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      {c.dot && (
+                        <span aria-hidden style={{
+                          width: 6, height: 6, borderRadius: '50%', background: c.dot,
+                          marginRight: 6, flexShrink: 0,
+                        }} />
+                      )}
                       {c.label}{sortKey === c.key ? (sortDesc ? ' ↓' : ' ↑') : ''}
                       {c.tip && <InfoTip text={c.tip} label={c.label} />}
                     </span>

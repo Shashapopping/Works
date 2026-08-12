@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary } from './scripts/mix-test.js'
+import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords } from './scripts/mix-test.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
@@ -377,6 +377,19 @@ export default defineConfig({
           const slim = { ...summary, assets: summary.assets.map(({ journeys, ...rest }: any) => rest) }
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(slim))
+        })
+
+        // GET /api/hos?date=YYYY-MM-DD — hours-of-service continuous-driving records
+        server.middlewares.use('/api/hos', async (req, res) => {
+          if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+          try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const data = getHosRecords(params.get('date') || undefined)
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(data))
+          } catch { res.statusCode = 500; res.end('Internal Server Error') }
         })
 
         // GET /api/drivers

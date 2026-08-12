@@ -299,3 +299,64 @@ export function logConsequenceResponse(
   saveConsequenceOccurrences(next);
   return next;
 }
+
+/** Text log of what response was actually taken, and who logged it. */
+export const CONSEQUENCE_RESPONSE_LOG_KEY = 'bpl_consequence_response_log';
+
+export interface ResponseLogEntry {
+  id: string;
+  driverKey: string;
+  driverName: string;
+  category: ConsequenceCategory;
+  occurrenceIndex: number;
+  note: string;
+  loggedBy: string;
+  loggedAt: string;
+}
+
+export function loadResponseLog(): ResponseLogEntry[] {
+  try {
+    const raw = localStorage.getItem(CONSEQUENCE_RESPONSE_LOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveResponseLog(entries: ResponseLogEntry[]) {
+  try {
+    localStorage.setItem(CONSEQUENCE_RESPONSE_LOG_KEY, JSON.stringify(entries));
+  } catch { /* quota / private mode */ }
+}
+
+export function getResponseLogForDriver(driverKey: string): ResponseLogEntry[] {
+  return loadResponseLog()
+    .filter(e => e.driverKey === driverKey)
+    .sort((a, b) => new Date(b.loggedAt).getTime() - new Date(a.loggedAt).getTime());
+}
+
+export function addResponseLogEntry(
+  driverKey: string,
+  driverName: string,
+  category: ConsequenceCategory,
+  occurrenceIndex: number,
+  note: string,
+  loggedBy: string,
+): ResponseLogEntry {
+  const entries = loadResponseLog();
+  const entry: ResponseLogEntry = {
+    id: `${driverKey}-${Date.now()}`,
+    driverKey,
+    driverName,
+    category,
+    occurrenceIndex,
+    note: note.trim(),
+    loggedBy: loggedBy.trim() || 'You',
+    loggedAt: new Date().toISOString(),
+  };
+  entries.push(entry);
+  saveResponseLog(entries);
+  return entry;
+}
