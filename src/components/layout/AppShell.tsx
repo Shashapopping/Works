@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Menu, Bell, Search, UserCircle, ShieldAlert } from 'lucide-react';
 import Sidebar from './Sidebar';
 import SiteSelector from './SiteSelector';
+import PageTransition from './PageTransition';
 import SafetyToast from '../SafetyToast';
 import SafetyIncidentModal from '../SafetyIncidentModal';
 import { useFleet } from '../../context/FleetContext';
@@ -306,10 +307,10 @@ export default function AppShell() {
           </div>
         </header>
 
-        {/* Page content */}
+        {/* Page content — shell stays put; loader only in this region */}
         <main style={{ flex: 1, overflow: 'auto' }}>
           <div className="bpl-page">
-            <Outlet />
+            <PageTransition />
           </div>
         </main>
       </div>

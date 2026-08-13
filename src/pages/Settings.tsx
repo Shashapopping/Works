@@ -154,6 +154,13 @@ function ThresholdSettings() {
 
   useEffect(() => { setForm(scoreConfig); }, [scoreConfig]);
 
+  useEffect(() => {
+    if (window.location.hash !== '#consequence-bands') return;
+    const el = document.getElementById('consequence-bands');
+    if (!el) return;
+    requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }, []);
+
   const setWeight = (key: keyof FleetScoreConfig['weights'], value: number) => {
     setForm(p => ({ ...p, weights: { ...p.weights, [key]: value } }));
   };
@@ -307,7 +314,7 @@ function ThresholdSettings() {
         </div>
       </div>
 
-      <div className="bpl-card" style={{ padding: 24 }}>
+      <div id="consequence-bands" className="bpl-card" style={{ padding: 24, scrollMarginTop: 88 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
           Driver discipline bands (Consequence Management)
         </div>

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { FleetProvider } from './context/FleetContext';
@@ -32,20 +32,11 @@ const FuelMonitoring = lazy(() => import('./pages/FuelMonitoring'));
 const FuelConsumption = lazy(() => import('./pages/FuelConsumption'));
 const OperationalKpi = lazy(() => import('./pages/OperationalKpi'));
 
-function PageLoading() {
-  return (
-    <div style={{ padding: 40, textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
-      Loading…
-    </div>
-  );
-}
-
 export default function App() {
   return (
     <AuthProvider>
       <FleetProvider>
         <HashRouter>
-          <Suspense fallback={<PageLoading />}>
           <Routes>
             <Route path="/login" element={<Login />} />
 
@@ -107,7 +98,6 @@ export default function App() {
               </Route>
             </Route>
           </Routes>
-          </Suspense>
         </HashRouter>
       </FleetProvider>
     </AuthProvider>

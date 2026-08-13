@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import {
   Car, ChevronDown, Filter, LayoutGrid, List, Plus, User, X,
 } from 'lucide-react';
 import MixEventInsightsGrid from '../components/MixEventInsightsGrid';
-import { TrendsExtraChart } from '../components/TrendsExtraCharts';
+import {
+  DeferredTrendsExtraChart,
+  TrendsSharedDataProvider,
+} from '../components/TrendsExtraCharts';
 import { useFleet } from '../context/FleetContext';
 import type { LogEntry } from '../context/FleetContext';
 import type { WidgetId } from '../lib/mixEventInsights';
@@ -393,7 +396,12 @@ export default function TrendsPage() {
     return periodEvents.filter(e => labelFilter.has(e.label || 'Unknown'));
   }, [periodEvents, labelFilter]);
 
+  /** Keep toolbar snappy while heavy chart pipelines catch up. */
+  const deferredFiltered = useDeferredValue(filtered);
+  const chartsBusy = deferredFiltered !== filtered;
+
   const activeFilterCount = labelFilter ? labelFilter.size : 0;
+  const chartResetKey = `${period}:${fromDate}:${toDate}:${activeFilterCount}:${active.id}`;
 
   const removeChart = (chartId: TrendsChartId) => {
     const nextIds = active.chartIds.filter(id => id !== chartId);
@@ -726,29 +734,36 @@ export default function TrendsPage() {
         </div>
       )}
 
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: layout === 'list' ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
-        gap: 14,
-      }}>
-        {extraIds.map(id => (
-          <TrendsExtraChart
-            key={id}
-            chartId={id}
-            events={filtered}
-            scope={scope}
-            grouping={grouping}
-            onEditDashboard={openEdit}
-            onRemoveChart={removeChart}
-          />
-        ))}
-      </div>
-
-      {mixIds.length > 0 && (
-        <div style={{ marginTop: extraIds.length ? 14 : 0 }}>
-          <MixEventInsightsGrid events={filtered} visibleIds={mixIds} grouping={grouping} />
+      <TrendsSharedDataProvider events={deferredFiltered}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: layout === 'list' ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+            gap: 14,
+            opacity: chartsBusy ? 0.92 : 1,
+            transition: 'opacity 0.15s ease',
+          }}
+        >
+          {extraIds.map((id, index) => (
+            <DeferredTrendsExtraChart
+              key={`${id}:${chartResetKey}`}
+              chartId={id}
+              events={deferredFiltered}
+              scope={scope}
+              grouping={grouping}
+              mountDelay={index * 45}
+              onEditDashboard={openEdit}
+              onRemoveChart={removeChart}
+            />
+          ))}
         </div>
-      )}
+
+        {mixIds.length > 0 && (
+          <div style={{ marginTop: extraIds.length ? 14 : 0 }}>
+            <MixEventInsightsGrid events={deferredFiltered} visibleIds={mixIds} grouping={grouping} />
+          </div>
+        )}
+      </TrendsSharedDataProvider>
 
       {active.chartIds.length === 0 && (
         <div style={{

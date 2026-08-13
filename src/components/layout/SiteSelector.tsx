@@ -29,13 +29,17 @@ export default function SiteSelector() {
   const selectedSet = useMemo(() => new Set(selectedSites), [selectedSites]);
   const isFiltered = selectedSites.length > 0;
 
-  // Real zone keys already represented inside the Cement hierarchy — keep them
-  // out of the flat list below so every site appears exactly once.
-  const cementKeys = useMemo(
+  // Zone keys already covered by the HBM org tree — keep them out of the flat list.
+  const treeKeys = useMemo(
     () => new Set(allMatchKeys(CEMENT_SITE_TREE, siteOptions, siteNameOptions)),
     [siteOptions, siteNameOptions],
   );
-  const flatOptions = useMemo(() => siteOptions.filter(o => !cementKeys.has(o.key)), [siteOptions, cementKeys]);
+  const flatOptions = useMemo(
+    () => siteOptions
+      .filter(o => !treeKeys.has(o.key) && !/XN\s*-\s*Decommissioned/i.test(o.key))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
+    [siteOptions, treeKeys],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -43,7 +47,7 @@ export default function SiteSelector() {
     return flatOptions.filter(o => o.label.toLowerCase().includes(q));
   }, [flatOptions, query]);
 
-  const cementVisible = useMemo(
+  const treeVisible = useMemo(
     () => query.trim() === '' || nodeMatchesQuery(CEMENT_SITE_TREE, query.trim()),
     [query],
   );
@@ -74,13 +78,18 @@ export default function SiteSelector() {
       .reduce((s, o) => s + o.count, 0);
   }, [isFiltered, siteOptions, selectedSet, totalCount]);
 
+  // Empty filter = entire org; same concept as the tree root (not a second “All Sites”).
+  const orgLabel = brandLabel(CEMENT_SITE_TREE.label);
+
   const activeLabel = useMemo(() => {
-    if (!isFiltered) return 'All Sites';
+    if (!isFiltered) return orgLabel;
     if (selectedSites.length === 1) {
-      return siteOptions.find(o => o.key === selectedSites[0])?.label ?? selectedSites[0];
+      return siteOptions.find(o => o.key === selectedSites[0])?.label
+        ?? siteNameOptions.find(o => o.key === selectedSites[0])?.label
+        ?? selectedSites[0];
     }
     return `${selectedSites.length} sites`;
-  }, [isFiltered, selectedSites, siteOptions]);
+  }, [isFiltered, selectedSites, siteOptions, siteNameOptions, orgLabel]);
 
   const allChecked = !isFiltered;
 
@@ -89,7 +98,7 @@ export default function SiteSelector() {
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        title="Filter the dashboard by one or more sites"
+        title={`Filter the dashboard by site — default is ${orgLabel}`}
         style={{
           display: 'flex', alignItems: 'center', gap: 7,
           height: 32, padding: '0 10px', borderRadius: 8, cursor: 'pointer',
@@ -144,7 +153,7 @@ export default function SiteSelector() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
-                {isFiltered ? `${selectedSites.length} selected` : 'Showing all sites'}
+                {isFiltered ? `${selectedSites.length} selected` : `Showing ${orgLabel}`}
               </span>
               {isFiltered && (
                 <button
@@ -163,16 +172,17 @@ export default function SiteSelector() {
 
           <div style={{ maxHeight: 340, overflowY: 'auto', padding: 6 }}>
             <SiteCheckRow
-              label="All Sites"
+              label={orgLabel}
               count={totalCount}
               checked={allChecked}
               onClick={() => setSelectedSites([])}
             />
             <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
 
-            {cementVisible && (
+            {treeVisible && (CEMENT_SITE_TREE.children || []).map(child => (
               <SiteTreeRow
-                node={CEMENT_SITE_TREE}
+                key={child.key}
+                node={child}
                 depth={0}
                 query={query.trim()}
                 zoneOptions={siteOptions}
@@ -182,12 +192,12 @@ export default function SiteSelector() {
                 onToggleExpand={toggleExpand}
                 onToggleNode={toggleNode}
               />
-            )}
-            {cementVisible && filtered.length > 0 && (
+            ))}
+            {treeVisible && filtered.length > 0 && (
               <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
             )}
 
-            {filtered.length === 0 && !cementVisible ? (
+            {filtered.length === 0 && !treeVisible ? (
               <div style={{ padding: '16px 10px', textAlign: 'center', fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
                 No sites match “{query}”
               </div>

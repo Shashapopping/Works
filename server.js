@@ -248,7 +248,10 @@ app.get('/api/driver-distance', (req, res) => {
     from: req.query.from?.toString() || null,
     to: req.query.to?.toString() || null,
   })
-  const slim = { ...summary, assets: summary.assets.map(({ journeys, ...rest }) => rest) }
+  const includeJourneys = req.query.includeJourneys === '1' || req.query.includeJourneys === 'true'
+  const slim = includeJourneys
+    ? summary
+    : { ...summary, assets: summary.assets.map(({ journeys, ...rest }) => rest) }
   res.json(slim)
 })
 

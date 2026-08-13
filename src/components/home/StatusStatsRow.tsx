@@ -158,7 +158,7 @@ export default function StatusStatsRow({
               <div className="bpl-status-stat-copy">
                 <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
                   HOS Violations
-                  <InfoTip text="Drivers currently over 4 hours continuous driving (hours of service). Clock resets after a 30+ min rest (parked gap)." label="HOS Violations" />
+                  <InfoTip text="Drivers with an active HOS breach: over 4h continuous (resets after 30+ min rest), over 8h continuous in a rolling 24h cycle, or missing ≥24h continuous rest in the last 7 days." label="HOS Violations" />
                 </span>
                 <div
                   className="bpl-status-stat-value"
@@ -166,7 +166,7 @@ export default function StatusStatsRow({
                 >
                   {hosLoading ? '…' : hosViolations}
                 </div>
-                <div className="bpl-status-stat-sub">over 4h continuous</div>
+                <div className="bpl-status-stat-sub">4h / 8h / weekly rest</div>
               </div>
               <WidgetStatGraphic color="#CC0000" icon={ShieldAlert} />
             </div>

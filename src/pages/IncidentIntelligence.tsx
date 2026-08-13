@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useDeferredValue, Fragment } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Search, ClipboardCheck, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight, X, ExternalLink } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
 import { useAuth } from '../context/AuthContext';
@@ -414,13 +414,21 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
       <div className="bpl-card" style={{ padding: 20, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <ClipboardCheck size={16} color="#0078D4" />
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+          <Link
+            to="/settings/thresholds#consequence-bands"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)',
+              textDecoration: 'none',
+            }}
+            title="Open consequence settings"
+          >
             Consequence Response Tracking
-          </span>
+            <ExternalLink size={13} color="#0078D4" aria-hidden />
+          </Link>
         </div>
         <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', margin: 0 }}>
           Amber / Yellow / Red drivers by Consequence Management score (penalty points ÷ km/100).
-          Log a response to advance 1st → 2nd occurrence consequences.
         </p>
       </div>
 

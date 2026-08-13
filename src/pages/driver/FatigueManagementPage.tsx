@@ -6,7 +6,7 @@ import MockNamesBadge from '../../components/MockNamesBadge';
 import InfoTip from '../../components/InfoTip';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useHosRecords } from '../../hooks/useHosRecords';
-import { fmtHosMinutes, type HosRecord, type HosStatus } from '../../lib/hos';
+import { fmtHosMinutes, hosRuleLabels, type HosRecord, type HosStatus } from '../../lib/hos';
 
 type DaySel = 'today' | 'yesterday' | 'custom';
 
@@ -32,7 +32,9 @@ const COL_TIPS: Record<string, string> = {
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',
   'Current block': 'How full the live continuous drive block is toward 4 hours. Resets after a ≥30 min rest.',
   'Drive left': 'How much driving remains in the current continuous block before 4 hours.',
-  Status: 'Compliant = under limit. At risk = near 4 hours. Violation = over 4 hours. Red badge = breach count.',
+  '8h / 24h': 'Longest continuous drive in the rolling 24-hour cycle toward the 8-hour limit.',
+  'Weekly rest': 'Longest continuous off-duty gap in the last 7 days. Required: ≥24 hours.',
+  Status: 'Compliant = under all limits. At risk = near 4h or 8h. Violation = 4h continuous, 8h in 24h, and/or missing 24h weekly rest.',
   Time: 'When the driver crossed the 4-hour continuous limit.',
 };
 
@@ -146,7 +148,12 @@ export default function FatigueManagementPage() {
     const q = debouncedSearch.trim().toLowerCase();
     const list = hosRecords.filter(r => {
       if (statusFilter === 'violation') {
-        if ((r.breaches ?? 0) < 1 && r.status !== 'violation') return false;
+        const hasBreach =
+          (r.breaches ?? 0) >= 1
+          || r.status === 'violation'
+          || r.cycle8hViolation
+          || r.weeklyRestOk === false;
+        if (!hasBreach) return false;
       } else if (statusFilter !== 'all') {
         if (r.status !== statusFilter) return false;
       }
@@ -172,7 +179,9 @@ export default function FatigueManagementPage() {
     warning: hosRecords.filter(r => r.status === 'warning').length,
     violation: isTodayView
       ? hosRecords.filter(r => r.status === 'violation').length
-      : hosRecords.filter(r => (r.breaches ?? 0) > 0).length,
+      : hosRecords.filter(r => (r.breaches ?? 0) > 0 || r.cycle8hViolation || r.weeklyRestOk === false).length,
+    cycle8h: hosRecords.filter(r => r.cycle8hViolation).length,
+    weeklyRest: hosRecords.filter(r => r.weeklyRestOk === false).length,
   }), [hosRecords, isTodayView]);
 
   const violationHistoryRows = useMemo(() => {
@@ -207,30 +216,44 @@ export default function FatigueManagementPage() {
     {
       label: 'Drivers tracked',
       value: hosRecords.length,
-      hint: isTodayView ? 'On duty today' : 'Drove this day',
+      hint: isTodayView ? 'On duty / HOS window' : 'Drove this day',
       color: '#0078D4',
       icon: Moon,
     },
     {
       label: 'Compliant',
       value: counts.compliant,
-      hint: isTodayView ? 'Under limit now' : 'No 4h breach',
+      hint: 'Under all HOS rules',
       color: '#16a34a',
       icon: CheckCircle,
     },
     {
       label: 'At risk',
       value: counts.warning,
-      hint: isTodayView ? 'Near 4h now' : 'Reached 3.5h+',
+      hint: isTodayView ? 'Near 4h or 8h' : 'Approached limit',
       color: '#d97706',
       icon: Clock,
     },
     {
       label: 'Violations',
       value: counts.violation,
-      hint: isTodayView ? 'Over 4h right now' : 'Breached 4h this day',
+      hint: '4h / 8h / weekly rest',
       color: '#CC0000',
       icon: AlertTriangle,
+    },
+    {
+      label: '8h in 24h',
+      value: counts.cycle8h,
+      hint: 'Over 8h continuous',
+      color: '#b45309',
+      icon: AlertTriangle,
+    },
+    {
+      label: 'Weekly rest miss',
+      value: counts.weeklyRest,
+      hint: 'No ≥24h rest in 7d',
+      color: '#7c3aed',
+      icon: Moon,
     },
   ];
 
@@ -245,6 +268,8 @@ export default function FatigueManagementPage() {
     { label: 'Violation trip', align: 'right' as const },
     { label: 'Current block', align: 'right' as const },
     { label: 'Drive left', align: 'right' as const },
+    { label: '8h / 24h', align: 'right' as const },
+    { label: 'Weekly rest', align: 'right' as const },
     { label: 'Status', align: 'left' as const },
   ];
 
@@ -255,7 +280,7 @@ export default function FatigueManagementPage() {
         Driver Management — Fatigue Management <MockNamesBadge />
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-        Hours of service — 4h continuous driving, 30-min rest resets the block.
+        Hours of service — 4h continuous (30-min rest resets), 8h continuous in a 24h cycle, and ≥24h continuous rest in a 7-day week.
       </p>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
@@ -383,9 +408,7 @@ export default function FatigueManagementPage() {
 
       {statusFilter === 'violation' && (
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '0 2px 10px' }}>
-          {isTodayView
-            ? `Showing drivers who breached the 4h limit today (${filtered.length}) — the Violations card counts only those over 4h right now.`
-            : `Showing drivers who breached the 4h limit on this day (${filtered.length}).`}
+          Showing drivers with any HOS breach ({filtered.length}) — 4h continuous, 8h continuous in 24h, or missing ≥24h weekly rest.
         </div>
       )}
 
@@ -418,6 +441,11 @@ export default function FatigueManagementPage() {
               const currentMin = currentBlockMinutes(record);
               const vDrive = record.violationDriveMinutes ?? 0;
               const vTrip = record.violationTripMinutes ?? 0;
+              const cycle8Limit = record.cycle8hLimitMinutes || 480;
+              const cycle8Min = record.maxContinuous24hMinutes ?? 0;
+              const weekRestMin = record.longestRestWeekMinutes ?? 0;
+              const weekNeed = record.weeklyRestRequiredMinutes || 1440;
+              const ruleHints = hosRuleLabels(record.rulesBreached);
               return (
                 <tr key={record.id}>
                   <td className="bpl-fatigue-cell-name" title={displayDriverName(record.driverName)}>
@@ -463,14 +491,36 @@ export default function FatigueManagementPage() {
                         ? 'Break now'
                         : `${fmtHosMinutes(record.restMinutesRemaining)} left`}
                   </td>
+                  <FatigueMeter
+                    minutes={cycle8Min}
+                    limit={cycle8Limit}
+                    color={meterColor(cycle8Min, cycle8Limit)}
+                    title={`Rolling 24h continuous: ${fmtHosMinutes(cycle8Min)} toward 8h limit`}
+                  />
+                  <td
+                    style={{
+                      textAlign: 'right',
+                      whiteSpace: 'nowrap',
+                      color: record.weeklyRestOk === false ? '#CC0000' : 'inherit',
+                      fontWeight: record.weeklyRestOk === false ? 600 : 400,
+                    }}
+                    title={
+                      record.weeklyRestOk === false
+                        ? `Longest rest in 7 days: ${fmtHosMinutes(weekRestMin)} — needs ≥${fmtHosMinutes(weekNeed)}`
+                        : `Longest rest in 7 days: ${fmtHosMinutes(weekRestMin)} (meets ≥${fmtHosMinutes(weekNeed)})`
+                    }
+                  >
+                    {fmtHosMinutes(weekRestMin)}
+                    {record.weeklyRestOk === false ? ' ✗' : ''}
+                  </td>
                   <td>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span className="bpl-dispatch-status" style={{ background: st.bg, color: st.color }}>
                         {st.label}
                       </span>
                       {(record.breaches ?? 0) >= 1 && (
                         <span
-                          title={`Breached the 4h continuous limit ${record.breaches} time${record.breaches === 1 ? '' : 's'} ${isTodayView ? 'today' : 'this day'}`}
+                          title={`Breached the 4h continuous limit ${record.breaches} time${record.breaches === 1 ? '' : 's'}`}
                           style={{
                             display: 'inline-flex', alignItems: 'center', gap: 2,
                             fontSize: 11, fontWeight: 700, color: '#CC0000',
@@ -478,6 +528,17 @@ export default function FatigueManagementPage() {
                           }}
                         >
                           <AlertTriangle size={11} /> {record.breaches}
+                        </span>
+                      )}
+                      {ruleHints.length > 0 && (
+                        <span
+                          title={ruleHints.join(' · ')}
+                          style={{
+                            fontSize: 10, fontWeight: 600, color: '#7c3aed',
+                            background: 'rgba(124,58,237,0.1)', borderRadius: 6, padding: '2px 6px',
+                          }}
+                        >
+                          {ruleHints.join(' · ')}
                         </span>
                       )}
                     </span>

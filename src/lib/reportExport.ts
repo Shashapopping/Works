@@ -3,10 +3,12 @@ import { displayDriverName } from './driverUtils';
 import { brandLabel } from './branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { authFetchInit } from './authApi';
+import type { ReportColumn, TabularReport } from './reportTypes';
 
 export interface LogEntry {
   timestamp: string;
   assetId: string;
+  driverId?: string;
   regNo?: string;
   assetName?: string;
   site?: string;
@@ -22,18 +24,18 @@ export interface LogEntry {
 
 export type ExportFormat = 'csv' | 'excel' | 'pdf';
 
-const COLUMNS = [
-  { header: 'Asset Name', get: (e: LogEntry) => brandLabel(e.assetName) || 'N/A' },
-  { header: 'Reg No', get: (e: LogEntry) => e.regNo || 'N/A' },
-  { header: 'Site', get: (e: LogEntry) => brandLabel(e.site) || 'N/A' },
-  { header: 'Transporter', get: (e: LogEntry) => brandLabel(e.transporter) || 'N/A' },
-  { header: 'Driver', get: (e: LogEntry) => displayDriverName(e.driverName, 'N/A') },
-  { header: 'Phone', get: (e: LogEntry) => scrubPhone(e.driverPhone) },
-  { header: 'Event', get: (e: LogEntry) => e.label || 'Unknown' },
-  { header: 'Event Time', get: (e: LogEntry) => (e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB') : 'N/A') },
+const EVENT_COLUMNS: { header: string; get: (e: LogEntry) => string; textForce?: boolean }[] = [
+  { header: 'Asset Name', get: (e) => brandLabel(e.assetName) || 'N/A' },
+  { header: 'Reg No', get: (e) => e.regNo || 'N/A', textForce: true },
+  { header: 'Site', get: (e) => brandLabel(e.site) || 'N/A' },
+  { header: 'Transporter', get: (e) => brandLabel(e.transporter) || 'N/A' },
+  { header: 'Driver', get: (e) => displayDriverName(e.driverName, 'N/A') },
+  { header: 'Phone', get: (e) => scrubPhone(e.driverPhone), textForce: true },
+  { header: 'Event', get: (e) => e.label || 'Unknown' },
+  { header: 'Event Time', get: (e) => (e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB') : 'N/A') },
   {
     header: 'Location',
-    get: (e: LogEntry) => {
+    get: (e) => {
       if (e.address && e.address !== 'N/A' && e.address !== 'null') return brandLabel(e.address);
       return 'N/A';
     },
@@ -44,15 +46,16 @@ function scrubPhone(phone?: string) {
   if (!phone) return 'N/A';
   if (!DEMO_BRANDING) return phone;
   return demoPhoneLabel(phone);
-}const TEXT_FORCE_COLUMNS = ['Phone', 'Reg No'];
-const COL_KEYS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
+}
+
+const COL_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
 function fileStamp() {
   return new Date().toISOString().slice(0, 10);
 }
 
 function slugTitle(reportTitle: string) {
-  return reportTitle.toLowerCase().replace(/\s+/g, '-');
+  return reportTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]+/g, '');
 }
 
 function triggerBrowserDownload(blob: Blob, filename: string) {
@@ -72,6 +75,22 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+export function logEntriesToTabular(
+  entries: LogEntry[],
+  reportTitle: string,
+  meta: string,
+): TabularReport {
+  return {
+    reportType: 'events',
+    title: reportTitle,
+    meta,
+    columns: EVENT_COLUMNS.map(c => ({ header: c.header, textForce: c.textForce })),
+    rows: entries.map(e => EVENT_COLUMNS.map(c => c.get(e))),
+    rowCount: entries.length,
+    archiveType: 'Events',
+  };
 }
 
 /** Shelve a downloaded report into Documents (non-blocking on failure). */
@@ -106,21 +125,21 @@ export async function archiveReportDownload(opts: {
   }
 }
 
-function buildCsvBlob(entries: LogEntry[]) {
-  const headers = COLUMNS.map(c => `"${c.header}"`);
-  const rows = entries.map(e =>
-    COLUMNS.map(c => {
-      const val = String(c.get(e));
-      const escaped = val.replace(/"/g, '""');
-      if (TEXT_FORCE_COLUMNS.includes(c.header) && val !== 'N/A') return `"=""${escaped}"""`;
+function buildCsvBlob(columns: ReportColumn[], rows: string[][]) {
+  const headers = columns.map(c => `"${c.header}"`);
+  const body = rows.map(row =>
+    row.map((val, i) => {
+      const escaped = String(val).replace(/"/g, '""');
+      if (columns[i]?.textForce && val !== 'N/A') return `"=""${escaped}"""`;
       return `"${escaped}"`;
     }),
   );
-  const csv = '\uFEFF' + [headers, ...rows].map(r => r.join(',')).join('\n');
+  const csv = '\uFEFF' + [headers, ...body].map(r => r.join(',')).join('\n');
   return new Blob([csv], { type: 'text/csv;charset=utf-8;' });
 }
 
-function buildExcelBlob(entries: LogEntry[], reportTitle: string, meta: string) {
+function buildExcelBlob(report: TabularReport) {
+  const { columns, rows, title, meta } = report;
   const wb = XLSX.utils.book_new();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ws: any = {};
@@ -130,7 +149,7 @@ function buildExcelBlob(entries: LogEntry[], reportTitle: string, meta: string) 
   };
 
   let rowIdx = 1;
-  setCell('A', rowIdx, reportTitle, {
+  setCell('A', rowIdx, title, {
     font: { bold: true, color: { rgb: '0078D4' }, sz: 14 },
   });
   rowIdx++;
@@ -139,33 +158,30 @@ function buildExcelBlob(entries: LogEntry[], reportTitle: string, meta: string) 
   });
   rowIdx += 2;
 
-  COLUMNS.forEach((col, i) => {
-    setCell(COL_KEYS[i], rowIdx, col.header, {
+  columns.forEach((col, i) => {
+    const key = COL_KEYS[i] || `A${i}`;
+    setCell(key, rowIdx, col.header, {
       font: { bold: true, color: { rgb: '64748B' }, sz: 10 },
       fill: { fgColor: { rgb: 'F1F5F9' } },
     });
   });
   rowIdx++;
 
-  entries.forEach(e => {
-    const isPanic = e.type === 'panic';
-    const bgColor = isPanic ? 'FEF2F2' : 'FFFBEB';
-    const borderColor = isPanic ? 'FECDD3' : 'FDE68A';
-    COLUMNS.forEach((col, i) => {
-      setCell(COL_KEYS[i], rowIdx, String(col.get(e)), {
+  rows.forEach(row => {
+    row.forEach((val, i) => {
+      const key = COL_KEYS[i] || `A${i}`;
+      setCell(key, rowIdx, String(val), {
         font: { color: { rgb: '1E293B' } },
-        fill: { fgColor: { rgb: bgColor } },
-        border: { bottom: { style: 'thin', color: { rgb: borderColor } } },
+        fill: { fgColor: { rgb: 'FFFFFF' } },
+        border: { bottom: { style: 'thin', color: { rgb: 'E2E8F0' } } },
       });
     });
     rowIdx++;
   });
 
-  ws['!ref'] = `A1:I${rowIdx}`;
-  ws['!cols'] = [
-    { wch: 28 }, { wch: 14 }, { wch: 16 }, { wch: 20 },
-    { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 22 }, { wch: 45 },
-  ];
+  const lastCol = COL_KEYS[Math.max(0, columns.length - 1)] || 'A';
+  ws['!ref'] = `A1:${lastCol}${rowIdx}`;
+  ws['!cols'] = columns.map(c => ({ wch: c.width || Math.max(12, c.header.length + 2) }));
 
   XLSX.utils.book_append_sheet(wb, ws, 'Fleet Report');
   const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -174,37 +190,95 @@ function buildExcelBlob(entries: LogEntry[], reportTitle: string, meta: string) 
   });
 }
 
-async function buildPdfBlob(entries: LogEntry[], reportTitle: string, meta: string) {
+async function buildPdfBlob(report: TabularReport) {
   const { default: jsPDF } = await import('jspdf');
   const { default: autoTable } = await import('jspdf-autotable');
 
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   doc.setFontSize(16);
   doc.setTextColor(0, 120, 212);
-  doc.text(reportTitle, 14, 16);
+  doc.text(report.title, 14, 16);
 
   doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text(`Generated: ${new Date().toLocaleString('en-GB')} • ${entries.length} event${entries.length !== 1 ? 's' : ''}`, 14, 23);
-  doc.text(meta, 14, 29);
+  doc.text(
+    `Generated: ${new Date().toLocaleString('en-GB')} • ${report.rowCount} row${report.rowCount !== 1 ? 's' : ''}`,
+    14,
+    23,
+  );
+  doc.text(report.meta, 14, 29);
 
   autoTable(doc, {
-    head: [COLUMNS.map(c => c.header)],
-    body: entries.map(e => COLUMNS.map(c => String(c.get(e)))),
+    head: [report.columns.map(c => c.header)],
+    body: report.rows,
     startY: 34,
     styles: { fontSize: 7, cellPadding: 2 },
-    headStyles: { fillColor: [241, 245, 249], textColor: [100, 116, 139], fontStyle: 'bold', fontSize: 7 },
-    alternateRowStyles: { fillColor: [248, 250, 252] },
-    didParseCell: (data) => {
-      if (data.section === 'body' && data.column.index === 6) {
-        const isPanic = entries[data.row.index]?.type === 'panic';
-        data.cell.styles.textColor = isPanic ? [200, 16, 46] : [133, 79, 11];
-        data.cell.styles.fontStyle = 'bold';
-      }
+    headStyles: {
+      fillColor: [241, 245, 249],
+      textColor: [100, 116, 139],
+      fontStyle: 'bold',
+      fontSize: 7,
     },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
   });
 
   return doc.output('blob');
+}
+
+export async function buildTabularReportBlob(
+  report: TabularReport,
+  format: ExportFormat,
+): Promise<{ blob: Blob; filename: string; mime: string }> {
+  const stamp = fileStamp();
+  const base = `${slugTitle(report.title)}-${stamp}`;
+
+  if (format === 'csv') {
+    return {
+      blob: buildCsvBlob(report.columns, report.rows),
+      filename: `${base}.csv`,
+      mime: 'text/csv;charset=utf-8',
+    };
+  }
+  if (format === 'excel') {
+    return {
+      blob: buildExcelBlob(report),
+      filename: `${base}.xlsx`,
+      mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
+  }
+  return {
+    blob: await buildPdfBlob(report),
+    filename: `${base}.pdf`,
+    mime: 'application/pdf',
+  };
+}
+
+export async function exportTabularReport(report: TabularReport, format: ExportFormat) {
+  const { blob, filename, mime } = await buildTabularReportBlob(report, format);
+  triggerBrowserDownload(blob, filename);
+  void archiveReportDownload({
+    filename,
+    mime,
+    blob,
+    type: report.archiveType,
+    meta: {
+      reportTitle: report.title,
+      filters: report.meta,
+      format,
+      reportType: report.reportType,
+      rowCount: report.rowCount,
+    },
+  });
+}
+
+/** @deprecated prefer buildTabularReportBlob(logEntriesToTabular(...)) */
+export async function buildReportBlob(
+  entries: LogEntry[],
+  format: ExportFormat,
+  reportTitle: string,
+  meta: string,
+): Promise<{ blob: Blob; filename: string; mime: string }> {
+  return buildTabularReportBlob(logEntriesToTabular(entries, reportTitle, meta), format);
 }
 
 export async function exportReport(
@@ -213,32 +287,5 @@ export async function exportReport(
   reportTitle: string,
   meta: string,
 ) {
-  const stamp = fileStamp();
-  const base = `${slugTitle(reportTitle)}-${stamp}`;
-  let blob: Blob;
-  let filename: string;
-  let mime: string;
-
-  if (format === 'csv') {
-    blob = buildCsvBlob(entries);
-    filename = `${base}.csv`;
-    mime = 'text/csv;charset=utf-8';
-  } else if (format === 'excel') {
-    blob = buildExcelBlob(entries, reportTitle, meta);
-    filename = `${base}.xlsx`;
-    mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-  } else {
-    blob = await buildPdfBlob(entries, reportTitle, meta);
-    filename = `${base}.pdf`;
-    mime = 'application/pdf';
-  }
-
-  triggerBrowserDownload(blob, filename);
-  void archiveReportDownload({
-    filename,
-    mime,
-    blob,
-    type: 'Events',
-    meta: { reportTitle, filters: meta, format, eventCount: entries.length },
-  });
+  await exportTabularReport(logEntriesToTabular(entries, reportTitle, meta), format);
 }

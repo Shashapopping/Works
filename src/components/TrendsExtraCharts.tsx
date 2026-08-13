@@ -1,4 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext, useContext, useEffect, useMemo, useState, useTransition, type ReactNode,
+} from 'react';
 import {
   ArrowDown, ArrowUp, BarChart3, Car, Download, Info, MapPin, Settings, User,
 } from 'lucide-react';
@@ -11,6 +13,7 @@ import { buildDriverConsequenceCard } from '../lib/consequenceScore';
 import { isActiveDriver, isActiveDriverId, isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { sanitizeTripDriver } from '../lib/demoSanitize';
 import type { ConsumptionData } from '../lib/fuelConsumption';
+import { CACHE_KEYS, CACHE_TTL, cachedFetchJson } from '../lib/apiCache';
 import { chartDef, type TrendsChartId, type TrendsGrouping, type TrendsScope } from '../lib/trendsDashboard';
 import {
   bucketKeyFromDay,
@@ -223,128 +226,404 @@ function cardShell({
   );
 }
 
-function useCaption(events: LogEntry[]) {
-  return useMemo(() => {
-    let min = '';
-    let max = '';
-    for (const e of events) {
-      const d = dayKey(e.eventTime || e.timestamp);
-      if (!d) continue;
-      if (!min || d < min) min = d;
-      if (!max || d > max) max = d;
-    }
-    if (!min) {
-      const now = new Date();
-      return now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    }
-    const fmt = (iso: string) => {
-      const dt = new Date(`${iso}T12:00:00`);
-      return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-    };
-    return min === max ? fmt(min) : `${fmt(min)} – ${fmt(max)}`;
-  }, [events]);
+type TripStats = {
+  km: number;
+  trips: number;
+  hours: number;
+  assets: number;
+  drivers: TripDriver[];
+  loading: boolean;
+};
+
+type DriverBands = {
+  counts: { Green: number; Amber: number; Red: number };
+  distance: { Green: number; Amber: number; Red: number };
+  totalDrivers: number;
+  pct: { green: number; amber: number; red: number };
+  top: { name: string; score: number; category: 'Green' | 'Amber' | 'Red'; km: number }[];
+  bottom: { name: string; score: number; category: 'Green' | 'Amber' | 'Red'; km: number }[];
+  avg: number;
+  dayLabel: string;
+  scored: { name: string; score: number; category: 'Green' | 'Amber' | 'Red'; km: number }[];
+  ready: boolean;
+};
+
+type TrendsSharedValue = {
+  caption: string;
+  tripStats: TripStats;
+  consumption: ConsumptionData | null;
+  consumptionLoading: boolean;
+  bands: DriverBands;
+};
+
+const EMPTY_BANDS: DriverBands = {
+  counts: { Green: 0, Amber: 0, Red: 0 },
+  distance: { Green: 0, Amber: 0, Red: 0 },
+  totalDrivers: 0,
+  pct: { green: 0, amber: 0, red: 0 },
+  top: [],
+  bottom: [],
+  avg: 0,
+  dayLabel: new Date().toLocaleDateString('en-GB', { weekday: 'long' }),
+  scored: [],
+  ready: false,
+};
+
+const TrendsSharedCtx = createContext<TrendsSharedValue | null>(null);
+
+function computeCaption(events: LogEntry[]) {
+  let min = '';
+  let max = '';
+  for (const e of events) {
+    const d = dayKey(e.eventTime || e.timestamp);
+    if (!d) continue;
+    if (!min || d < min) min = d;
+    if (!max || d > max) max = d;
+  }
+  if (!min) {
+    return new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  }
+  const fmt = (iso: string) => {
+    const dt = new Date(`${iso}T12:00:00`);
+    return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  };
+  return min === max ? fmt(min) : `${fmt(min)} – ${fmt(max)}`;
 }
 
-function useTripStats() {
-  const [stats, setStats] = useState({
-    km: 0, trips: 0, hours: 0, assets: 0, drivers: [] as TripDriver[],
+function computeDriverBands(events: LogEntry[], drivers: TripDriver[]): DriverBands {
+  const byDriver = new Map<string, { name: string; events: LogEntry[]; km: number }>();
+  for (const e of events) {
+    if (e.type === 'panic') continue;
+    if (!isActiveDriver(e.driverName, e.driverId)) continue;
+    const key = (e.driverId && isActiveDriverId(e.driverId)) ? e.driverId : e.driverName!;
+    if (!byDriver.has(key)) byDriver.set(key, { name: e.driverName!, events: [], km: 0 });
+    byDriver.get(key)!.events.push(e);
+  }
+  for (const t of drivers) {
+    if (!isActiveDriver(t.driverName, t.driverId)) continue;
+    const key = (t.driverId && isActiveDriverId(t.driverId)) ? t.driverId : t.driverName;
+    const row = byDriver.get(key);
+    if (row) row.km += t.totalDistanceKm || 0;
+    else byDriver.set(key, { name: t.driverName, events: [], km: t.totalDistanceKm || 0 });
+  }
+
+  const counts = { Green: 0, Amber: 0, Red: 0 };
+  const distance = { Green: 0, Amber: 0, Red: 0 };
+  const scored: DriverBands['scored'] = [];
+
+  for (const row of byDriver.values()) {
+    const card = buildDriverConsequenceCard({ events: row.events, distanceKm: row.km || 1 });
+    const band: 'Green' | 'Amber' | 'Red' =
+      card.category === 'Green' ? 'Green' : card.category === 'Red' ? 'Red' : 'Amber';
+    counts[band]++;
+    distance[band] += row.km;
+    scored.push({ name: displayDriverName(row.name), score: card.displayScore, category: band, km: row.km });
+  }
+
+  const total = counts.Green + counts.Amber + counts.Red || 1;
+  scored.sort((a, b) => a.score - b.score);
+  const n = Math.max(1, Math.ceil(scored.length * 0.1));
+  const bottom = scored.slice(0, n);
+  const top = scored.slice(-n).reverse();
+  const avg = scored.length ? scored.reduce((s, d) => s + d.score, 0) / scored.length : 0;
+
+  return {
+    counts,
+    distance,
+    totalDrivers: counts.Green + counts.Amber + counts.Red,
+    pct: {
+      green: (counts.Green / total) * 100,
+      amber: (counts.Amber / total) * 100,
+      red: (counts.Red / total) * 100,
+    },
+    top,
+    bottom,
+    avg,
+    dayLabel: new Date().toLocaleDateString('en-GB', { weekday: 'long' }),
+    scored,
+    ready: true,
+  };
+}
+
+async function fetchTripStats(): Promise<Omit<TripStats, 'loading'>> {
+  const data = await cachedFetchJson<{
+    drivers?: TripDriver[];
+    totalDistanceKm?: number;
+  }>(
+    'trends:driver-distance:currentMonth',
+    60_000,
+    async () => {
+      const res = await authFetch('/api/driver-distance?range=currentMonth');
+      if (!res.ok) return null;
+      return res.json();
+    },
+  );
+  const drivers = ((data?.drivers || []) as TripDriver[]).map(sanitizeTripDriver);
+  const assets = new Set(drivers.flatMap(d => d.vehicles || [])).size;
+  return {
+    km: Number(data?.totalDistanceKm || drivers.reduce((s, d) => s + (d.totalDistanceKm || 0), 0)),
+    trips: drivers.reduce((s, d) => s + (d.journeyCount || 0), 0),
+    hours: drivers.reduce((s, d) => s + ((d.totalDrivingTimeSeconds || 0) / 3600), 0),
+    assets: assets || drivers.length,
+    drivers,
+  };
+}
+
+/** Shared once per Trends page — kills N× trip/fuel fetches and N× band scoring. */
+export function TrendsSharedDataProvider({
+  events,
+  children,
+}: {
+  events: LogEntry[];
+  children: ReactNode;
+}) {
+  const [, startTransition] = useTransition();
+  const [tripStats, setTripStats] = useState<TripStats>({
+    km: 0, trips: 0, hours: 0, assets: 0, drivers: [], loading: true,
   });
+  const [consumption, setConsumption] = useState<ConsumptionData | null>(null);
+  const [consumptionLoading, setConsumptionLoading] = useState(true);
+  const [bands, setBands] = useState<DriverBands>(EMPTY_BANDS);
+
+  const caption = useMemo(() => computeCaption(events), [events]);
+
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await authFetch('/api/driver-distance?range=currentMonth');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (cancelled) return;
-        const drivers = ((data.drivers || []) as TripDriver[]).map(sanitizeTripDriver);
-        const assets = new Set(drivers.flatMap(d => d.vehicles || [])).size;
-        setStats({
-          km: Number(data.totalDistanceKm || drivers.reduce((s, d) => s + (d.totalDistanceKm || 0), 0)),
-          trips: drivers.reduce((s, d) => s + (d.journeyCount || 0), 0),
-          hours: drivers.reduce((s, d) => s + ((d.totalDrivingTimeSeconds || 0) / 3600), 0),
-          assets: assets || drivers.length,
-          drivers,
-        });
-      } catch { /* ignore */ }
-    })();
+    setTripStats(prev => ({ ...prev, loading: true }));
+    fetchTripStats()
+      .then(next => {
+        if (!cancelled) setTripStats({ ...next, loading: false });
+      })
+      .catch(() => {
+        if (!cancelled) setTripStats(prev => ({ ...prev, loading: false }));
+      });
     return () => { cancelled = true; };
   }, []);
-  return stats;
+
+  useEffect(() => {
+    let cancelled = false;
+    setConsumptionLoading(true);
+    const url = '/api/fuel/consumption?period=week';
+    cachedFetchJson<ConsumptionData>(
+      CACHE_KEYS.fuelConsumption(url),
+      CACHE_TTL.fuelConsumption,
+      async () => {
+        const res = await authFetch(url);
+        if (!res.ok) return null;
+        return res.json();
+      },
+    )
+      .then(json => {
+        if (!cancelled) {
+          setConsumption(json);
+          setConsumptionLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setConsumptionLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    setBands(prev => ({ ...prev, ready: false }));
+    const handle = window.setTimeout(() => {
+      startTransition(() => {
+        setBands(computeDriverBands(events, tripStats.drivers));
+      });
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [events, tripStats.drivers]);
+
+  const value = useMemo<TrendsSharedValue>(() => ({
+    caption,
+    tripStats,
+    consumption,
+    consumptionLoading,
+    bands,
+  }), [caption, tripStats, consumption, consumptionLoading, bands]);
+
+  return (
+    <TrendsSharedCtx.Provider value={value}>
+      {children}
+    </TrendsSharedCtx.Provider>
+  );
+}
+
+function useCaption(events: LogEntry[]) {
+  const shared = useContext(TrendsSharedCtx);
+  const local = useMemo(() => computeCaption(events), [events]);
+  return shared?.caption ?? local;
+}
+
+function useTripStats(): TripStats {
+  const shared = useContext(TrendsSharedCtx);
+  const [stats, setStats] = useState<TripStats>({
+    km: 0, trips: 0, hours: 0, assets: 0, drivers: [], loading: !shared,
+  });
+  useEffect(() => {
+    if (shared) return;
+    let cancelled = false;
+    fetchTripStats()
+      .then(next => {
+        if (!cancelled) setStats({ ...next, loading: false });
+      })
+      .catch(() => {
+        if (!cancelled) setStats(prev => ({ ...prev, loading: false }));
+      });
+    return () => { cancelled = true; };
+  }, [shared]);
+  return shared?.tripStats ?? stats;
 }
 
 function useConsumption(period: 'week' | 'month' = 'week') {
-  const [data, setData] = useState<ConsumptionData | null>(null);
+  const shared = useContext(TrendsSharedCtx);
+  const [data, setData] = useState<ConsumptionData | null>(
+    shared && period === 'week' ? shared.consumption : null,
+  );
   useEffect(() => {
+    if (shared && period === 'week') {
+      setData(shared.consumption);
+      return;
+    }
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await authFetch(`/api/fuel/consumption?period=${period}`);
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!cancelled) setData(json as ConsumptionData);
-      } catch { /* ignore */ }
-    })();
+    const url = `/api/fuel/consumption?period=${period}`;
+    cachedFetchJson<ConsumptionData>(
+      CACHE_KEYS.fuelConsumption(url),
+      CACHE_TTL.fuelConsumption,
+      async () => {
+        const res = await authFetch(url);
+        if (!res.ok) return null;
+        return res.json();
+      },
+    )
+      .then(json => {
+        if (!cancelled) setData(json);
+      })
+      .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
-  }, [period]);
+  }, [period, shared, shared?.consumption]);
   return data;
 }
 
-function useDriverBands(events: LogEntry[]) {
+function useConsumptionLoading() {
+  return useContext(TrendsSharedCtx)?.consumptionLoading ?? false;
+}
+
+function useDriverBands(events: LogEntry[]): DriverBands {
+  const shared = useContext(TrendsSharedCtx);
   const tripStats = useTripStats();
-  return useMemo(() => {
-    const byDriver = new Map<string, { name: string; events: LogEntry[]; km: number }>();
-    for (const e of events) {
-      if (e.type === 'panic') continue;
-      if (!isActiveDriver(e.driverName, e.driverId)) continue;
-      const key = (e.driverId && isActiveDriverId(e.driverId)) ? e.driverId : e.driverName!;
-      if (!byDriver.has(key)) byDriver.set(key, { name: e.driverName!, events: [], km: 0 });
-      byDriver.get(key)!.events.push(e);
-    }
-    for (const t of tripStats.drivers) {
-      if (!isActiveDriver(t.driverName, t.driverId)) continue;
-      const key = (t.driverId && isActiveDriverId(t.driverId)) ? t.driverId : t.driverName;
-      const row = byDriver.get(key);
-      if (row) row.km += t.totalDistanceKm || 0;
-      else byDriver.set(key, { name: t.driverName, events: [], km: t.totalDistanceKm || 0 });
-    }
+  const local = useMemo(
+    () => (shared ? EMPTY_BANDS : computeDriverBands(events, tripStats.drivers)),
+    [shared, events, tripStats.drivers],
+  );
+  return shared?.bands ?? local;
+}
 
-    const counts = { Green: 0, Amber: 0, Red: 0 };
-    const distance = { Green: 0, Amber: 0, Red: 0 };
-    const scored: { name: string; score: number; category: 'Green' | 'Amber' | 'Red'; km: number }[] = [];
+function ChartSkeleton({ tall }: { tall?: boolean }) {
+  return (
+    <div
+      className={`bpl-chart-skel${tall ? ' bpl-chart-skel--tall' : ''}`}
+      role="status"
+      aria-live="polite"
+      aria-label="Loading chart"
+    >
+      <div className="bpl-chart-skel__bars" aria-hidden>
+        {[42, 68, 55, 82, 48, 74, 60, 36].map((h, i) => (
+          <span key={i} style={{ height: `${h}%`, animationDelay: `${i * 70}ms` }} />
+        ))}
+      </div>
+      <div className="bpl-chart-skel__footer">
+        <span className="bpl-skel bpl-skel--line-mid" />
+        <span className="bpl-chart-skel__label">Preparing chart…</span>
+      </div>
+    </div>
+  );
+}
 
-    for (const row of byDriver.values()) {
-      const card = buildDriverConsequenceCard({ events: row.events, distanceKm: row.km || 1 });
-      const band: 'Green' | 'Amber' | 'Red' =
-        card.category === 'Green' ? 'Green' : card.category === 'Red' ? 'Red' : 'Amber';
-      counts[band]++;
-      distance[band] += row.km;
-      scored.push({ name: displayDriverName(row.name), score: card.displayScore, category: band, km: row.km });
-    }
+function TrendsChartPlaceholder({
+  chartId,
+  wide,
+}: {
+  chartId: TrendsChartId;
+  wide?: boolean;
+}) {
+  const def = chartDef(chartId);
+  return (
+    <div
+      className="bpl-trends-chart-placeholder"
+      style={{ gridColumn: wide ? '1 / -1' : undefined }}
+      aria-busy="true"
+    >
+      <div className="bpl-trends-chart-placeholder__head">
+        <strong>{def?.title || 'Chart'}</strong>
+      </div>
+      <div className="bpl-trends-chart-placeholder__body">
+        {def?.subtitle && (
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#1f2937', marginBottom: 2 }}>
+            {def.subtitle}
+          </div>
+        )}
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>Loading figures…</div>
+        <ChartSkeleton tall={def?.kind === 'driver-performance' || def?.kind === 'fuel-distance'} />
+      </div>
+    </div>
+  );
+}
 
-    const total = counts.Green + counts.Amber + counts.Red || 1;
-    scored.sort((a, b) => a.score - b.score);
-    const n = Math.max(1, Math.ceil(scored.length * 0.1));
-    const bottom = scored.slice(0, n);
-    const top = scored.slice(-n).reverse();
-    const avg = scored.length ? scored.reduce((s, d) => s + d.score, 0) / scored.length : 0;
+/** Mount chart after paint so the page shell / placeholders appear instantly on tap. */
+export function DeferredTrendsExtraChart({
+  chartId,
+  events,
+  scope,
+  grouping = 'day',
+  mountDelay = 0,
+  onEditDashboard,
+  onRemoveChart,
+}: {
+  chartId: TrendsChartId;
+  events: LogEntry[];
+  scope: TrendsScope;
+  grouping?: TrendsGrouping;
+  mountDelay?: number;
+  onEditDashboard?: () => void;
+  onRemoveChart?: (id: TrendsChartId) => void;
+}) {
+  const [ready, setReady] = useState(false);
+  const def = chartDef(chartId);
+  const wide = def?.kind === 'driver-performance' || def?.kind === 'fuel-distance';
 
-    return {
-      counts,
-      distance,
-      totalDrivers: counts.Green + counts.Amber + counts.Red,
-      pct: {
-        green: (counts.Green / total) * 100,
-        amber: (counts.Amber / total) * 100,
-        red: (counts.Red / total) * 100,
-      },
-      top,
-      bottom,
-      avg,
-      dayLabel: new Date().toLocaleDateString('en-GB', { weekday: 'long' }),
-      scored,
+  useEffect(() => {
+    setReady(false);
+    let idleId = 0;
+    let timer = 0;
+    const show = () => setReady(true);
+    const schedule = () => {
+      if (typeof requestIdleCallback !== 'undefined') {
+        idleId = requestIdleCallback(show, { timeout: 500 + mountDelay }) as unknown as number;
+      } else {
+        timer = window.setTimeout(show, Math.max(16, mountDelay));
+      }
     };
-  }, [events, tripStats.drivers]);
+    timer = window.setTimeout(schedule, mountDelay);
+    return () => {
+      window.clearTimeout(timer);
+      if (idleId && typeof cancelIdleCallback !== 'undefined') cancelIdleCallback(idleId);
+    };
+  }, [chartId, mountDelay, scope, grouping]);
+
+  if (!ready) return <TrendsChartPlaceholder chartId={chartId} wide={wide} />;
+
+  return (
+    <TrendsExtraChart
+      chartId={chartId}
+      events={events}
+      scope={scope}
+      grouping={grouping}
+      onEditDashboard={onEditDashboard}
+      onRemoveChart={onRemoveChart}
+    />
+  );
 }
 
 function EventValuesChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
@@ -460,6 +739,7 @@ function EventDurationChart({ events, scope }: { events: LogEntry[]; scope: Tren
 function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: TrendsScope }) {
   const caption = useCaption(events);
   const cons = useConsumption('week');
+  const consLoading = useConsumptionLoading();
   const { grouping } = useTrendsView();
 
   const data = useMemo(() => {
@@ -513,10 +793,12 @@ function FuelDistanceChart({ events, scope }: { events: LogEntry[]; scope: Trend
     scope,
     wide: true,
     infoText: 'Distance and fuel from trip consumption data, bucketed by the selected grouping.',
-    onDownload: data.length
+    onDownload: !consLoading && data.length
       ? () => downloadTextFile('distance-fuel.csv', rowsToCsv(data))
       : undefined,
-    children: data.length === 0 ? (
+    children: consLoading ? (
+      <ChartSkeleton tall />
+    ) : data.length === 0 ? (
       <Empty />
     ) : (
       <>
@@ -575,8 +857,10 @@ function FleetDistanceInsights({ scope }: { scope: TrendsScope }) {
     caption: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
     scope,
     infoText: `Fleet distance KPIs averaged per ${entityLabel} over ~30 days.`,
-    onDownload: () => downloadTextFile('fleet-distance-insights.csv', rowsToCsv(rows)),
-    children: (
+    onDownload: stats.loading ? undefined : () => downloadTextFile('fleet-distance-insights.csv', rowsToCsv(rows)),
+    children: stats.loading ? (
+      <ChartSkeleton />
+    ) : (
       <div>
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Distance</div>
         <div style={{ fontSize: 36, fontWeight: 700, color: '#1f2937', marginBottom: 20 }}>
@@ -606,6 +890,7 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
   const caption = useCaption(events);
   const { vehicles } = useFleet();
   const cons = useConsumption('week');
+  const consLoading = useConsumptionLoading();
   const { grouping } = useTrendsView();
   const stats = useTripStats();
   const available = Math.max(
@@ -661,10 +946,12 @@ function FleetUtilPctChart({ events, scope }: { events: LogEntry[]; scope: Trend
     infoText: scope === 'driver'
       ? 'Drivers with activity / available drivers × 100'
       : 'Assets with trips / available assets × 100',
-    onDownload: data.length
+    onDownload: !consLoading && !stats.loading && data.length
       ? () => downloadTextFile('fleet-utilisation.csv', rowsToCsv(data.map(({ label, pct }) => ({ label, pct }))))
       : undefined,
-    children: data.length === 0 ? (
+    children: consLoading || stats.loading ? (
+      <ChartSkeleton />
+    ) : data.length === 0 ? (
       <Empty />
     ) : (
       <>
@@ -798,9 +1085,11 @@ function DriverBandDistanceChart({ events, scope }: { events: LogEntry[]; scope:
   return cardShell({
     title: 'Distance by scoring band',
     icon: <Car size={15} color="#6b7280" />,
-    caption,
+    caption: bands.ready ? caption : 'Loading figures…',
     scope,
-    children: (
+    children: !bands.ready ? (
+      <ChartSkeleton />
+    ) : (
       <>
         <ResponsiveContainer width="100%" height={220}>
           <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
@@ -835,9 +1124,11 @@ function DriverBandScoreChart({ events, scope }: { events: LogEntry[]; scope: Tr
   return cardShell({
     title: 'Driver % per scoring band',
     icon: <User size={15} color="#6b7280" />,
-    caption,
+    caption: bands.ready ? caption : 'Loading figures…',
     scope,
-    children: (
+    children: !bands.ready ? (
+      <ChartSkeleton />
+    ) : (
       <>
         <ResponsiveContainer width="100%" height={220}>
           <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
@@ -875,10 +1166,12 @@ function DriverPerformanceCard({ events, scope }: { events: LogEntry[]; scope: T
     title: 'Driver Performance',
     icon: <User size={15} color="#6b7280" />,
     subtitle: 'Driver % per scoring band & top/bottom range',
-    caption,
+    caption: bands.ready ? caption : 'Loading figures…',
     scope,
     wide: true,
-    children: (
+    children: !bands.ready ? (
+      <ChartSkeleton tall />
+    ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 220px) 1fr', gap: 20, alignItems: 'center' }}>
         <div>
           <div style={{ color: BAND.green, fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -955,13 +1248,15 @@ function DriverAvgScoresChart({ events, scope }: { events: LogEntry[]; scope: Tr
     title: 'Driver average scores',
     icon: <User size={15} color="#6b7280" />,
     subtitle: 'Average safety score over time',
-    caption,
+    caption: bands.ready ? caption : 'Loading figures…',
     scope,
     infoText: 'Approximate average safety score over time from event volume and fleet average.',
-    onDownload: data.length
+    onDownload: bands.ready && data.length
       ? () => downloadTextFile('driver-avg-scores.csv', rowsToCsv(data))
       : undefined,
-    children: data.length === 0 ? (
+    children: !bands.ready ? (
+      <ChartSkeleton />
+    ) : data.length === 0 ? (
       <div style={{ padding: 24, textAlign: 'center' }}>
         <div style={{ fontSize: 40, fontWeight: 700, color: '#1f2937' }}>{bands.avg.toFixed(1)}</div>
         <div style={{ fontSize: 13, color: '#6b7280' }}>Fleet average score (0–100)</div>

@@ -840,7 +840,10 @@ function mergeData(positions) {
 
   return Array.from(vehicleLookup.values()).filter(vehicle => {
     const siteInfo = siteLookup.get(vehicle.SiteId?.toString());
-    return (siteInfo?.name || '') !== 'XN - Decommissioned';
+    // Keep MiX Fleet aligned: drop XN site group and UserState=Decommissioned assets
+    if ((siteInfo?.name || '') === 'XN - Decommissioned') return false;
+    if (String(vehicle.UserState || '') === 'Decommissioned') return false;
+    return true;
   }).map(vehicle => {
     const assetId = vehicle.AssetId?.toString();
     const pos = positionsByAsset.get(assetId);
@@ -1237,10 +1240,53 @@ function analyzeDriverTripBlocks(trips, { isToday, nowMs, driveLimitMin, restGap
   return { maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory };
 }
 
+/** Longest off-duty gap (minutes) inside [windowStart, windowEnd], from trip end→start gaps. */
+function longestRestGapMinutes(trips, windowStart, windowEnd) {
+  const end = Math.max(windowStart, windowEnd);
+  if (!trips.length) return Math.max(0, Math.round((end - windowStart) / 60000));
+  const sorted = [...trips].sort((a, b) => a.startMs - b.startMs);
+  let longest = Math.max(0, sorted[0].startMs - windowStart);
+  for (let i = 1; i < sorted.length; i++) {
+    longest = Math.max(longest, sorted[i].startMs - sorted[i - 1].endMs);
+  }
+  longest = Math.max(longest, end - sorted[sorted.length - 1].endMs);
+  return Math.round(longest / 60000);
+}
+
+function pushNormalizedTrip(byDriver, raw, rangeStart, rangeEnd) {
+  const t = normalizeTripForDistance(raw);
+  const startMs = t.tripStart ? new Date(t.tripStart).getTime() : NaN;
+  const endMs = t.tripEnd ? new Date(t.tripEnd).getTime() : NaN;
+  const anchor = Number.isFinite(endMs) ? endMs : startMs;
+  if (!Number.isFinite(anchor)) return;
+  // Keep trips that overlap the window (not only those ending inside it).
+  const tStartMs = Number.isFinite(startMs) ? startMs : anchor;
+  const tEndMs = Number.isFinite(endMs) ? endMs : anchor;
+  if (tEndMs <= tStartMs) return;
+  if (tEndMs <= rangeStart || tStartMs >= rangeEnd) return;
+  if (!t.driverId && (!t.driverName || t.driverName === 'N/A')) return;
+
+  const key = t.driverId || t.driverName;
+  const spanSec = (tEndMs - tStartMs) / 1000;
+  const driveSecRaw = Number(t.drivingTimeSeconds);
+  const driveSec = Number.isFinite(driveSecRaw) && driveSecRaw > 0 ? driveSecRaw : spanSec;
+
+  if (!byDriver.has(key)) byDriver.set(key, []);
+  byDriver.get(key).push({
+    startMs: tStartMs,
+    endMs: tEndMs,
+    driveSec,
+    driverName: t.driverName,
+    assetId: t.assetId,
+    regNo: t.regNo,
+  });
+}
+
 /**
- * Hours-of-Service — 4 hours continuous driving requires a >=30-minute rest.
- * A rest resets the continuous block; a rest is a >=30 min gap between trips (parked).
- * "Today" = since 00:00 Africa/Lagos (UTC+1, no DST).
+ * Hours-of-Service rules (Africa/Lagos day):
+ * 1) 4h continuous driving → ≥30 min rest resets the block
+ * 2) 8h continuous driving within a rolling 24h cycle
+ * 3) ≥24h continuous rest within a rolling 7-day week
  */
 export function getHosRecords(dayStr) {
   // HOS can be called from the API without a poll cycle having run yet (or after HMR).
@@ -1258,10 +1304,13 @@ export function getHosRecords(dayStr) {
     }
   } catch { /* ignore */ }
 
-  const DRIVE_LIMIT_MIN = 240; // 4 hours
-  const DUTY_LIMIT_MIN = 720;  // 12 hours (display only)
-  const REST_GAP_MIN = 30;     // a >=30m gap counts as a rest / break
-  const WARN_MIN = 210;        // "approaching 4h" (within 30 min of the limit)
+  const DRIVE_LIMIT_MIN = 240;       // 4 hours continuous
+  const CYCLE_8H_LIMIT_MIN = 480;    // 8 hours continuous in 24h cycle
+  const WEEKLY_REST_MIN = 24 * 60;   // 24 hours continuous rest in a week
+  const DUTY_LIMIT_MIN = 720;        // 12 hours (display only)
+  const REST_GAP_MIN = 30;           // a >=30m gap counts as a rest / break
+  const WARN_MIN = 210;              // "approaching 4h" (within 30 min of the limit)
+  const CYCLE_8H_WARN_MIN = 450;     // approaching 8h continuous in 24h
 
   const nowMs = Date.now();
   const LAGOS_OFFSET_MS = 60 * 60 * 1000; // UTC+1
@@ -1273,6 +1322,9 @@ export function getHosRecords(dayStr) {
   const [ty, tm, td] = targetStr.split('-').map(Number);
   const startOfDay = Date.UTC(ty, tm - 1, td, 0, 0, 0) - LAGOS_OFFSET_MS;
   const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+  const windowEnd = isToday ? nowMs : endOfDay;
+  const cycle24Start = windowEnd - 24 * 60 * 60 * 1000;
+  const weekStart = windowEnd - 7 * 24 * 60 * 60 * 1000;
 
   let lastTripDay = null;
   try {
@@ -1289,61 +1341,71 @@ export function getHosRecords(dayStr) {
   } catch { /* ignore */ }
 
   const byDriver = new Map();
-  for (const raw of getTripsInRange(new Date(startOfDay).toISOString(), new Date(endOfDay).toISOString())) {
-    const t = normalizeTripForDistance(raw);
-    const startMs = t.tripStart ? new Date(t.tripStart).getTime() : NaN;
-    const endMs = t.tripEnd ? new Date(t.tripEnd).getTime() : NaN;
-    const anchor = Number.isFinite(endMs) ? endMs : startMs;
-    if (!Number.isFinite(anchor) || anchor < startOfDay || anchor >= endOfDay) continue;
-    if (!t.driverId && (!t.driverName || t.driverName === 'N/A')) continue;
-
-    const key = t.driverId || t.driverName;
-    const spanSec = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
-      ? (endMs - startMs) / 1000
-      : 0;
-    const driveSecRaw = Number(t.drivingTimeSeconds);
-    const driveSec = Number.isFinite(driveSecRaw) && driveSecRaw > 0 ? driveSecRaw : spanSec;
-    const tStartMs = Number.isFinite(startMs) ? startMs : anchor;
-    const tEndMs = Number.isFinite(endMs) ? endMs : anchor;
-    if (tEndMs <= tStartMs) continue;
-
-    if (!byDriver.has(key)) byDriver.set(key, []);
-    byDriver.get(key).push({
-      startMs: tStartMs,
-      endMs: tEndMs,
-      driveSec,
-      driverName: t.driverName,
-      assetId: t.assetId,
-      regNo: t.regNo,
-    });
+  for (const raw of getTripsInRange(new Date(weekStart).toISOString(), new Date(windowEnd).toISOString())) {
+    pushNormalizedTrip(byDriver, raw, weekStart, windowEnd);
   }
 
   const records = [];
-  for (const [key, trips] of byDriver.entries()) {
-    trips.sort((a, b) => a.startMs - b.startMs);
+  for (const [key, allTrips] of byDriver.entries()) {
+    allTrips.sort((a, b) => a.startMs - b.startMs);
 
-    const driveMinutesToday = Math.round(trips.reduce((s, t) => s + t.driveSec, 0) / 60);
-    const firstStart = trips[0].startMs;
-    const lastEnd = trips[trips.length - 1].endMs;
-    const dutyMinutesToday = Math.max(driveMinutesToday, Math.round((lastEnd - firstStart) / 60000));
+    const dayTrips = allTrips.filter(t => t.endMs > startOfDay && t.startMs < endOfDay);
+    const cycleTrips = allTrips.filter(t => t.endMs > cycle24Start && t.startMs < windowEnd);
+    const weekTrips = allTrips;
 
-    const analysis = analyzeDriverTripBlocks(trips, {
-      isToday, nowMs, driveLimitMin: DRIVE_LIMIT_MIN, restGapMin: REST_GAP_MIN,
-    });
-    const { maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory } = analysis;
+    // Keep day drivers, plus anyone breaching 8h/24h or weekly rest (so fatigue page sees them).
+    const dayAnalysis = dayTrips.length
+      ? analyzeDriverTripBlocks(dayTrips, {
+        isToday, nowMs, driveLimitMin: DRIVE_LIMIT_MIN, restGapMin: REST_GAP_MIN,
+      })
+      : { maxContinuousMin: 0, currentBlockMin: 0, breaches: 0, violationDriveMinutes: 0, violationTripMinutes: 0, violationHistory: [] };
+
+    const cycleAnalysis = cycleTrips.length
+      ? analyzeDriverTripBlocks(cycleTrips, {
+        isToday: true, nowMs: windowEnd, driveLimitMin: CYCLE_8H_LIMIT_MIN, restGapMin: REST_GAP_MIN,
+      })
+      : { maxContinuousMin: 0, currentBlockMin: 0, breaches: 0, violationDriveMinutes: 0, violationTripMinutes: 0, violationHistory: [] };
+
+    const driveMinutesToday = Math.round(dayTrips.reduce((s, t) => s + t.driveSec, 0) / 60);
+    const driveMinutes24h = Math.round(cycleTrips.reduce((s, t) => s + t.driveSec, 0) / 60);
+    const firstStart = dayTrips[0]?.startMs;
+    const lastEnd = dayTrips[dayTrips.length - 1]?.endMs;
+    const dutyMinutesToday = dayTrips.length
+      ? Math.max(driveMinutesToday, Math.round((lastEnd - firstStart) / 60000))
+      : 0;
+
+    const {
+      maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory,
+    } = dayAnalysis;
 
     const continuousMin = isToday ? currentBlockMin : maxContinuousMin;
+    const maxContinuous24h = Math.max(cycleAnalysis.maxContinuousMin, cycleAnalysis.currentBlockMin);
+    const cycle8hBreaches = cycleAnalysis.breaches;
+    const cycle8hViolation = maxContinuous24h >= CYCLE_8H_LIMIT_MIN || cycle8hBreaches > 0;
+
+    const longestRestWeekMinutes = longestRestGapMinutes(weekTrips, weekStart, windowEnd);
+    const weeklyRestOk = longestRestWeekMinutes >= WEEKLY_REST_MIN;
+
+    const rulesBreached = [];
+    if (continuousMin >= DRIVE_LIMIT_MIN || breaches > 0) rulesBreached.push('4h_continuous');
+    if (cycle8hViolation) rulesBreached.push('8h_24h');
+    if (!weeklyRestOk) rulesBreached.push('weekly_rest');
+
+    // Skip drivers with no day activity and no extended-rule breach (keeps table focused).
+    if (!dayTrips.length && rulesBreached.length === 0) continue;
 
     let status = 'compliant';
-    if (continuousMin >= DRIVE_LIMIT_MIN) status = 'violation';
-    else if (continuousMin >= WARN_MIN) status = 'warning';
+    if (rulesBreached.length > 0) status = 'violation';
+    else if (continuousMin >= WARN_MIN || maxContinuous24h >= CYCLE_8H_WARN_MIN) status = 'warning';
 
     const restMinutesRemaining = isToday ? Math.max(0, DRIVE_LIMIT_MIN - currentBlockMin) : 0;
     const restDueAt = isToday && restMinutesRemaining > 0
       ? new Date(nowMs + restMinutesRemaining * 60000).toISOString()
       : null;
 
-    const lastTrip = trips[trips.length - 1];
+    const lastTrip = (dayTrips.length ? dayTrips : cycleTrips.length ? cycleTrips : weekTrips)[
+      (dayTrips.length ? dayTrips : cycleTrips.length ? cycleTrips : weekTrips).length - 1
+    ];
     const resolvedName = (lastTrip.driverName && lastTrip.driverName !== 'N/A')
       ? lastTrip.driverName
       : (driverLookup.get(String(key))?.name || lastTrip.driverName || 'N/A');
@@ -1356,9 +1418,18 @@ export function getHosRecords(dayStr) {
       site,
       driveMinutesToday,
       dutyMinutesToday,
+      driveMinutes24h,
       continuousMinutes: continuousMin,
       maxContinuousMinutes: maxContinuousMin,
       currentBlockMinutes: currentBlockMin,
+      maxContinuous24hMinutes: maxContinuous24h,
+      cycle8hBreaches,
+      cycle8hViolation,
+      cycle8hLimitMinutes: CYCLE_8H_LIMIT_MIN,
+      longestRestWeekMinutes,
+      weeklyRestRequiredMinutes: WEEKLY_REST_MIN,
+      weeklyRestOk,
+      rulesBreached,
       breaches,
       violationDriveMinutes,
       violationTripMinutes,
@@ -1383,6 +1454,12 @@ export function getHosRecords(dayStr) {
     day: targetStr,
     isToday,
     lastTripDay,
+    rules: {
+      continuous4hMinutes: DRIVE_LIMIT_MIN,
+      restGapMinutes: REST_GAP_MIN,
+      continuous8hIn24hMinutes: CYCLE_8H_LIMIT_MIN,
+      weeklyRestMinutes: WEEKLY_REST_MIN,
+    },
     records,
   };
 }

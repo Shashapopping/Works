@@ -5,16 +5,24 @@
 import { Resend } from 'resend';
 
 let client = null;
+let clientKey = null;
+
+function resendApiKey() {
+  return String(process.env.RESEND_API_KEY || '').trim();
+}
 
 function getClient() {
-  const key = process.env.RESEND_API_KEY;
+  const key = resendApiKey();
   if (!key) return null;
-  if (!client) client = new Resend(key);
+  if (!client || clientKey !== key) {
+    client = new Resend(key);
+    clientKey = key;
+  }
   return client;
 }
 
 export function isEmailConfigured() {
-  return !!process.env.RESEND_API_KEY;
+  return !!resendApiKey();
 }
 
 function loginUrl() {
@@ -199,6 +207,87 @@ export async function sendAutomatedReportEmail({
     return { sent: true, id: data?.id };
   } catch (e) {
     console.warn('Resend automate error:', e?.message || e);
+    return { sent: false, error: e?.message || 'Email send failed' };
+  }
+}
+
+/**
+ * Ad-hoc Reports export email with file attachment (CSV / Excel / PDF).
+ * @returns {{ sent: boolean, error?: string, id?: string }}
+ */
+export async function sendReportExportEmail({
+  to,
+  filename,
+  mime,
+  contentBase64,
+  reportTitle,
+  meta,
+  eventCount,
+}) {
+  const resend = getClient();
+  if (!resend) {
+    return { sent: false, error: 'RESEND_API_KEY not configured' };
+  }
+
+  const recipients = Array.isArray(to) ? to : [to];
+  const title = reportTitle || 'Fleet report';
+  const countLabel = eventCount != null ? `${eventCount} event${eventCount === 1 ? '' : 's'}` : 'filtered events';
+  const reportsUrl = appReportsUrl();
+  const subject = `${title} · HBM`;
+
+  const html = `
+    <div style="background:#fafafa;padding:32px 16px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+      <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e4e4e7;border-radius:16px;overflow:hidden">
+        <div style="padding:28px 28px 8px">
+          <div style="font-size:12px;color:#a1a1aa;margin:0 0 18px">HBM Fleet Intelligence</div>
+          <h1 style="margin:0 0 8px;font-size:22px;line-height:1.3;font-weight:600;color:#18181b;letter-spacing:-0.02em">
+            Your report is attached
+          </h1>
+          <p style="margin:0 0 22px;font-size:14px;line-height:1.6;color:#71717a">
+            ${escapeHtml(title)} · ${escapeHtml(countLabel)}.
+            ${meta ? `<br/><span style="color:#a1a1aa">${escapeHtml(meta)}</span>` : ''}
+          </p>
+        </div>
+        <div style="padding:8px 28px 28px">
+          <a href="${escapeHtml(reportsUrl)}"
+             style="display:inline-block;background:#18181b;color:#fafafa;text-decoration:none;padding:11px 18px;border-radius:999px;font-size:13px;font-weight:600">
+            Open Reports
+          </a>
+          <p style="margin:18px 0 0;font-size:12px;line-height:1.5;color:#a1a1aa">
+            Attachment: ${escapeHtml(filename || 'report')}
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: fromAddress(),
+      to: recipients,
+      subject,
+      html,
+      text: [
+        `Your HBM report is attached: ${filename || 'report'}`,
+        title,
+        meta || '',
+        countLabel,
+        `Open Reports: ${reportsUrl}`,
+      ].filter(Boolean).join('\n'),
+      attachments: [
+        {
+          filename: filename || 'report.csv',
+          content: Buffer.from(contentBase64, 'base64'),
+        },
+      ],
+    });
+    if (error) {
+      console.warn('Resend report export failed:', error);
+      return { sent: false, error: error.message || String(error) };
+    }
+    return { sent: true, id: data?.id };
+  } catch (e) {
+    console.warn('Resend report export error:', e?.message || e);
     return { sent: false, error: e?.message || 'Email send failed' };
   }
 }

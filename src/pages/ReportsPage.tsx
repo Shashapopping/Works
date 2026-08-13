@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Download, FileBarChart2, Search } from 'lucide-react';
+import { ChevronDown, Download, FileBarChart2, Mail, Search } from 'lucide-react';
 import {
   CartesianGrid,
   Legend,
@@ -12,14 +12,28 @@ import {
 } from 'recharts';
 import FeatureGate from '../components/FeatureGate';
 import ReportAutomate from '../components/ReportAutomate';
+import { useAuth } from '../context/AuthContext';
 import { authFetch, useFleet } from '../context/FleetContext';
 import {
-  exportReport,
+  buildTabularReportBlob,
+  exportTabularReport,
   type ExportFormat,
   type LogEntry,
 } from '../lib/reportExport';
+import {
+  isReportExportAllowed,
+  normalizeReportEmail,
+  REPORT_EXPORT_ALLOWED_DOMAINS,
+} from '../lib/reportExportAllowlist';
+import {
+  REPORT_TYPE_OPTIONS,
+  reportTypeLabel,
+  type ReportType,
+} from '../lib/reportTypes';
+import { generateTabularReport } from '../lib/reports/generateTabularReport';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
 import { reportTitle as brandReportTitle } from '../lib/branding';
+import { authFetchInit } from '../lib/authApi';
 
 interface TrendDay {
   date: string;
@@ -59,6 +73,10 @@ const EVENT_COLORS: Record<string, string> = {
   'Overspeed Tiered': '#ea580c',
   'Harsh Cornering': '#16a34a',
 };
+
+/** Preview table only — full filtered set still used for download/email. */
+const EVENT_PREVIEW_LIMIT = 20;
+const EVENTS_REFRESH_MS = 30_000;
 
 function getDateBounds(
   dateRange: DateRange,
@@ -172,6 +190,7 @@ function mapApiEntry(e: Record<string, unknown>, vehicles: ReturnType<typeof use
     timestamp: String(e.timestamp ?? e.eventTime ?? new Date().toISOString()),
     eventTime: String(e.eventTime ?? e.timestamp ?? new Date().toISOString()),
     assetId: String(e.assetId ?? e.regNo ?? 'unknown'),
+    driverId: e.driverId != null ? String(e.driverId) : undefined,
     regNo: e.regNo != null ? String(e.regNo) : undefined,
     assetName: e.assetName != null ? String(e.assetName) : vehicle?.assetName,
     site: e.site != null ? String(e.site) : vehicle?.site,
@@ -285,10 +304,19 @@ function MultiSelectDropdown({
 }
 
 export default function ReportsPage() {
+  const { user } = useAuth();
   const { events: fleetEvents, vehicles } = useFleet();
+  const vehiclesRef = useRef(vehicles);
+  const fleetEventsRef = useRef(fleetEvents);
+  vehiclesRef.current = vehicles;
+  fleetEventsRef.current = fleetEvents;
+
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [emailing, setEmailing] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<string | null>(null);
+  const [emailTo, setEmailTo] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEventTypes, setSelectedEventTypes] = useState<Set<string>>(
     () => new Set(EVENT_TYPES),
@@ -300,12 +328,26 @@ export default function ReportsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('events');
   const [showTotal, setShowTotal] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
+  const [reportType, setReportType] = useState<ReportType>('events');
 
   const reportTitle = brandReportTitle();
+  const canExport = isReportExportAllowed(user?.email);
+  const defaultEmailTo = useMemo(() => {
+    const me = normalizeReportEmail(user?.email);
+    if (isReportExportAllowed(me)) return me;
+    return '';
+  }, [user?.email]);
 
   useEffect(() => {
+    setEmailTo(defaultEmailTo);
+  }, [defaultEmailTo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let first = true;
+
     const load = async () => {
-      setLoading(true);
+      if (first) setLoading(true);
       try {
         const { from, to } = getDateBounds(dateRange, fromDate, toDate);
         const params = new URLSearchParams();
@@ -313,23 +355,31 @@ export default function ReportsPage() {
         if (to) params.set('to', to);
         const url = `/api/events/log${params.toString() ? `?${params}` : ''}`;
         const res = await authFetch(url);
+        if (cancelled) return;
+        const veh = vehiclesRef.current;
         if (res.ok) {
           const data = await res.json();
           const rows = Array.isArray(data) ? data : [];
-          setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, vehicles)));
+          setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, veh)));
         } else {
-          setEntries(mapDemoEntries(fleetEvents, vehicles));
+          setEntries(mapDemoEntries(fleetEventsRef.current, veh));
         }
       } catch {
-        setEntries(mapDemoEntries(fleetEvents, vehicles));
+        if (!cancelled) setEntries(mapDemoEntries(fleetEventsRef.current, vehiclesRef.current));
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          first = false;
+        }
       }
     };
     load();
-    const interval = setInterval(load, 10_000);
-    return () => clearInterval(interval);
-  }, [dateRange, fromDate, toDate, fleetEvents, vehicles]);
+    const interval = setInterval(load, EVENTS_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [dateRange, fromDate, toDate]);
 
   const siteOptions = useMemo(() => {
     const sites = new Set<string>();
@@ -344,10 +394,12 @@ export default function ReportsPage() {
 
   const earliestDate = useMemo(() => {
     if (entries.length === 0) return new Date();
-    const sorted = [...entries].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-    );
-    const d = new Date(sorted[0].timestamp);
+    let minTs = Infinity;
+    for (const e of entries) {
+      const t = new Date(e.timestamp).getTime();
+      if (t < minTs) minTs = t;
+    }
+    const d = new Date(Number.isFinite(minTs) ? minTs : Date.now());
     d.setHours(0, 0, 0, 0);
     return d;
   }, [entries]);
@@ -371,6 +423,11 @@ export default function ReportsPage() {
         return matchesSearch;
       }),
     [entries, selectedEventTypes, selectedSites, searchTerm],
+  );
+
+  const previewRows = useMemo(
+    () => filtered.slice(0, EVENT_PREVIEW_LIMIT),
+    [filtered],
   );
 
   const trendData = useMemo((): TrendDay[] => {
@@ -477,19 +534,109 @@ export default function ReportsPage() {
         : dateRange === '30days' ? 'Last 30 days'
           : fromDate && toDate ? `${fromDate} to ${toDate}` : 'Custom';
 
+  const buildMeta = () => [
+    `Type: ${reportTypeLabel(reportType)}`,
+    `Date: ${dateRangeLabel}`,
+    reportType === 'events'
+      ? `Events: ${selectedEventTypes.size === 0 ? 'None' : [...selectedEventTypes].join(', ')}`
+      : null,
+    reportType === 'events'
+      ? `Sites: ${selectedSites.size === 0 ? 'All' : [...selectedSites].join(', ')}`
+      : null,
+    searchTerm ? `Search: ${searchTerm}` : '',
+  ].filter(Boolean).join('  ·  ');
+
+  const canGenerate =
+    canExport &&
+    (reportType === 'events' ? filtered.length > 0 : true);
+
+  const runGenerate = async () => {
+    const { from, to } = getDateBounds(dateRange, fromDate, toDate);
+    const eventsForReport =
+      reportType === 'events'
+        ? filtered
+        : entries.filter(e => {
+            if (e.type === 'panic') return false;
+            const label = eventLabel(e);
+            if (HIDDEN_LABELS.includes(label)) return false;
+            return true;
+          });
+    return generateTabularReport({
+      reportType,
+      baseTitle: reportTitle,
+      meta: buildMeta(),
+      search: searchTerm,
+      events: eventsForReport,
+      fromIso: from,
+      toIso: to,
+    });
+  };
+
   const handleDownload = async () => {
-    if (filtered.length === 0) return;
+    if (!canGenerate) return;
     setDownloading(true);
+    setEmailStatus(null);
     try {
-      const meta = [
-        `Date: ${dateRangeLabel}`,
-        `Events: ${selectedEventTypes.size === 0 ? 'None' : [...selectedEventTypes].join(', ')}`,
-        `Sites: ${selectedSites.size === 0 ? 'All' : [...selectedSites].join(', ')}`,
-        searchTerm ? `Search: ${searchTerm}` : '',
-      ].filter(Boolean).join('  ·  ');
-      await exportReport(filtered, exportFormat, reportTitle, meta);
+      const tabular = await runGenerate();
+      if (tabular.rowCount === 0) {
+        setEmailStatus('No rows for this report type and filters.');
+        return;
+      }
+      await exportTabularReport(tabular, exportFormat);
+    } catch (e) {
+      setEmailStatus((e as Error)?.message || 'Failed to generate report.');
     } finally {
       setDownloading(false);
+    }
+  };
+
+  const handleEmailReport = async () => {
+    if (!canGenerate) return;
+    const to = normalizeReportEmail(emailTo || defaultEmailTo);
+    if (!isReportExportAllowed(to)) {
+      setEmailStatus(`Recipient must be @${REPORT_EXPORT_ALLOWED_DOMAINS.join(' or @')}`);
+      return;
+    }
+    setEmailing(true);
+    setEmailStatus(null);
+    try {
+      const tabular = await runGenerate();
+      if (tabular.rowCount === 0) {
+        setEmailStatus('No rows for this report type and filters.');
+        return;
+      }
+      const { blob, filename, mime } = await buildTabularReportBlob(tabular, exportFormat);
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const chunk = 0x8000;
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      const contentBase64 = btoa(binary);
+      const res = await fetch('/api/reports/email', authFetchInit({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to,
+          filename,
+          mime,
+          contentBase64,
+          reportTitle: tabular.title,
+          meta: tabular.meta,
+          eventCount: tabular.rowCount,
+        }),
+      }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.sent) {
+        setEmailStatus(data.error || 'Failed to send report email.');
+        return;
+      }
+      setEmailStatus(`Sent to ${to}`);
+    } catch (e) {
+      setEmailStatus((e as Error)?.message || 'Failed to send report email.');
+    } finally {
+      setEmailing(false);
     }
   };
 
@@ -507,13 +654,17 @@ export default function ReportsPage() {
             Reports
           </h1>
           <p className="bpl-page-subtitle">
-            Fleet event log and trend analysis — live data
+            Generate event, driver scorecard, trip, and utilization reports — live data
           </p>
         </div>
         <span className="bpl-badge-blue">
-          {viewMode === 'events'
-            ? `${filtered.length} event${filtered.length !== 1 ? 's' : ''}`
-            : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} of trends`}
+          {reportType === 'events'
+            ? (viewMode === 'events'
+              ? (filtered.length > EVENT_PREVIEW_LIMIT
+                ? `Showing ${EVENT_PREVIEW_LIMIT} of ${filtered.length}`
+                : `${filtered.length} event${filtered.length !== 1 ? 's' : ''}`)
+              : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} of trends`)
+            : reportTypeLabel(reportType)}
         </span>
       </div>
 
@@ -560,60 +711,87 @@ export default function ReportsPage() {
             <Search size={14} />
             <input
               type="text"
-              placeholder="Reg no, asset, driver, phone…"
+              placeholder={
+                reportType === 'events'
+                  ? 'Reg no, asset, driver, phone…'
+                  : reportType === 'driver_scorecard'
+                    ? 'Driver, phone, reg…'
+                    : reportType === 'trips'
+                      ? 'Reg no, driver, journey…'
+                      : 'Reg no, asset, zone…'
+              }
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
             />
           </div>
 
-          <MultiSelectDropdown
-            label="Site"
-            options={siteOptions}
-            selected={selectedSites}
-            onToggle={toggleSite}
-            onSelectAll={selectAllSites}
-            allLabel="All sites"
-            emptyMeansAll
-          />
-
-          <MultiSelectDropdown
-            label="Event type"
-            options={EVENT_TYPES}
-            selected={selectedEventTypes}
-            onToggle={toggleEventType}
-            onSelectAll={selectAllEvents}
-            allLabel="All event types"
-            emptyLabel="None selected"
-          />
-
-          <div className="bpl-field-label">View</div>
-          <div className="bpl-reports-view-toggle">
-            {(['events', 'trends'] as ViewMode[]).map(v => (
-              <button
-                key={v}
-                type="button"
-                className={`bpl-reports-view-btn${viewMode === v ? ' active' : ''}`}
-                onClick={() => setViewMode(v)}
-              >
-                {v === 'events' ? 'Events table' : 'Trends graph'}
-              </button>
-            ))}
-          </div>
-
-          {viewMode === 'trends' && (
+          {reportType === 'events' && (
             <>
-              <div className="bpl-field-label">Graph lines</div>
-              <button
-                type="button"
-                className={`bpl-reports-pill bpl-reports-pill--total${showTotal ? ' active' : ''}`}
-                onClick={() => setShowTotal(prev => !prev)}
-              >
-                Show total only
-              </button>
+              <MultiSelectDropdown
+                label="Site"
+                options={siteOptions}
+                selected={selectedSites}
+                onToggle={toggleSite}
+                onSelectAll={selectAllSites}
+                allLabel="All sites"
+                emptyMeansAll
+              />
+
+              <MultiSelectDropdown
+                label="Event type"
+                options={EVENT_TYPES}
+                selected={selectedEventTypes}
+                onToggle={toggleEventType}
+                onSelectAll={selectAllEvents}
+                allLabel="All event types"
+                emptyLabel="None selected"
+              />
+
+              <div className="bpl-field-label">View</div>
+              <div className="bpl-reports-view-toggle">
+                {(['events', 'trends'] as ViewMode[]).map(v => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={`bpl-reports-view-btn${viewMode === v ? ' active' : ''}`}
+                    onClick={() => setViewMode(v)}
+                  >
+                    {v === 'events' ? 'Events table' : 'Trends graph'}
+                  </button>
+                ))}
+              </div>
+
+              {viewMode === 'trends' && (
+                <>
+                  <div className="bpl-field-label">Graph lines</div>
+                  <button
+                    type="button"
+                    className={`bpl-reports-pill bpl-reports-pill--total${showTotal ? ' active' : ''}`}
+                    onClick={() => setShowTotal(prev => !prev)}
+                  >
+                    Show total only
+                  </button>
+                </>
+              )}
             </>
           )}
 
           <div className="bpl-reports-download-section">
+            <div className="bpl-field-label">Report type</div>
+            <div className="bpl-reports-type-list">
+              {REPORT_TYPE_OPTIONS.map(opt => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`bpl-reports-type-btn${reportType === opt.id ? ' active' : ''}`}
+                  onClick={() => setReportType(opt.id)}
+                  title={opt.hint}
+                >
+                  <span className="bpl-reports-type-label">{opt.label}</span>
+                  <span className="bpl-reports-type-hint">{opt.hint}</span>
+                </button>
+              ))}
+            </div>
             <div className="bpl-field-label">Format</div>
             <div className="bpl-reports-format-row">
               {(['csv', 'excel', 'pdf'] as ExportFormat[]).map(f => (
@@ -627,84 +805,139 @@ export default function ReportsPage() {
                 </button>
               ))}
             </div>
+            {!canExport && (
+              <div className="bpl-reports-export-note">
+                Report export limited to approved HBM domains (@{REPORT_EXPORT_ALLOWED_DOMAINS.join(', @')}).
+              </div>
+            )}
             <button
               type="button"
               className="bpl-reports-download-btn"
-              disabled={downloading || filtered.length === 0}
+              disabled={!canGenerate || downloading}
               onClick={handleDownload}
             >
               <Download size={14} />
               {downloading ? 'Preparing…' : 'Download report'}
             </button>
+            <div className="bpl-reports-email-row">
+              <label className="bpl-field-label" htmlFor="report-email-to">Email report to</label>
+              <input
+                id="report-email-to"
+                type="email"
+                className="bpl-reports-email-select"
+                value={emailTo}
+                onChange={e => setEmailTo(e.target.value)}
+                placeholder={`name@${REPORT_EXPORT_ALLOWED_DOMAINS[0]}`}
+                disabled={!canExport || emailing}
+              />
+              <button
+                type="button"
+                className="bpl-reports-email-btn"
+                disabled={!canGenerate || emailing}
+                onClick={handleEmailReport}
+              >
+                <Mail size={14} />
+                {emailing ? 'Sending…' : 'Email report'}
+              </button>
+              {emailStatus && (
+                <div className="bpl-reports-email-status">{emailStatus}</div>
+              )}
+            </div>
           </div>
 
           <ReportAutomate />
 
           <div className="bpl-reports-filters-foot">
-            Auto-refreshes every 10s
+            Auto-refreshes every 30s
             {loading && ' · Loading…'}
           </div>
         </div>
 
         <div className="bpl-card bpl-reports-main">
           <div className="bpl-reports-main-head">
-            <span>{viewMode === 'events' ? 'Event log' : 'Event trends'}</span>
-            {viewMode === 'trends' && !showTotal && filterSummary && (
+            <span>
+              {reportType === 'events'
+                ? (viewMode === 'events' ? 'Event log' : 'Event trends')
+                : reportTypeLabel(reportType)}
+            </span>
+            {reportType === 'events' && viewMode === 'trends' && !showTotal && filterSummary && (
               <span className="bpl-reports-main-sub">{filterSummary}</span>
             )}
           </div>
 
-          {viewMode === 'events' ? (
+          {reportType !== 'events' ? (
+            <div className="bpl-reports-empty bpl-reports-type-preview">
+              <strong>{reportTypeLabel(reportType)}</strong>
+              <p>
+                {reportType === 'driver_scorecard' &&
+                  'Download or email builds consequence scorecards (display score, category, penalty points, distance, violation counts) for the selected date range.'}
+                {reportType === 'trips' &&
+                  'Download or email builds journey rows (start/end, distance, driving time, speeds) from live trip data for the selected date range.'}
+                {reportType === 'asset_utilization' &&
+                  'Download or email builds utilization & availability KPIs per asset (engine hours, trips, distance, loaded hours) for the selected date range.'}
+              </p>
+              <p className="bpl-reports-type-preview-note">
+                Use Download report or Email report on the left. Search filters driver / reg / asset where applicable.
+              </p>
+            </div>
+          ) : viewMode === 'events' ? (
             <div className="bpl-reports-table-wrap">
               {loading && filtered.length === 0 ? (
                 <div className="bpl-reports-empty">Loading events…</div>
               ) : filtered.length === 0 ? (
                 <div className="bpl-reports-empty">No events match your filters</div>
               ) : (
-                <table className="bpl-reports-table">
-                  <thead>
-                    <tr>
-                      {['Time', 'Event', 'Vehicle', 'Driver', 'Transporter', 'Site', 'Location'].map(h => (
-                        <th key={h}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((entry, i) => {
-                      const label = eventLabel(entry);
-                      const displayName =
-                        entry.regNo && entry.regNo !== 'N/A' ? entry.regNo : entry.assetId;
-                      const driverDisplay = displayDriverName(entry.driverName);
-                      return (
-                        <tr key={`${entry.eventId}-${i}`}>
-                          <td className="muted">{formatTime(entry.timestamp)}</td>
-                          <td>
-                            <span className="bpl-reports-event-label">
-                              {label}
-                            </span>
-                          </td>
-                          <td>
-                            <strong>{displayName}</strong>
-                            {entry.assetName && entry.assetName !== 'Unknown Vehicle' && (
-                              <div className="bpl-reports-cell-sub">{entry.assetName}</div>
-                            )}
-                          </td>
-                          <td>
-                            {driverDisplay}
-                            {entry.driverPhone && entry.driverPhone !== 'N/A' && (
-                              <div className="bpl-reports-cell-sub">{entry.driverPhone}</div>
-                            )}
-                          </td>
-                          <td>{entry.transporter && entry.transporter !== 'N/A' ? entry.transporter : '—'}</td>
-                          <td>{entry.site && entry.site !== 'N/A' ? entry.site : '—'}</td>
-                          <td className="route">
-                            {entry.address && entry.address !== 'N/A' ? entry.address : '—'}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <>
+                  <table className="bpl-reports-table">
+                    <thead>
+                      <tr>
+                        {['Time', 'Event', 'Vehicle', 'Driver', 'Transporter', 'Site', 'Location'].map(h => (
+                          <th key={h}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewRows.map((entry, i) => {
+                        const label = eventLabel(entry);
+                        const displayName =
+                          entry.regNo && entry.regNo !== 'N/A' ? entry.regNo : entry.assetId;
+                        const driverDisplay = displayDriverName(entry.driverName);
+                        return (
+                          <tr key={`${entry.eventId}-${i}`}>
+                            <td className="muted">{formatTime(entry.timestamp)}</td>
+                            <td>
+                              <span className="bpl-reports-event-label">
+                                {label}
+                              </span>
+                            </td>
+                            <td>
+                              <strong>{displayName}</strong>
+                              {entry.assetName && entry.assetName !== 'Unknown Vehicle' && (
+                                <div className="bpl-reports-cell-sub">{entry.assetName}</div>
+                              )}
+                            </td>
+                            <td>
+                              {driverDisplay}
+                              {entry.driverPhone && entry.driverPhone !== 'N/A' && (
+                                <div className="bpl-reports-cell-sub">{entry.driverPhone}</div>
+                              )}
+                            </td>
+                            <td>{entry.transporter && entry.transporter !== 'N/A' ? entry.transporter : '—'}</td>
+                            <td>{entry.site && entry.site !== 'N/A' ? entry.site : '—'}</td>
+                            <td className="route">
+                              {entry.address && entry.address !== 'N/A' ? entry.address : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filtered.length > EVENT_PREVIEW_LIMIT && (
+                    <div className="bpl-reports-preview-note">
+                      Showing {EVENT_PREVIEW_LIMIT} of {filtered.length} events — download or email for the full set
+                    </div>
+                  )}
+                </>
               )}
             </div>
           ) : (

@@ -293,8 +293,15 @@ function MixWidgetCard({
   const yFmt = (v: number) => formatMetricValue(Number(v) || 0, settings.metric);
 
   const chartBody = !chartsReady ? (
-    <div style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', fontSize: 12 }}>
-      Loading chart…
+    <div className="bpl-chart-skel" role="status" aria-label="Loading chart" style={{ minHeight: 240 }}>
+      <div className="bpl-chart-skel__bars" aria-hidden>
+        {[42, 68, 55, 82, 48, 74, 60, 36].map((h, i) => (
+          <span key={i} style={{ height: `${h}%`, animationDelay: `${i * 70}ms` }} />
+        ))}
+      </div>
+      <div className="bpl-chart-skel__footer">
+        <span className="bpl-chart-skel__label">Preparing chart…</span>
+      </div>
     </div>
   ) : meta.chart === 'rank' ? (
     ranked.length === 0 ? (

@@ -32,7 +32,7 @@ import {
   handleGoogleOAuthCallback,
   startGoogleOAuth,
 } from './oauth-google.js';
-import { isEmailConfigured } from './email.js';
+import { isEmailConfigured, sendReportExportEmail } from './email.js';
 import {
   createAutomation,
   deleteAutomation,
@@ -41,6 +41,7 @@ import {
   sendAutomationNow,
   updateAutomation,
 } from './report-automate.js';
+import { isReportExportAllowed, normalizeReportEmail } from './report-export-allowlist.js';
 import {
   archiveDocument,
   listDocumentTree,
@@ -343,6 +344,47 @@ export async function handleAuthRequest(req, res) {
       return true;
     }
 
+    // ── Ad-hoc report export email (allowlisted accounts only) ───────────────
+    if (path === '/api/reports/email' && method === 'POST') {
+      const user = await requireUser(req, res, 'reports');
+      if (!user) return true;
+      if (!isReportExportAllowed(user.email)) {
+        sendJson(res, 403, { error: 'Report export limited to approved HBM domains' });
+        return true;
+      }
+      if (!isEmailConfigured()) {
+        sendJson(res, 503, { error: 'Email is not configured (RESEND_API_KEY)' });
+        return true;
+      }
+      const body = await readBody(req);
+      const to = normalizeReportEmail(body.to || user.email);
+      if (!isReportExportAllowed(to)) {
+        sendJson(res, 403, { error: 'Recipient domain is not allowed for report export' });
+        return true;
+      }
+      const contentBase64 = body.contentBase64 || body.content || '';
+      if (!contentBase64 || typeof contentBase64 !== 'string') {
+        sendJson(res, 400, { error: 'contentBase64 required' });
+        return true;
+      }
+      // Cap ~12MB base64 (~9MB file) to protect the 1GB droplet
+      if (contentBase64.length > 12_000_000) {
+        sendJson(res, 413, { error: 'Report attachment too large — try CSV or a shorter date range' });
+        return true;
+      }
+      const result = await sendReportExportEmail({
+        to: [to],
+        filename: body.filename || `hbm-report-${Date.now()}.csv`,
+        mime: body.mime || 'text/csv;charset=utf-8',
+        contentBase64,
+        reportTitle: body.reportTitle || 'Fleet report',
+        meta: body.meta || '',
+        eventCount: body.eventCount ?? null,
+      });
+      sendJson(res, result.sent ? 200 : 502, result);
+      return true;
+    }
+
     // ── Documents library (Windows-style report archive) ────────────────────
     if (path === '/api/documents/tree' && method === 'GET') {
       const user = await requireUser(req, res, 'documents');
@@ -425,6 +467,7 @@ export function authExpressMiddleware() {
       path === '/api/roles' ||
       path?.startsWith('/api/users') ||
       path?.startsWith('/api/reports/automate') ||
+      path === '/api/reports/email' ||
       path?.startsWith('/api/documents')
     ) {
       // Normalize url for handleAuthRequest
@@ -445,6 +488,7 @@ export function authViteMiddleware() {
       urlPath === '/api/roles' ||
       urlPath.startsWith('/api/users') ||
       urlPath.startsWith('/api/reports/automate') ||
+      urlPath === '/api/reports/email' ||
       urlPath.startsWith('/api/documents')
     ) {
       const handled = await handleAuthRequest(req, res);

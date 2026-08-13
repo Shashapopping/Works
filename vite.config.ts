@@ -12,7 +12,7 @@ import * as dotenv from 'dotenv'
 import fs from 'fs'
 import path from 'path'
 
-dotenv.config()
+dotenv.config({ override: true })
 
 const ACKNOWLEDGED_FILE = path.join(process.cwd(), 'public', 'acknowledged.json')
 const API_SECRET = process.env.API_SECRET
@@ -374,7 +374,10 @@ export default defineConfig({
             from: params.get('from') || null,
             to: params.get('to') || null,
           })
-          const slim = { ...summary, assets: summary.assets.map(({ journeys, ...rest }: any) => rest) }
+          const includeJourneys = params.get('includeJourneys') === '1' || params.get('includeJourneys') === 'true'
+          const slim = includeJourneys
+            ? summary
+            : { ...summary, assets: summary.assets.map(({ journeys, ...rest }: any) => rest) }
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(slim))
         })
