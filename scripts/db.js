@@ -4,6 +4,7 @@
  */
 import Database from 'better-sqlite3';
 import path from 'path';
+import { qualifiesAsOverspeed, isOverspeedLabel } from './overspeed-filter.js';
 
 let db;
 
@@ -44,6 +45,8 @@ function initSchema() {
       latitude REAL,
       longitude REAL,
       address TEXT,
+      speed REAL,
+      speed_limit REAL,
       type TEXT DEFAULT 'warning'
     );
 
@@ -228,6 +231,13 @@ function initSchema() {
   if (!userCols.includes('is_organisational')) {
     db.exec(`ALTER TABLE users ADD COLUMN is_organisational INTEGER NOT NULL DEFAULT 0`);
   }
+  const eventCols = db.prepare(`PRAGMA table_info(events)`).all().map(c => c.name);
+  if (!eventCols.includes('speed')) {
+    db.exec(`ALTER TABLE events ADD COLUMN speed REAL`);
+  }
+  if (!eventCols.includes('speed_limit')) {
+    db.exec(`ALTER TABLE events ADD COLUMN speed_limit REAL`);
+  }
   // Keep known BPL / bootstrap accounts organisational (idempotent)
   db.prepare(`
     UPDATE users SET is_organisational = 1
@@ -246,8 +256,8 @@ export function withTransaction(fn) {
 export function insertEvent(entry) {
   getDb().prepare(`
     INSERT OR IGNORE INTO events
-    (event_id, timestamp, asset_id, driver_id, driver_name, driver_phone, event_type, label, event_time, received_at, latitude, longitude, address, type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (event_id, timestamp, asset_id, driver_id, driver_name, driver_phone, event_type, label, event_time, received_at, latitude, longitude, address, speed, speed_limit, type)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     entry.eventId?.toString(),
     entry.timestamp,
@@ -262,6 +272,8 @@ export function insertEvent(entry) {
     entry.latitude ?? null,
     entry.longitude ?? null,
     entry.address || null,
+    entry.speed ?? null,
+    entry.speedLimit ?? entry.speed_limit ?? null,
     'warning',
   );
 }
@@ -350,7 +362,25 @@ export function getAllEvents(filters = {}) {
     ).all(...panicParams)
     : [];
 
-  return [...events, ...panics].sort((a, b) => {
+  // Backfill speed on older overspeed rows from kpi_events when events.speed is null
+  const overspeedMissingSpeed = events.filter(
+    e => isOverspeedLabel(e.label) && (e.speed == null || e.speed === ''),
+  );
+  if (overspeedMissingSpeed.length > 0) {
+    const lookup = database.prepare('SELECT speed FROM kpi_events WHERE event_id = ?');
+    for (const e of overspeedMissingSpeed) {
+      const row = lookup.get(e.event_id?.toString());
+      if (row && row.speed != null) e.speed = row.speed;
+    }
+  }
+
+  const filteredEvents = events.filter(e => {
+    if (!isOverspeedLabel(e.label)) return true;
+    // After kpi speed backfill: only keep overspeeds with a verified ≥60 kph reading
+    return qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: true });
+  });
+
+  return [...filteredEvents, ...panics].sort((a, b) => {
     const aTime = a.event_time || a.timestamp || '';
     const bTime = b.event_time || b.timestamp || '';
     return bTime.localeCompare(aTime);

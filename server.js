@@ -186,6 +186,8 @@ app.get('/api/events/log', (req, res) => {
         latitude: entry.latitude,
         longitude: entry.longitude,
         address: entry.address || vehicle.position?.address || null,
+        speed: entry.speed ?? null,
+        speedLimit: entry.speed_limit ?? null,
         type: entry.type,
         regNo: vehicle.regNo || 'N/A',
         assetName: vehicle.assetName || 'Unknown Vehicle',

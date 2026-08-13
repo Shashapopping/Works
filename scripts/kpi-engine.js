@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { KPI_CATEGORY } from './kpi-constants.js';
 import { getKpiEvents, getAllEvents, getTripsInRange } from './db.js';
+import { qualifiesAsOverspeed } from './overspeed-filter.js';
 
 const QUARRY_ZONES = new Set(['QUARRY EWEKORO', 'QUARRY MFAMOSING']);
 
@@ -208,7 +209,10 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
 
   kpiEvents.forEach(e => {
     if (e.category === KPI_CATEGORY.HARSH_BRAKING) pushBehaviour(e, KPI_CATEGORY.HARSH_BRAKING);
-    else if (e.category === KPI_CATEGORY.OVERSPEED) pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
+    else if (e.category === KPI_CATEGORY.OVERSPEED) {
+      if (!qualifiesAsOverspeed(e.label || e.category, e.speed)) return;
+      pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
+    }
   });
   getAllEvents({
     from: new Date(start).toISOString(),
@@ -222,9 +226,13 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
       timestamp: row.timestamp,
       assetId: row.asset_id,
       driverId: row.driver_id,
+      speed: row.speed,
     };
     if (e.label === 'Harsh Braking') pushBehaviour(e, KPI_CATEGORY.HARSH_BRAKING);
-    else if (e.label === 'Overspeeding' || e.label === 'Overspeed Tiered') pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
+    else if (e.label === 'Overspeeding' || e.label === 'Overspeed Tiered') {
+      if (!qualifiesAsOverspeed(e.label, e.speed)) return;
+      pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
+    }
   });
 
   const fatigueCategories = new Set([

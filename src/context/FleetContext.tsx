@@ -37,6 +37,7 @@ import {
 } from '../lib/fleetSafetyScore';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
+import { filterOverspeedEvents } from '../lib/overspeedFilter';
 
 export type { StatusFilter, AlertItem, DriverScore, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
@@ -456,7 +457,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         },
       );
       if (!data) return;
-      setEvents(data);
+      setEvents(filterOverspeedEvents(data));
 
       // SafeIQ shelved — no thresholds, Claude calls, or environment lookups
       if (!SAFEIQ_ENABLED) {
@@ -469,10 +470,11 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         const SAFEIQ_OVERSPEED_MIN_EXCESS_KMH = 5;
         const isOverspeedLabel = (label?: string) =>
           label === 'Overspeeding' || label === 'Overspeed Tiered';
-        /** SafeIQ only reports overspeed when clearly ≥5 km/h over the posted limit. */
+        /** SafeIQ only reports overspeed when clearly ≥5 km/h over the posted limit and absolute speed ≥60 kph. */
         const meetsSafeIqOverspeedThreshold = (e: LogEntry) => {
           if (!isOverspeedLabel(e.label)) return true;
-          if (e.speed == null || e.speedLimit == null) return false;
+          if (e.speed == null || e.speed < 60) return false;
+          if (e.speedLimit == null) return false;
           return e.speed - e.speedLimit >= SAFEIQ_OVERSPEED_MIN_EXCESS_KMH;
         };
         const newOnes = data.filter(e => {

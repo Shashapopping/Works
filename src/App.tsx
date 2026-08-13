@@ -5,6 +5,7 @@ import { FleetProvider } from './context/FleetContext';
 import AppShell from './components/layout/AppShell';
 import RequireAuth from './components/RequireAuth';
 import Login from './pages/Login';
+import { TRENDS_ENABLED } from './config/trends';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const FleetPage = lazy(() => import('./pages/FleetPage'));
@@ -20,7 +21,7 @@ const CertificatesPage = lazy(() => import('./pages/driver/CertificatesPage'));
 const FatigueManagementPage = lazy(() => import('./pages/driver/FatigueManagementPage'));
 const VisionPage = lazy(() => import('./pages/driver/VisionPage'));
 const IncidentIntelligence = lazy(() => import('./pages/IncidentIntelligence'));
-const TrendsPage = lazy(() => import('./pages/TrendsPage'));
+const TrendsPage = TRENDS_ENABLED ? lazy(() => import('./pages/TrendsPage')) : null;
 const Safety = lazy(() => import('./pages/Safety'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Maintenance = lazy(() => import('./pages/Maintenance'));
@@ -54,10 +55,23 @@ export default function App() {
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
 
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
-                <Route path="/incidents/trends" element={<Navigate to="/trends" replace />} />
-                <Route path="/incidents/analysis" element={<Navigate to="/trends" replace />} />
+                <Route
+                  path="/incidents/trends"
+                  element={<Navigate to={TRENDS_ENABLED ? '/trends' : '/incidents'} replace />}
+                />
+                <Route
+                  path="/incidents/analysis"
+                  element={<Navigate to={TRENDS_ENABLED ? '/trends' : '/incidents'} replace />}
+                />
                 <Route path="/incidents/response" element={<IncidentIntelligence tab="patterns" />} />
-                <Route path="/trends" element={<TrendsPage />} />
+                <Route
+                  path="/trends"
+                  element={
+                    TRENDS_ENABLED && TrendsPage
+                      ? <TrendsPage />
+                      : <Navigate to="/incidents" replace />
+                  }
+                />
 
                 <Route path="/safety" element={<Safety />} />
 

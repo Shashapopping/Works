@@ -11,6 +11,7 @@ import { useFleet } from '../../context/FleetContext';
 import { useAuth } from '../../context/AuthContext';
 import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
 import { brandLogoAlt, brandLogoSrc } from '../../lib/branding';
+import { TRENDS_ENABLED } from '../../config/trends';
 
 interface SubItem {
   path: string;
@@ -51,7 +52,9 @@ const NAV: NavGroup[] = [
       { path: '/incidents/response', label: 'Response Tracking', icon: ListChecks },
     ],
   },
-  { path: '/trends', icon: TrendingUp, label: 'Trends' },
+  ...(TRENDS_ENABLED
+    ? [{ path: '/trends', icon: TrendingUp, label: 'Trends' } as NavGroup]
+    : []),
   { path: '/tankers', icon: Truck, label: 'Bulk Tankers', accent: '#f59e0b' },
   {
     path: '/quarry', icon: Mountain, label: 'Quarry', accent: '#84cc16',

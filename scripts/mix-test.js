@@ -7,6 +7,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { KPI_EVENT_IDS, serializeKpiLogEntry } from "./kpi-constants.js";
 import {
+  extractMixEventSpeedKph,
+  isOverspeedLabel,
+  OVERSPEED_MIN_KPH,
+  qualifiesAsOverspeed,
+} from "./overspeed-filter.js";
+import {
   getDb,
   insertEvent,
   insertPanic,
@@ -697,7 +703,16 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
   const warningEvents = parsed.filter(e => WARNING_EVENT_TYPES[e.EventTypeId]);
   if (warningEvents.length > 0) {
     console.log(`⚠️ Warning events found: ${warningEvents.length}`);
+    let skippedOverspeed = 0;
     warningEvents.forEach(e => {
+      const label = WARNING_EVENT_TYPES[e.EventTypeId];
+      const speed = extractMixEventSpeedKph(e, speedByAsset);
+      const speedLimit = e.SpeedLimit ?? e.ZoneSpeedLimit ?? e.SpeedLimitKilometresPerHour ?? null;
+      if (isOverspeedLabel(label) && !qualifiesAsOverspeed(label, speed, { requireSpeed: true })) {
+        skippedOverspeed += 1;
+        console.log(`⏩ Skip overspeed < ${OVERSPEED_MIN_KPH} kph — AssetId: ${e.AssetId} | speed: ${speed ?? 'n/a'}`);
+        return;
+      }
       const driver = getDriverInfo(e.DriverId);
       const formattedAddress = e.Position?.FormattedAddress;
       insertEvent({
@@ -708,23 +723,21 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
         driverPhone: driver.phone,
         eventId: e.EventId,
         eventType: e.EventTypeId,
-        label: WARNING_EVENT_TYPES[e.EventTypeId],
+        label,
         eventTime: e.EventDateTime,
         receivedAt: e.ReceivedDateTime,
         latitude: e.Position?.Latitude || null,
         longitude: e.Position?.Longitude || null,
         address: formattedAddress || null,
+        speed,
+        speedLimit,
       });
       if (!formattedAddress && e.Position?.Latitude && e.Position?.Longitude) {
         enrichEntryWithAddress(null, e.EventId, e.Position.Latitude, e.Position.Longitude);
       }
-    });
-    console.log(`📝 Warning events saved to SQLite`);
 
-    warningEvents.forEach(e => {
       const assetId = e.AssetId?.toString();
-      const label = WARNING_EVENT_TYPES[e.EventTypeId];
-      console.log(`⚠️ ${label} - AssetId: ${assetId} | EventTime: ${e.EventDateTime}`);
+      console.log(`⚠️ ${label} - AssetId: ${assetId} | EventTime: ${e.EventDateTime}${speed != null ? ` | ${Math.round(speed)} kph` : ''}`);
       if (assetId) {
         if (!triggeredWarningEvents.has(assetId)) triggeredWarningEvents.set(assetId, []);
         const existing = triggeredWarningEvents.get(assetId);
@@ -739,6 +752,10 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
         }
       }
     });
+    if (skippedOverspeed > 0) {
+      console.log(`⏩ Skipped ${skippedOverspeed} overspeed event(s) below ${OVERSPEED_MIN_KPH} kph`);
+    }
+    console.log(`📝 Warning events saved to SQLite`);
   }
 
   // Handle fuel probe events (1min ticker, 5min ticker, trip start/end fuel levels)
@@ -784,12 +801,25 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
   const kpiEvents = parsed.filter(e => KPI_EVENT_IDS.has(e.EventTypeId));
   if (kpiEvents.length > 0) {
     const rows = [];
+    let skippedOverspeed = 0;
     for (const e of kpiEvents) {
       const line = serializeKpiLogEntry(e, getDriverInfo(e.DriverId));
       if (!line) continue;
       try {
-        rows.push(JSON.parse(line));
+        const row = JSON.parse(line);
+        if (row.category === 'overspeed') {
+          const speed = row.speed ?? extractMixEventSpeedKph(e, speedByAsset);
+          row.speed = speed;
+          if (!qualifiesAsOverspeed(row.label || row.category, speed, { requireSpeed: true })) {
+            skippedOverspeed += 1;
+            continue;
+          }
+        }
+        rows.push(row);
       } catch { /* skip */ }
+    }
+    if (skippedOverspeed > 0) {
+      console.log(`⏩ Skipped ${skippedOverspeed} KPI overspeed event(s) below ${OVERSPEED_MIN_KPH} kph`);
     }
     if (rows.length > 0) {
       insertKpiEvents(rows);
