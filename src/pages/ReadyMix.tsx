@@ -6,6 +6,7 @@ import {
 import { useFleet } from '../context/FleetContext';
 import type { Vehicle } from '../context/FleetContext';
 import { KpiCard } from '../components/KpiCard';
+import ReadyMixPlantMap from '../components/ReadyMixPlantMap';
 import {
   segmentVehicles, readyMixPlant, readyMixDispatchState, locationLabel,
   deriveReadyMixPlantPins, openTripAssetIdsFromSession,
@@ -16,7 +17,8 @@ import { authFetch } from '../context/FleetContext';
 const DISPATCH_META = {
   transit: { label: 'In transit', color: '#d97706', short: 'Transit' },
   plant: { label: 'At plant', color: '#16a34a', short: 'Plant' },
-  jobsite: { label: 'On jobsite', color: '#7c3aed', short: 'Jobsite' },
+  /** Internal key kept as jobsite; UI says “Away from plant” — GPS stop outside geofence, not a verified pour site. */
+  jobsite: { label: 'Away from plant', color: '#7c3aed', short: 'Away' },
   parked: { label: 'Parked', color: '#6B7A8D', short: 'Parked' },
   offline: { label: 'Offline', color: '#6878A0', short: 'Offline' },
 } as const;
@@ -36,45 +38,59 @@ function timeAgo(dateStr?: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function StatusChips({ vehicles }: { vehicles: Vehicle[] }) {
-  const counts: Record<string, number> = {};
-  for (const v of vehicles) counts[v.status] = (counts[v.status] ?? 0) + 1;
-  const order = ['Moving', 'Idle', 'Excessive Idle', 'Stationary', 'Parked', 'Offline', 'Inactive'];
+type DispatchOpts = Parameters<typeof readyMixDispatchState>[1];
+
+const ALWAYS_ON_DISPATCH: (keyof typeof DISPATCH_META)[] = ['transit', 'plant', 'jobsite'];
+const OPTIONAL_DISPATCH: (keyof typeof DISPATCH_META)[] = ['parked', 'offline'];
+
+function countDispatch(vehicles: Vehicle[], opts?: DispatchOpts) {
+  const counts: Record<keyof typeof DISPATCH_META, number> = {
+    transit: 0, plant: 0, jobsite: 0, parked: 0, offline: 0,
+  };
+  for (const v of vehicles) counts[readyMixDispatchState(v, opts)] += 1;
+  return counts;
+}
+
+/** Total + Transit/Plant/Away always shown (0 = balance). Parked/Offline only when &gt; 0. */
+function DispatchSummaryStrip({ vehicles, opts }: { vehicles: Vehicle[]; opts?: DispatchOpts }) {
+  const counts = countDispatch(vehicles, opts);
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-      {order.filter(s => counts[s]).map(s => {
-        const color = STATUS_COLOR[s] ?? '#6B7A8D';
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6, alignItems: 'center' }}>
+      <span style={{
+        fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+        background: 'rgba(128,128,128,0.12)', color: 'var(--cd-text)',
+        border: '1px solid rgba(128,128,128,0.18)',
+      }}>
+        {vehicles.length} Total
+      </span>
+      {ALWAYS_ON_DISPATCH.map(k => {
+        const m = DISPATCH_META[k];
+        const n = counts[k];
+        const empty = n === 0;
         return (
-          <span key={s} style={{
-            fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
-            background: `${color}18`, color,
-            border: `1px solid ${color}25`,
-          }}>
-            {counts[s]} {s === 'Excessive Idle' ? 'Exc. Idle' : s}
+          <span
+            key={k}
+            style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+              background: empty ? 'rgba(128,128,128,0.06)' : `${m.color}14`,
+              color: empty ? 'var(--cd-text-muted)' : m.color,
+              border: `1px solid ${empty ? 'rgba(128,128,128,0.12)' : `${m.color}30`}`,
+            }}
+          >
+            {n} {m.short}
           </span>
         );
       })}
-    </div>
-  );
-}
-
-type DispatchOpts = Parameters<typeof readyMixDispatchState>[1];
-
-function DispatchChips({ vehicles, opts }: { vehicles: Vehicle[]; opts?: DispatchOpts }) {
-  const counts: Partial<Record<keyof typeof DISPATCH_META, number>> = {};
-  for (const v of vehicles) {
-    const s = readyMixDispatchState(v, opts);
-    counts[s] = (counts[s] ?? 0) + 1;
-  }
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
-      {(Object.keys(DISPATCH_META) as (keyof typeof DISPATCH_META)[]).filter(k => counts[k]).map(k => {
+      {OPTIONAL_DISPATCH.filter(k => counts[k] > 0).map(k => {
         const m = DISPATCH_META[k];
         return (
-          <span key={k} style={{
-            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
-            background: `${m.color}14`, color: m.color, border: `1px solid ${m.color}30`,
-          }}>
+          <span
+            key={k}
+            style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999,
+              background: `${m.color}14`, color: m.color, border: `1px solid ${m.color}30`,
+            }}
+          >
             {counts[k]} {m.short}
           </span>
         );
@@ -248,9 +264,8 @@ function SiteSection({
               </span>
             )}
           </div>
-          {/* Quick info always visible when collapsed */}
-          <StatusChips vehicles={vehicles} />
-          <DispatchChips vehicles={vehicles} opts={opts} />
+          {/* Always-on dispatch balance: Total + Transit/Plant/Away (0 shown); Parked/Offline if any */}
+          <DispatchSummaryStrip vehicles={vehicles} opts={opts} />
         </div>
         <div style={{ flexShrink: 0, color: 'var(--cd-text-muted)', marginLeft: 8 }}>
           {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -356,7 +371,7 @@ export default function ReadyMix() {
     { id: 'all', label: 'All', count: fleet.length, color: '#7c3aed' },
     { id: 'transit', label: 'In transit', count: buckets.transit.length, color: DISPATCH_META.transit.color },
     { id: 'plant', label: 'At plant', count: buckets.plant.length, color: DISPATCH_META.plant.color },
-    { id: 'jobsite', label: 'Jobsite', count: buckets.jobsite.length, color: DISPATCH_META.jobsite.color },
+    { id: 'jobsite', label: 'Away from plant', count: buckets.jobsite.length, color: DISPATCH_META.jobsite.color },
     { id: 'parked', label: 'Parked', count: buckets.parked.length, color: DISPATCH_META.parked.color },
     { id: 'offline', label: 'Offline', count: buckets.offline.length, color: DISPATCH_META.offline.color },
   ];
@@ -366,7 +381,7 @@ export default function ReadyMix() {
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Ready Mix Dispatch</h1>
         <p className="bpl-page-subtitle">
-          Lagos, Abuja & Port Harcourt — “At plant” confirmed by GPS (±1.5 km) and true idle (speed under 5 km/h), with open trips backing jobsite.
+          “At plant” = stopped inside a ±1.5 km GPS plant geofence. “Away from plant” = stopped outside it (not a confirmed customer jobsite).
         </p>
       </div>
 
@@ -385,15 +400,15 @@ export default function ReadyMix() {
           sub="Stopped inside plant geofence"
           color="#16a34a"
           icon={Factory}
-          tip="Truly stopped (Idle/Stationary/Parked + speed under 5 km/h) and within 1.5 km of a Ready Mix plant pin (seed hubs + live clusters from idle plant-site mixers)."
+          tip="Truly stopped (Idle/Stationary/Parked + speed under 5 km/h) and within 1.5 km of a Ready Mix plant pin. See the cluster map below for proof."
         />
         <KpiCard
-          label="On Jobsite"
+          label="Away from plant"
           value={buckets.jobsite.length}
-          sub="Stopped away from plant"
+          sub="Stopped outside plant geofence"
           color="#7c3aed"
           icon={Timer}
-          tip="Truly stopped outside plant geofence. Open MiX trips (no TripEnd) strengthen jobsite vs parked."
+          tip="Truly stopped outside the plant geofence. This is not a verified pour/jobsite — it can include roadside waits, fuel stops, or other off-yard stops. Parked with no open trip is counted separately as Parked."
         />
         <KpiCard
           label="Mixer Fleet"
@@ -405,6 +420,8 @@ export default function ReadyMix() {
         />
       </div>
 
+      <ReadyMixPlantMap plantPins={plantPins} atPlantVehicles={buckets.plant} />
+
       {(buckets.jobsite.length > 0 || buckets.transit.length > 3) && (
         <div className="bpl-card" style={{
           padding: '12px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
@@ -412,8 +429,8 @@ export default function ReadyMix() {
         }}>
           <AlertCircle size={18} color="#7c3aed" />
           <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
-            <strong style={{ color: '#7c3aed' }}>{buckets.transit.length + buckets.jobsite.length} time-critical loads</strong>
-            {' '}need dispatch attention — confirm ETAs and jobsite readiness before concrete sets (~90–120 min window).
+            <strong style={{ color: '#7c3aed' }}>{buckets.transit.length + buckets.jobsite.length} mixers in motion or stopped off-plant</strong>
+            {' '}— worth a dispatch check while loads are still live (~90–120 min window). Off-plant stops are not confirmed jobsites.
           </div>
         </div>
       )}

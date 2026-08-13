@@ -148,10 +148,10 @@ export function overspeedCount(events: LogEntry[], days = 30) {
  */
 export const READY_MIX_PLANT_RADIUS_M = 1500;
 
-/** Seed pins from observed idle clusters (Lagos yards, Sagamu corridor, Abuja, PH). */
+/** Seed pins from observed idle clusters — Lagos has several distinct yards, not one. */
 export const READY_MIX_PLANT_SEEDS: Array<{ id: string; label: string; lat: number; lng: number }> = [
-  { id: 'lagos-lekki', label: 'Lagos plant cluster', lat: 6.435, lng: 3.448 },
-  { id: 'lagos-ikeja', label: 'Lagos north cluster', lat: 6.583, lng: 3.377 },
+  { id: 'lagos-lekki', label: 'Lagos — Lekki plant', lat: 6.435, lng: 3.448 },
+  { id: 'lagos-ikeja', label: 'Lagos — Ikeja / north plant', lat: 6.583, lng: 3.377 },
   { id: 'sagamu-yard', label: 'Sagamu / Lagos corridor yard', lat: 6.814, lng: 3.617 },
   { id: 'truluck-lagos', label: 'Truluck Lagos yard', lat: 6.871, lng: 3.216 },
   { id: 'abuja', label: 'Abuja plant', lat: 9.036, lng: 7.385 },
@@ -261,7 +261,8 @@ export function readyMixDispatchState(
   // GPS confirm: truly stopped inside plant radius → at plant (loading / waiting batch)
   if (stopped && nearPlant) return 'plant';
 
-  // Stopped away from plant: open trip strengthens jobsite (pour / wait); else still jobsite
+  // Stopped away from plant: not a verified jobsite — GPS says off-yard only.
+  // Parked + no open trip → parked; otherwise "away" (legacy key: jobsite).
   if (stopped && hasCoords && !nearPlant) {
     if (v.status === 'Parked' && !onOpenTrip) return 'parked';
     return 'jobsite';
