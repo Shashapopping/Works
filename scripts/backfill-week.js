@@ -22,6 +22,11 @@ import {
   safeParseJsonBigInt,
   getSinceTokenDaysAgo,
 } from './fuel-constants.js';
+import {
+  extractMixEventSpeedKph,
+  isOverspeedLabel,
+  qualifiesAsOverspeed,
+} from './overspeed-filter.js';
 
 const IDENTITY_URL = 'https://identity.za.mixtelematics.com/core/connect/token';
 const API_BASE = 'https://integrate.za.mixtelematics.com/api';
@@ -178,6 +183,11 @@ async function backfillEvents(token, drivers) {
         const key = eventId || `${typeId}:${e.AssetId}:${e.EventDateTime}`;
         if (!warningById.has(key)) {
           const driver = driverInfo(drivers, e.DriverId);
+          const label = WARNING_EVENT_TYPES[typeId];
+          const speed = extractMixEventSpeedKph(e, null, { allowLiveFallback: false });
+          if (isOverspeedLabel(label) && !qualifiesAsOverspeed(label, speed, { requireSpeed: true })) {
+            continue;
+          }
           warningById.set(key, JSON.stringify({
             timestamp: new Date().toISOString(),
             assetId: e.AssetId?.toString(),
@@ -186,13 +196,13 @@ async function backfillEvents(token, drivers) {
             driverPhone: driver.phone,
             eventId,
             eventType: typeId,
-            label: WARNING_EVENT_TYPES[typeId],
+            label,
             eventTime: e.EventDateTime,
             receivedAt: e.ReceivedDateTime,
             latitude: e.Position?.Latitude || null,
             longitude: e.Position?.Longitude || null,
             address: e.Position?.FormattedAddress || null,
-            speed: e.Speed ?? e.SpeedKilometresPerHour ?? e.Position?.SpeedKilometresPerHour ?? null,
+            speed,
             speedLimit: e.SpeedLimit ?? e.ZoneSpeedLimit ?? e.SpeedLimitKilometresPerHour ?? null,
           }));
         }
@@ -202,7 +212,23 @@ async function backfillEvents(token, drivers) {
         const key = eventId || `${typeId}:${e.AssetId}:${e.EventDateTime}`;
         if (!kpiById.has(key)) {
           const line = serializeKpiLogEntry(e, driverInfo(drivers, e.DriverId));
-          if (line) kpiById.set(key, line);
+          if (line) {
+            try {
+              const row = JSON.parse(line);
+              if (row.category === 'overspeed') {
+                const speed = row.speed ?? extractMixEventSpeedKph(e, null, { allowLiveFallback: false });
+                row.speed = speed;
+                if (!qualifiesAsOverspeed(row.label || row.category, speed, { requireSpeed: true })) {
+                  continue;
+                }
+                kpiById.set(key, JSON.stringify(row));
+              } else {
+                kpiById.set(key, line);
+              }
+            } catch {
+              kpiById.set(key, line);
+            }
+          }
         }
       }
 

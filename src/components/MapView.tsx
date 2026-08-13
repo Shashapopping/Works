@@ -11,6 +11,53 @@ interface Warning {
   label: string;
   timestamp: string;
   eventTime: string;
+  /** Speed at event capture (kph) — preferred over live GPS for overspeed. */
+  speed?: number | null;
+  speedLimit?: number | null;
+}
+
+const OVERSPEED_LABELS = new Set(['Overspeeding', 'Overspeed Tiered']);
+
+function isOverspeedWarning(w: Warning) {
+  return OVERSPEED_LABELS.has(w.label);
+}
+
+function warningHasSpeed(w: Warning) {
+  return w.speed != null && Number.isFinite(Number(w.speed));
+}
+
+/** Newest overspeed warning that carries event-time speed (never live GPS). */
+function pickOverspeedEventWarning(warnings?: Warning[]) {
+  if (!warnings?.length) return null;
+  let best: Warning | null = null;
+  let bestMs = -Infinity;
+  for (const w of warnings) {
+    if (!isOverspeedWarning(w) || !warningHasSpeed(w)) continue;
+    const ms = Date.parse(w.eventTime || w.timestamp || '');
+    const t = Number.isFinite(ms) ? ms : 0;
+    if (!best || t >= bestMs) {
+      best = w;
+      bestMs = t;
+    }
+  }
+  return best;
+}
+
+function hasOverspeedWarning(warnings?: Warning[]) {
+  return !!warnings?.some(isOverspeedWarning);
+}
+
+function formatWarningLine(w: Warning) {
+  const bits = [w.label];
+  if (warningHasSpeed(w)) {
+    bits.push(`${Math.round(Number(w.speed))} km/h at event`);
+  } else if (isOverspeedWarning(w)) {
+    bits.push('speed at event unavailable');
+  }
+  if (w.speedLimit != null && Number.isFinite(Number(w.speedLimit))) {
+    bits.push(`limit ${Math.round(Number(w.speedLimit))} km/h`);
+  }
+  return bits.join(' · ');
 }
 
 interface Vehicle {
@@ -245,7 +292,19 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
       const hasWarning = vehicle.warnings && vehicle.warnings.length > 0;
       const color = hasWarning ? STATUS_COLORS.Warning : STATUS_COLORS[vehicle.status] || STATUS_COLORS.Offline;
       const icon = hasWarning ? createFlagIcon(color) : createCircleIcon(color);
-      const warningLabels = vehicle.warnings?.map(w => w.label).join(', ') || '';
+      const warningLines = vehicle.warnings?.map(formatWarningLine).join('<br/>') || '';
+      const overspeedEvent = pickOverspeedEventWarning(vehicle.warnings);
+      const overspeedPending = !overspeedEvent && hasOverspeedWarning(vehicle.warnings);
+      // Overspeed: event-time speed only. Never fall back to live GPS.
+      const speedText = overspeedEvent
+        ? `${Number(overspeedEvent.speed).toFixed(1)} km/h at event`
+        : overspeedPending
+          ? 'Speed at event unavailable'
+          : `${vehicle.position.speed.toFixed(1)} km/h`;
+      const timeText = overspeedEvent?.eventTime
+        || (overspeedPending
+          ? (vehicle.warnings?.find(isOverspeedWarning)?.eventTime || vehicle.date)
+          : vehicle.date);
 
       const popupContent = `
         <div style="font-family: system-ui, sans-serif; min-width: 200px; padding: 4px;">
@@ -261,8 +320,8 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
           <div style="font-size: 12px; color: #0f172a; margin-bottom: 4px;">${vehicle.assetName}</div>
           <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">${vehicle.transporter}</div>
           <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">📍 ${vehicle.position.address || 'Unknown'}</div>
-          <div style="font-size: 11px; color: #64748b; margin-bottom: ${hasWarning ? '8px' : '0'};">${vehicle.position.speed.toFixed(1)} km/h • ${vehicle.date}</div>
-          ${hasWarning ? `<div style="font-size: 11px; color: #854F0B; background: #fef3c7; padding: 4px 8px; border-radius: 4px;">⚠ ${warningLabels}</div>` : ''}
+          <div style="font-size: 11px; color: #64748b; margin-bottom: ${hasWarning ? '8px' : '0'};">${speedText} • ${timeText}</div>
+          ${hasWarning ? `<div style="font-size: 11px; color: #854F0B; background: #fef3c7; padding: 4px 8px; border-radius: 4px;">⚠ ${warningLines}</div>` : ''}
         </div>
       `;
 

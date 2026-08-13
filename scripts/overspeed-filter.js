@@ -20,15 +20,29 @@ export function isOverspeedCategory(category) {
   return category === 'overspeed';
 }
 
-/** Best available speed (kph) from a MiX active-event payload. */
-export function extractMixEventSpeedKph(e, speedByAsset) {
+/**
+ * Speed (kph) recorded on the MiX event itself at trigger time.
+ * Order: explicit Speed fields → event Position → Value (Road speed) → optional live.
+ * Does NOT use live position unless allowLiveFallback is explicitly true.
+ */
+export function extractMixEventSpeedKph(e, speedByAsset, opts = {}) {
+  const allowLiveFallback = opts.allowLiveFallback === true;
   const candidates = [
     e?.Speed,
     e?.SpeedKilometresPerHour,
     e?.Position?.SpeedKilometresPerHour,
-    e?.AssetId != null && speedByAsset ? speedByAsset.get(String(e.AssetId)) : null,
+    // MiX overspeed ValueName is often "Road speed"
+    e?.Value,
+    e?.EventValue,
+    e?.ValueNumber,
+    // Last resort only when explicitly allowed — not "speed at event call".
+    allowLiveFallback && e?.AssetId != null && speedByAsset
+      ? speedByAsset.get(String(e.AssetId))
+      : null,
   ];
   for (const c of candidates) {
+    // Skip null/undefined/'' — Number(null)===0 would falsely look like a real speed.
+    if (c == null || c === '') continue;
     const n = Number(c);
     if (Number.isFinite(n) && n >= 0 && n < 300) return n;
   }
@@ -51,9 +65,13 @@ export function qualifiesAsOverspeed(labelOrCategory, speedKph, opts = {}) {
   return Number(speedKph) >= OVERSPEED_MIN_KPH;
 }
 
-/** Drop under-threshold overspeed rows from a list (label + optional speed). */
-export function filterOverspeedEvents(rows, getLabel, getSpeed) {
+/**
+ * Drop under-threshold / unknown-speed overspeed rows.
+ * Matches src/lib/overspeedFilter.ts — requireSpeed is always on.
+ * @param {Array<{ label?: string|null, speed?: number|null }>} rows
+ */
+export function filterOverspeedEvents(rows) {
   return (rows || []).filter(row =>
-    qualifiesAsOverspeed(getLabel(row), getSpeed(row)),
+    qualifiesAsOverspeed(row.label, row.speed ?? null, { requireSpeed: true }),
   );
 }

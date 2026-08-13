@@ -210,7 +210,7 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
   kpiEvents.forEach(e => {
     if (e.category === KPI_CATEGORY.HARSH_BRAKING) pushBehaviour(e, KPI_CATEGORY.HARSH_BRAKING);
     else if (e.category === KPI_CATEGORY.OVERSPEED) {
-      if (!qualifiesAsOverspeed(e.label || e.category, e.speed)) return;
+      if (!qualifiesAsOverspeed(e.label || e.category, e.speed, { requireSpeed: true })) return;
       pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
     }
   });
@@ -230,7 +230,7 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
     };
     if (e.label === 'Harsh Braking') pushBehaviour(e, KPI_CATEGORY.HARSH_BRAKING);
     else if (e.label === 'Overspeeding' || e.label === 'Overspeed Tiered') {
-      if (!qualifiesAsOverspeed(e.label, e.speed)) return;
+      if (!qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: true })) return;
       pushBehaviour(e, KPI_CATEGORY.OVERSPEED);
     }
   });

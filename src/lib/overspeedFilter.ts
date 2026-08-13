@@ -1,6 +1,7 @@
 /**
  * Overspeed qualification — absolute floor so road-limit / tiered events
  * below 60 kph are never treated as overspeeding.
+ * Keep in sync with scripts/overspeed-filter.js (requireSpeed on list filter).
  */
 
 export const OVERSPEED_MIN_KPH = 60;

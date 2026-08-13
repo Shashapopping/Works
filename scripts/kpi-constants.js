@@ -65,7 +65,13 @@ export function serializeKpiLogEntry(e, driver) {
     eventTime: e.EventDateTime ?? e.StartDateTime ?? null,
     endTime: e.EndDateTime ?? null,
     value: e.Value ?? e.EventValue ?? null,
-    speed: e.Speed ?? e.SpeedKilometresPerHour ?? e.Position?.SpeedKilometresPerHour ?? null,
+    speed: e.Speed
+      ?? e.SpeedKilometresPerHour
+      ?? e.Position?.SpeedKilometresPerHour
+      ?? e.Value
+      ?? e.EventValue
+      ?? e.ValueNumber
+      ?? null,
     latitude: e.Position?.Latitude ?? null,
     longitude: e.Position?.Longitude ?? null,
   });

@@ -165,7 +165,14 @@ export interface Vehicle {
   status: string;
   date: string;
   panic: boolean;
-  warnings?: { label: string; timestamp: string }[];
+  warnings?: {
+    label: string;
+    timestamp: string;
+    eventId?: string;
+    eventTime?: string;
+    speed?: number | null;
+    speedLimit?: number | null;
+  }[];
   position?: { latitude: number; longitude: number; address?: string };
   fuelLevel?: { level: number; timestamp?: string } | null;
 }

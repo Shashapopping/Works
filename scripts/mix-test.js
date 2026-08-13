@@ -706,7 +706,8 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
     let skippedOverspeed = 0;
     warningEvents.forEach(e => {
       const label = WARNING_EVENT_TYPES[e.EventTypeId];
-      const speed = extractMixEventSpeedKph(e, speedByAsset);
+      // Event-payload speed only (at the moment MiX fired) — never live GPS.
+      const speed = extractMixEventSpeedKph(e, speedByAsset, { allowLiveFallback: false });
       const speedLimit = e.SpeedLimit ?? e.ZoneSpeedLimit ?? e.SpeedLimitKilometresPerHour ?? null;
       if (isOverspeedLabel(label) && !qualifiesAsOverspeed(label, speed, { requireSpeed: true })) {
         skippedOverspeed += 1;
@@ -748,6 +749,8 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
             label,
             timestamp: new Date().toISOString(),
             eventTime: e.EventDateTime,
+            speed: speed ?? null,
+            speedLimit: speedLimit ?? null,
           });
         }
       }
@@ -808,7 +811,7 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
       try {
         const row = JSON.parse(line);
         if (row.category === 'overspeed') {
-          const speed = row.speed ?? extractMixEventSpeedKph(e, speedByAsset);
+          const speed = row.speed ?? extractMixEventSpeedKph(e, speedByAsset, { allowLiveFallback: false });
           row.speed = speed;
           if (!qualifiesAsOverspeed(row.label || row.category, speed, { requireSpeed: true })) {
             skippedOverspeed += 1;
