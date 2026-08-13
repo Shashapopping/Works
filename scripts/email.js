@@ -104,6 +104,63 @@ export async function sendAccountInviteEmail({ to, name, password, roleName }) {
 }
 
 /**
+ * Confirm first password change after admin-provisioned temp password.
+ * @returns {{ sent: boolean, error?: string, id?: string }}
+ */
+export async function sendPasswordChangedConfirmationEmail({ to, name }) {
+  const resend = getClient();
+  if (!resend) {
+    return { sent: false, error: 'RESEND_API_KEY not configured' };
+  }
+
+  const url = loginUrl();
+  const safeName = name || 'there';
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: fromAddress(),
+      to: [to],
+      subject: 'Password updated — HBM Fleet Intelligence',
+      html: `
+        <div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.5;color:#0f172a;max-width:520px">
+          <h2 style="margin:0 0 12px;font-size:18px">Password changed successfully</h2>
+          <p style="margin:0 0 12px">Hi ${escapeHtml(safeName)},</p>
+          <p style="margin:0 0 12px">
+            Your HBM Fleet Intelligence password was updated and you are signed in.
+            Use your new password for future sign-ins.
+          </p>
+          <p style="margin:0 0 20px">
+            <a href="${escapeHtml(url)}" style="display:inline-block;background:#0078D4;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600">
+              Open dashboard
+            </a>
+          </p>
+          <p style="margin:0;font-size:12px;color:#64748b">
+            If you did not change your password, contact your fleet administrator immediately.
+          </p>
+        </div>
+      `,
+      text: [
+        `Hi ${safeName},`,
+        '',
+        'Your HBM Fleet Intelligence password was updated and you are signed in.',
+        `Open dashboard: ${url}`,
+        '',
+        'If you did not change your password, contact your fleet administrator immediately.',
+      ].join('\n'),
+    });
+
+    if (error) {
+      console.warn('Resend password-confirm failed:', error);
+      return { sent: false, error: error.message || String(error) };
+    }
+    return { sent: true, id: data?.id };
+  } catch (e) {
+    console.warn('Resend password-confirm error:', e?.message || e);
+    return { sent: false, error: e?.message || 'Email send failed' };
+  }
+}
+
+/**
  * Calm Resend-style automated report email.
  * @returns {{ sent: boolean, error?: string, id?: string }}
  */

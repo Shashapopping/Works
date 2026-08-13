@@ -292,7 +292,15 @@ export function listUsers({ scope = 'client' } = {}) {
   return mapped.filter(u => !u.isOrganisational);
 }
 
-export async function createUser({ email, name, password, roleId, actorId, isOrganisational = false }) {
+export async function createUser({
+  email,
+  name,
+  password,
+  roleId,
+  actorId,
+  isOrganisational = false,
+  sendInviteEmail = true,
+}) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const displayName = String(name || '').trim();
   const role = String(roleId || '').trim();
@@ -337,19 +345,21 @@ export async function createUser({ email, name, password, roleId, actorId, isOrg
   const created = publicUser(row, getRolePermissions(role));
 
   let emailResult = { sent: false };
-  try {
-    const { sendAccountInviteEmail } = await import('./email.js');
-    emailResult = await sendAccountInviteEmail({
-      to: normalizedEmail,
-      name: displayName,
-      password: pwd,
-      roleName: created.roleName,
-    });
-    if (emailResult.sent) {
-      writeAudit(actorId, 'user.invite_email', id, { email: normalizedEmail, resendId: emailResult.id });
+  if (sendInviteEmail) {
+    try {
+      const { sendAccountInviteEmail } = await import('./email.js');
+      emailResult = await sendAccountInviteEmail({
+        to: normalizedEmail,
+        name: displayName,
+        password: pwd,
+        roleName: created.roleName,
+      });
+      if (emailResult.sent) {
+        writeAudit(actorId, 'user.invite_email', id, { email: normalizedEmail, resendId: emailResult.id });
+      }
+    } catch (e) {
+      emailResult = { sent: false, error: e?.message || 'Email send failed' };
     }
-  } catch (e) {
-    emailResult = { sent: false, error: e?.message || 'Email send failed' };
   }
 
   return { ...created, emailSent: !!emailResult.sent, emailError: emailResult.error || null };
@@ -443,10 +453,39 @@ export async function changePassword(userId, currentPassword, newPassword) {
   const ok = await bcrypt.compare(String(currentPassword || ''), user.password_hash);
   if (!ok) throw Object.assign(new Error('Current password is incorrect'), { status: 401 });
 
+  const wasForcedChange = !!user.must_change_password;
   const hash = await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS);
   db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?')
     .run(hash, userId);
   writeAudit(userId, 'user.password_change', userId, null);
+
+  // First sign-in flow: temp password → change while signed in → confirm by email once.
+  if (wasForcedChange) {
+    try {
+      const { sendPasswordChangedConfirmationEmail } = await import('./email.js');
+      const emailResult = await sendPasswordChangedConfirmationEmail({
+        to: user.email,
+        name: user.name,
+      });
+      if (emailResult.sent) {
+        writeAudit(userId, 'user.password_change_confirm_email', userId, {
+          email: user.email,
+          resendId: emailResult.id,
+        });
+      } else if (emailResult.error) {
+        writeAudit(userId, 'user.password_change_confirm_email_failed', userId, {
+          email: user.email,
+          error: emailResult.error,
+        });
+      }
+    } catch (e) {
+      writeAudit(userId, 'user.password_change_confirm_email_failed', userId, {
+        email: user.email,
+        error: e?.message || 'Email send failed',
+      });
+    }
+  }
+
   return { ok: true };
 }
 
