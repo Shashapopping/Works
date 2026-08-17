@@ -266,7 +266,11 @@ const WARNING_EVENT_TYPES = {
   '4750800303282680186': 'Harsh Braking',
   '6454149451280645233': 'Harsh Acceleration',
   '-3890646499157906515': 'Overspeeding',
+  // Canonical MiX "Over speeding - TIERED" + alternate "Speeding - Tiered"
   '-4596269900191457380': 'Overspeed Tiered',
+  '-5725594963738269514': 'Overspeed Tiered',
+  // Road-limit overspeed (lives in KPI; promote into Safety events when ≥60 kph)
+  '-2864371101042705250': 'Road Speed Overspeeding',
   '4291175374538259638': 'Harsh Cornering',
 };
 

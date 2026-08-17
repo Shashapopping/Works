@@ -328,7 +328,33 @@ export function clearAcknowledged() {
   getDb().prepare('DELETE FROM acknowledged').run();
 }
 
+/**
+ * Safety UI reads `events`, while Road Speed / Tiered often land only in `kpi_events`.
+ * Promote qualifying rows (≥60 kph) into `events` so Behaviour Profile can see them.
+ */
+let lastOverspeedPromoteMs = 0;
+export function promoteKpiOverspeedVariantsToEvents() {
+  const now = Date.now();
+  if (now - lastOverspeedPromoteMs < 60_000) return 0;
+  lastOverspeedPromoteMs = now;
+  const database = getDb();
+  const result = database.prepare(`
+    INSERT OR IGNORE INTO events
+      (event_id, timestamp, asset_id, driver_id, driver_name, driver_phone, event_type, label,
+       event_time, received_at, latitude, longitude, address, speed, speed_limit, type)
+    SELECT
+      event_id, timestamp, asset_id, driver_id, driver_name, NULL, event_type_id, label,
+      event_time, timestamp, latitude, longitude, NULL, speed, NULL, 'warning'
+    FROM kpi_events
+    WHERE label IN ('Road Speed Overspeeding', 'Overspeed Tiered')
+      AND speed IS NOT NULL
+      AND speed >= 60
+  `).run();
+  return result.changes || 0;
+}
+
 export function getAllEvents(filters = {}) {
+  promoteKpiOverspeedVariantsToEvents();
   const database = getDb();
   const { from, to, types, limit } = filters;
 

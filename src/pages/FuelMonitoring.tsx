@@ -10,6 +10,7 @@ import FuelChart, {
   type QuarrySiteKey,
 } from '../components/FuelChart';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
+import { SkelValue } from '../components/data/DataBusy';
 
 const STATUS_COLOR: Record<string, string> = {
   Moving: '#16a34a',
@@ -59,6 +60,7 @@ export default function FuelMonitoring() {
   const [fuelEvents, setFuelEvents] = useState<ConsumptionData | null>(
     () => peekFuelConsumption(eventsUrl),
   );
+  const [eventsLoading, setEventsLoading] = useState(() => !peekFuelConsumption(eventsUrl));
 
   const quarryVehicles = useMemo(
     () => (vehicles as QuarryVehicle[]).filter(v => QUARRY_SITE_KEYS.includes((v.zone || '').toUpperCase() as QuarrySiteKey)),
@@ -103,15 +105,23 @@ export default function FuelMonitoring() {
   useEffect(() => {
     let cancelled = false;
     const url = `/api/fuel/consumption?period=${eventsPeriod}`;
+    setEventsLoading(true);
+    const cached = peekFuelConsumption(url);
+    if (cached) setFuelEvents(cached);
+    else setFuelEvents(null);
+
     const load = async (silent = false) => {
       if (!silent) {
-        const cached = peekFuelConsumption(url);
-        if (cached && !cancelled) setFuelEvents(cached);
+        const hit = peekFuelConsumption(url);
+        if (hit && !cancelled) setFuelEvents(hit);
       }
       try {
         const next = await fetchFuelConsumptionCached(url, { force: silent });
         if (next && !cancelled) setFuelEvents(next);
-      } catch { /* retain prior data */ }
+      } catch { /* retain prior on silent poll */ }
+      finally {
+        if (!cancelled && !silent) setEventsLoading(false);
+      }
     };
     void load(false);
     const id = setInterval(() => void load(true), 60_000);
@@ -315,7 +325,9 @@ export default function FuelMonitoring() {
                           )}
                         </td>
                         <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>
-                          {events?.refuelCount ? (
+                          {eventsLoading ? (
+                            <SkelValue />
+                          ) : events?.refuelCount ? (
                             <button
                               type="button"
                               onClick={e => { e.stopPropagation(); openFuelDetail(v); }}

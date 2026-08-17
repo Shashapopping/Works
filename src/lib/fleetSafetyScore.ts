@@ -2,11 +2,14 @@
  * Shared Fleet Safety Score — used by Home, Safety, Sidebar, Tankers.
  * Editable via Settings → Safety Score (localStorage).
  *
- * Formula: % of leading-fleet target rate
+ * Formula (attainment vs leading-fleet target rate):
  *   actualRate = weighted points / vehicles × 100  (last 30 days)
- *   score = min(100, 100 × leadingRate / actualRate)
- * Match or beat the leading rate → 100.
+ *   score = min(100, SCORE_AT_AIM × leadingRate / actualRate)
+ * Match the leading rate → SCORE_AT_AIM (85). Beat it → climb toward 100.
  */
+
+/** Score awarded when your weighted rate exactly equals the leading aim. */
+export const FLEET_SCORE_AT_AIM = 85;
 
 export const FLEET_SCORE_CONFIG_KEY = 'bpl_fleet_score_config';
 export const FLEET_SCORE_CONFIG_EVENT = 'bpl-fleet-score-config';
@@ -22,8 +25,8 @@ export interface FleetScoreConfig {
   weights: FleetScoreWeights;
   /**
    * Leading target for Nigeria / heavy industrial fleets: max weighted IVMS
-   * points per 100 vehicles in 30 days. Match or beat → score 100.
-   * Calibrated above EU/US award rates for local road & quarry conditions.
+   * points per 100 vehicles in 30 days. Match the aim → score 85; beat it → up to 100.
+   * Default 220 aligns with current heavy-ops MiX rates.
    */
   leadingRatePer100: number;
   /** Minimum score after calculation (default 0). */
@@ -46,7 +49,7 @@ export const DEFAULT_FLEET_SCORE_CONFIG: FleetScoreConfig = {
     overspeeding: 1.5,
     harshCornering: 1,
   },
-  leadingRatePer100: 240,
+  leadingRatePer100: 220,
   scoreFloor: 0,
   bandGood: 80,
   bandAttention: 60,
@@ -91,8 +94,8 @@ export function loadFleetScoreConfig(): FleetScoreConfig {
     const raw = localStorage.getItem(FLEET_SCORE_CONFIG_KEY);
     if (!raw) return { ...DEFAULT_FLEET_SCORE_CONFIG, weights: { ...DEFAULT_FLEET_SCORE_CONFIG.weights } };
     const parsed = JSON.parse(raw) as Partial<FleetScoreConfig> & { leadingRatePer100?: number };
-    // Migrate old global "award" default (8) → Nigeria-calibrated leading target
-    if (parsed.leadingRatePer100 === 8) {
+    // Migrate prior defaults (EU award 8, then NG 240) → current leading aim 220
+    if (parsed.leadingRatePer100 === 8 || parsed.leadingRatePer100 === 240) {
       const migrated = normalizeFleetScoreConfig({
         ...parsed,
         leadingRatePer100: DEFAULT_FLEET_SCORE_CONFIG.leadingRatePer100,
@@ -119,7 +122,10 @@ export function eventWeight(label: string | null | undefined, config: FleetScore
     case 'Harsh Braking': return w.harshBraking;
     case 'Harsh Acceleration': return w.harshAcceleration;
     case 'Overspeeding':
-    case 'Overspeed Tiered': return w.overspeeding;
+    case 'Overspeed Tiered':
+    case 'Road Speed Overspeeding':
+    case 'Overspeeding — Excessive Speed':
+      return w.overspeeding;
     case 'Harsh Cornering': return w.harshCornering;
     default: return 0;
   }
@@ -150,7 +156,7 @@ export function ratePer100Vehicles(
 
 /**
  * Fleet Safety Score vs leading-fleet target.
- * Match or beat leadingRatePer100 → 100; worse rates scale down proportionally.
+ * Match leadingRatePer100 → 85; beat it → up to 100; worse rates scale down from 85.
  */
 export function scoreFromEvents(
   events: ScoreEvent[],
@@ -159,10 +165,10 @@ export function scoreFromEvents(
 ): number {
   const actualRate = ratePer100Vehicles(events, vehicleCount, config);
   const leading = Math.max(config.leadingRatePer100, 0.1);
-  if (actualRate <= leading) {
+  if (actualRate <= 0) {
     return 100;
   }
-  const pct = Math.round((100 * leading) / actualRate);
+  const pct = Math.round((FLEET_SCORE_AT_AIM * leading) / actualRate);
   return Math.max(config.scoreFloor, Math.min(100, pct));
 }
 

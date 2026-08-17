@@ -33,6 +33,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import LicenseUpgradeModal from '../components/LicenseUpgradeModal';
 import { clientName as brandClientName, productName } from '../lib/branding';
+import { SkelTable, SkelValue } from '../components/data/DataBusy';
 
 type Tab = 'general' | 'thresholds' | 'roles' | 'users' | 'dev';
 
@@ -189,7 +190,7 @@ function ThresholdSettings() {
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
           Your Fleet Safety Score is <strong style={{ color: 'var(--cd-text)' }}>how close you are to leading fleets in similar conditions</strong>.
-          Match or beat this rate → score 100. Double the rate → score 50.
+          Match this rate → score <strong style={{ color: 'var(--cd-text)' }}>85</strong>. Beat it to climb toward 100.
         </div>
         <div style={{ marginBottom: 16 }}>
           <label style={labelStyle}>Leading fleets aim for (per 100 vehicles / 30 days)</label>
@@ -206,17 +207,17 @@ function ThresholdSettings() {
             <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>weighted IVMS points</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 6, lineHeight: 1.45 }}>
-            Default <strong>240</strong> — best / leading for Nigerian quarry & heavy-haul (road quality, mixed traffic,
-            Africa mining mobile-equipment risk). Stricter EU/US award rates (~8) made live MiX scores look like ~2%;
-            this scale keeps a healthy fleet around <strong>60+</strong> while still rewarding improvement toward leading.
+            Default <strong>220</strong> — leading aim for Nigerian quarry & heavy-haul. Matching 220 scores <strong>85</strong>
+            (industry-style leading band). Beating the aim raises the score toward 100; worse rates fall below 85.
           </div>
         </div>
         <div style={{
           fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.5,
           background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 8, padding: '10px 12px',
         }}>
-          Example: leading target <strong style={{ color: 'var(--cd-text)' }}>240</strong>, your rate is <strong style={{ color: 'var(--cd-text)' }}>400</strong>
-          → score = 100 × 240 ÷ 400 = <strong style={{ color: 'var(--cd-text)' }}>60</strong>.
+          Example: aim <strong style={{ color: 'var(--cd-text)' }}>220</strong>, your rate <strong style={{ color: 'var(--cd-text)' }}>220</strong>
+          → score = 85 × 220 ÷ 220 = <strong style={{ color: 'var(--cd-text)' }}>85</strong>.
+          Rate <strong style={{ color: 'var(--cd-text)' }}>187</strong> → ~100; rate <strong style={{ color: 'var(--cd-text)' }}>400</strong> → ~47.
         </div>
       </div>
 
@@ -747,7 +748,14 @@ function RoleSettings() {
   const groups = [...new Set(ACCESS_CATALOG.map(a => a.group))];
 
   if (loading) {
-    return <div style={{ fontSize: 13, color: 'var(--cd-text-muted)' }}>Loading roles…</div>;
+    return (
+      <div className="bpl-card" style={{ padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 12, fontFamily: 'var(--cd-font-display)' }}>
+          Roles
+        </div>
+        <SkelTable rows={6} />
+      </div>
+    );
   }
 
   if (loadError) {
@@ -1071,7 +1079,22 @@ function UserSettings() {
     }
   };
 
-  if (loading) return <div style={{ fontSize: 13, color: 'var(--cd-text-muted)' }}>Loading users…</div>;
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="bpl-card" style={{ padding: '14px 18px' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 8 }}>User seats</div>
+          <SkelValue wide />
+        </div>
+        <div className="bpl-card" style={{ padding: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 12, fontFamily: 'var(--cd-font-display)' }}>
+            People
+          </div>
+          <SkelTable rows={5} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

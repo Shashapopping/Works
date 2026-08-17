@@ -19,6 +19,7 @@ import {
 } from '../lib/consequenceScore';
 import { brandLabel, eventLocationLabel } from '../lib/branding';
 import MockNamesBadge from '../components/MockNamesBadge';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useTableSort } from '../hooks/useTableSort';
@@ -64,7 +65,7 @@ function formatTime(iso: string) {
   } catch { return iso; }
 }
 
-function EventsTab({ events }: { events: LogEntry[] }) {
+function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
   const [searchParams] = useSearchParams();
   const filterParam = searchParams.get('filter');
   const initialFilter: EventFilter =
@@ -136,7 +137,9 @@ function EventsTab({ events }: { events: LogEntry[] }) {
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {filtered.length === 0 ? (
+        {busy ? (
+          <div style={{ padding: 8 }}><SkelTable rows={8} /></div>
+        ) : filtered.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: 13 }}>
             No events match your filters
           </div>
@@ -211,7 +214,7 @@ function EventsTab({ events }: { events: LogEntry[] }) {
   );
 }
 
-function ByDriverTab({ events }: { events: LogEntry[] }) {
+function ByDriverTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
   const driverMap = useMemo(() => {
     const m = new Map<string, { name: string; counts: Record<string, number>; total: number }>();
     events.forEach(e => {
@@ -244,7 +247,9 @@ function ByDriverTab({ events }: { events: LogEntry[] }) {
           </tr>
         </thead>
         <tbody>
-          {driverMap.slice(0, 30).map((d, i) => {
+          {busy ? (
+            <tr><td colSpan={8} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
+          ) : driverMap.slice(0, 30).map((d, i) => {
             const risk = d.total > 10 ? 'HIGH' : d.total > 5 ? 'MEDIUM' : 'LOW';
             const riskColor = risk === 'HIGH' ? '#CC0000' : risk === 'MEDIUM' ? '#d97706' : '#16a34a';
             return (
@@ -277,19 +282,22 @@ function ByDriverTab({ events }: { events: LogEntry[] }) {
 
 type TrackingSortKey = 'driver' | 'vehicle' | 'score';
 
-function PatternsTab({ events }: { events: LogEntry[] }) {
+function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: boolean }) {
   const { user } = useAuth();
   const loggedInAs = user?.name || user?.email || 'You';
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
+  const [tripLoading, setTripLoading] = useState(true);
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [pendingLogKey, setPendingLogKey] = useState<string | null>(null);
   const [responseNote, setResponseNote] = useState('');
   const [, setLogRefreshTick] = useState(0);
+  const busy = eventsBusy || tripLoading;
 
   useEffect(() => {
     let cancelled = false;
+    setTripLoading(true);
     (async () => {
       try {
         const [cur, last] = await Promise.all([
@@ -316,6 +324,9 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
         }
         if (!cancelled) setTripDrivers(Array.from(map.values()));
       } catch { /* keep empty */ }
+      finally {
+        if (!cancelled) setTripLoading(false);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -444,7 +455,7 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
           />
         </div>
         <div style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginLeft: 'auto' }}>
-          {sorted.length} driver{sorted.length === 1 ? '' : 's'}
+          {busy ? <SkelValue /> : `${sorted.length} driver${sorted.length === 1 ? '' : 's'}`}
         </div>
       </div>
 
@@ -473,7 +484,11 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.length === 0 ? (
+            {busy ? (
+              <tr>
+                <td colSpan={7} style={{ padding: 12 }}><SkelTable rows={6} /></td>
+              </tr>
+            ) : sorted.length === 0 ? (
               <tr>
                 <td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
                   No Amber, Yellow, or Red drivers in this date range
@@ -629,7 +644,7 @@ function PatternsTab({ events }: { events: LogEntry[] }) {
 
 export default function IncidentIntelligence({ tab }: { tab: Tab }) {
   const [dateRange, setDateRange] = useState<DateRange>('7days');
-  const { events } = useFleet();
+  const { events, eventsLoading } = useFleet();
 
   const filtered = useMemo(
     () => events.filter(e => getDateFilter(e, dateRange)),
@@ -696,14 +711,16 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
         {summaryKpis.map(s => (
           <div key={s.label} className="bpl-kpi-card">
             <div className="bpl-kpi-label">{s.label}</div>
-            <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>{s.value}</div>
+            <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
+              {eventsLoading ? <SkelValue wide /> : s.value}
+            </div>
           </div>
         ))}
       </div>
 
-      {tab === 'events' && <EventsTab events={filtered} />}
-      {tab === 'by-driver' && <ByDriverTab events={filtered} />}
-      {tab === 'patterns' && <PatternsTab events={filtered} />}
+      {tab === 'events' && <EventsTab events={filtered} busy={eventsLoading} />}
+      {tab === 'by-driver' && <ByDriverTab events={filtered} busy={eventsLoading} />}
+      {tab === 'patterns' && <PatternsTab events={filtered} eventsBusy={eventsLoading} />}
     </div>
   );
 }

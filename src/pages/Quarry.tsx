@@ -15,6 +15,7 @@ import {
   segmentVehicles, segmentTripAssets, quarrySiteLabel,
   countByStatus, STATUS_COLOR, utilizationPct,
 } from '../lib/segmentMetrics';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 /** HBM Availability CSV import window (source=excel in fleet.db). */
 const HAUL_HISTORY = { from: '2026-01-01', to: '2026-07-01' };
@@ -143,7 +144,7 @@ export default function Quarry() {
       <div className="bpl-kpi-grid">
         <KpiCard
           label="Active Haulers"
-          value={historyLoading ? '…' : activeHaulers}
+          value={historyLoading ? <SkelValue /> : activeHaulers}
           sub={`${fleet.length} quarry assets tracked`}
           color="#0d9488"
           icon={Truck}
@@ -159,7 +160,7 @@ export default function Quarry() {
         />
         <KpiCard
           label="Haul Distance"
-          value={historyLoading ? '…' : `${distanceKm.toLocaleString()} km`}
+          value={historyLoading ? <SkelValue wide /> : `${distanceKm.toLocaleString()} km`}
           sub="Availability window (CSV)"
           color="#059669"
           icon={Mountain}
@@ -212,8 +213,10 @@ export default function Quarry() {
                 <div style={{ fontSize: 11, fontWeight: 600, color }}>{siteUtil}% util</div>
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
-                {historyLoading ? '…' : siteKm.toLocaleString()}
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--cd-text-muted)', marginLeft: 6 }}>km (CSV)</span>
+                {historyLoading ? <SkelValue wide /> : siteKm.toLocaleString()}
+                {!historyLoading && (
+                  <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--cd-text-muted)', marginLeft: 6 }}>km (CSV)</span>
+                )}
               </div>
               <div style={{ height: 6, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden', marginTop: 12 }}>
                 <div style={{ height: '100%', width: `${siteUtil}%`, background: color, borderRadius: 99 }} />
@@ -221,7 +224,7 @@ export default function Quarry() {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 18px', marginTop: 14, fontSize: 12, color: 'var(--cd-text-muted)' }}>
                 <span><strong style={{ color: 'var(--cd-text)' }}>{list.length}</strong> assets</span>
                 <span><strong style={{ color: '#16a34a' }}>{siteMoving}</strong> hauling</span>
-                <span><strong style={{ color }}>{fuelLoading ? '…' : Math.round(fuel.liters).toLocaleString()}</strong> L fuel</span>
+                <span><strong style={{ color }}>{fuelLoading ? <SkelValue /> : Math.round(fuel.liters).toLocaleString()}</strong> L fuel</span>
                 <span><strong style={{ color: 'var(--cd-text)' }}>{probes}</strong> probes live</span>
               </div>
             </div>
@@ -249,9 +252,11 @@ export default function Quarry() {
                 </tr>
               </thead>
               <tbody>
-                {leaderboard.length === 0 ? (
+                {historyLoading ? (
+                  <tr><td colSpan={5} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
+                ) : leaderboard.length === 0 ? (
                   <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
-                    {historyLoading ? 'Loading haul history…' : 'No haul distance in Availability window'}
+                    No haul distance in Availability window
                   </td></tr>
                 ) : leaderboard.map((row, i) => {
                   const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
@@ -311,7 +316,7 @@ export default function Quarry() {
               Trip fuel (est.)
             </div>
             <div style={{ fontSize: 32, fontWeight: 700, color: '#0d9488', fontFamily: 'var(--cd-font-display)', lineHeight: 1.1, marginTop: 4 }}>
-              {fuelLoading && fuelSummary.fuel <= 0 ? '…' : fmtL(fuelSummary.fuel)}
+              {fuelLoading && fuelSummary.fuel <= 0 ? <SkelValue wide /> : fmtL(fuelSummary.fuel)}
             </div>
             <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 6 }}>
               {fuelSummary.distance > 0
@@ -351,7 +356,7 @@ export default function Quarry() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 5 }}>
                       <span style={{ fontWeight: 600, color: 'var(--cd-text)' }}>{QUARRY_SITE_LABELS[zone]}</span>
                       <span style={{ color: 'var(--cd-text-muted)' }}>
-                        {fuelLoading && row.liters <= 0 ? '…' : `${Math.round(row.liters).toLocaleString()} L`}
+                        {fuelLoading && row.liters <= 0 ? <SkelValue /> : `${Math.round(row.liters).toLocaleString()} L`}
                       </span>
                     </div>
                     <div style={{ height: 7, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden' }}>

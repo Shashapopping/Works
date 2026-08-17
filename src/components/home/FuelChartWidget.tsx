@@ -17,6 +17,7 @@ import {
   peekFuelConsumption,
   peekFuelHistory,
 } from '../../hooks/useFuelConsumption';
+import { DataRegion } from '../data/DataBusy';
 
 type FuelPeriod = PeriodValue;
 
@@ -185,15 +186,15 @@ export default function FuelChartWidget() {
   useEffect(() => {
     let cancelled = false;
     const url = historyUrl(period, customRange);
+    setLoading(true);
     const cached = peekFuelHistory<FuelSeries[]>(url);
     if (cached) {
       setAllSeries(cached.map(s => ({
         ...s,
         data: s.data.map(pt => ({ ...pt, level: Math.max(0, pt.level) })),
       })));
-      setLoading(false);
     } else {
-      setLoading(true);
+      setAllSeries([]);
     }
 
     const pull = async (silent = false) => {
@@ -205,7 +206,7 @@ export default function FuelChartWidget() {
           data: s.data.map(pt => ({ ...pt, level: Math.max(0, pt.level) })),
         })));
       } catch {
-        /* keep prior */
+        /* keep prior on silent poll failure */
       } finally {
         if (!cancelled && !silent) setLoading(false);
       }
@@ -325,45 +326,45 @@ export default function FuelChartWidget() {
         </div>
 
         <div className="bpl-fuel-chart-area">
-          {loading && chartData.length === 0 ? (
-            <div className="bpl-fuel-chart-empty">Loading fuel data…</div>
-          ) : chartData.length === 0 ? (
-            <div className="bpl-fuel-chart-empty">No quarry probe readings in this period</div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="fuelGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={color} stopOpacity={0.3} />
-                    <stop offset="100%" stopColor={color} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
-                  axisLine={false}
-                  tickLine={false}
-                  interval={period === 'month' ? 4 : period === 'day' ? 3 : 2}
-                />
-                <YAxis
-                  tickFormatter={v => `${v}L`}
-                  tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={40}
-                  allowDecimals={false}
-                  tickCount={5}
-                  domain={['auto', 'auto']}
-                />
-                <Tooltip
-                  contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }}
-                  formatter={(value: number) => [`${Math.round(value).toLocaleString()} L`, 'Fuel level']}
-                  labelFormatter={label => String(label)}
-                />
-                <Area type="monotone" dataKey="level" stroke={color} fill="url(#fuelGrad)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
+          <DataRegion busy={loading} variant="chart" tall label="Loading fuel data">
+            {chartData.length === 0 ? (
+              <div className="bpl-fuel-chart-empty">No quarry probe readings in this period</div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="fuelGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={color} stopOpacity={0.3} />
+                      <stop offset="100%" stopColor={color} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
+                    axisLine={false}
+                    tickLine={false}
+                    interval={period === 'month' ? 4 : period === 'day' ? 3 : 2}
+                  />
+                  <YAxis
+                    tickFormatter={v => `${v}L`}
+                    tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={40}
+                    allowDecimals={false}
+                    tickCount={5}
+                    domain={['auto', 'auto']}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }}
+                    formatter={(value: number) => [`${Math.round(value).toLocaleString()} L`, 'Fuel level']}
+                    labelFormatter={label => String(label)}
+                  />
+                  <Area type="monotone" dataKey="level" stroke={color} fill="url(#fuelGrad)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </DataRegion>
         </div>
       </div>
     </div>

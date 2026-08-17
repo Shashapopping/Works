@@ -10,6 +10,7 @@ import {
 import { useFleet } from '../context/FleetContext';
 import type { LogEntry } from '../context/FleetContext';
 import type { WidgetId } from '../lib/mixEventInsights';
+import { SkelChart, SkelValue } from '../components/data/DataBusy';
 import {
   PRESET_DASHBOARDS,
   TRENDS_CHART_CATALOG,
@@ -344,7 +345,7 @@ function AddDashboardModal({
 }
 
 export default function TrendsPage() {
-  const { events } = useFleet();
+  const { events, eventsLoading } = useFleet();
   const [layout, setLayout] = useState<TrendsLayout>('grid');
   const [period, setPeriod] = useState<TrendsPeriod>('week');
   const [grouping, setGrouping] = useState<TrendsGrouping>('day-of-week');
@@ -626,7 +627,9 @@ export default function TrendsPage() {
                 </button>
               </div>
               <div style={{ padding: '8px 0' }}>
-                {availableLabels.length === 0 ? (
+                {eventsLoading ? (
+                  <div style={{ padding: 16 }}><SkelValue /></div>
+                ) : availableLabels.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: '#9ca3af' }}>No events in this period</div>
                 ) : availableLabels.map(([label, count]) => {
                   const checked = !labelFilter || labelFilter.has(label);
@@ -735,37 +738,52 @@ export default function TrendsPage() {
       )}
 
       <TrendsSharedDataProvider events={deferredFiltered}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: layout === 'list' ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
-            gap: 14,
-            opacity: chartsBusy ? 0.92 : 1,
-            transition: 'opacity 0.15s ease',
-          }}
-        >
-          {extraIds.map((id, index) => (
-            <DeferredTrendsExtraChart
-              key={`${id}:${chartResetKey}`}
-              chartId={id}
-              events={deferredFiltered}
-              scope={scope}
-              grouping={grouping}
-              mountDelay={index * 45}
-              onEditDashboard={openEdit}
-              onRemoveChart={removeChart}
-            />
-          ))}
-        </div>
-
-        {mixIds.length > 0 && (
-          <div style={{ marginTop: extraIds.length ? 14 : 0 }}>
-            <MixEventInsightsGrid events={deferredFiltered} visibleIds={mixIds} grouping={grouping} />
+        {eventsLoading ? (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: layout === 'list' ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+              gap: 14,
+            }}
+          >
+            <div className="bpl-card" style={{ padding: 12 }}><SkelChart tall label="Loading trends" /></div>
+            <div className="bpl-card" style={{ padding: 12 }}><SkelChart tall label="Loading trends" /></div>
           </div>
+        ) : (
+          <>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: layout === 'list' ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+                gap: 14,
+                opacity: chartsBusy ? 0.92 : 1,
+                transition: 'opacity 0.15s ease',
+              }}
+            >
+              {extraIds.map((id, index) => (
+                <DeferredTrendsExtraChart
+                  key={`${id}:${chartResetKey}`}
+                  chartId={id}
+                  events={deferredFiltered}
+                  scope={scope}
+                  grouping={grouping}
+                  mountDelay={index * 45}
+                  onEditDashboard={openEdit}
+                  onRemoveChart={removeChart}
+                />
+              ))}
+            </div>
+
+            {mixIds.length > 0 && (
+              <div style={{ marginTop: extraIds.length ? 14 : 0 }}>
+                <MixEventInsightsGrid events={deferredFiltered} visibleIds={mixIds} grouping={grouping} />
+              </div>
+            )}
+          </>
         )}
       </TrendsSharedDataProvider>
 
-      {active.chartIds.length === 0 && (
+      {active.chartIds.length === 0 && !eventsLoading && (
         <div style={{
           padding: 48, textAlign: 'center', color: '#9ca3af', fontSize: 13,
           border: '1px dashed #d1d5db', borderRadius: 8, background: '#fff',

@@ -64,20 +64,18 @@ export function useFuelConsumption(
 
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) {
+      // Always busy on key change so UI never shows prior-period numbers.
+      setLoading(true);
       const cached = peekFuelConsumption(url);
-      if (cached) {
-        setData(cached);
-        setLoading(false);
-      } else {
-        setLoading(true);
-      }
+      if (cached) setData(cached);
+      else setData(null);
     }
 
     try {
       const next = await fetchFuelConsumptionCached(url, { force: silent });
       if (next) setData(next);
     } catch {
-      /* keep prior */
+      /* keep prior only on silent poll failure */
     } finally {
       if (!silent) setLoading(false);
     }

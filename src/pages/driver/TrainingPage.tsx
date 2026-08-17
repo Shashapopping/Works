@@ -18,6 +18,7 @@ import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import PageControls from '../../components/PageControls';
 import { brandLabel } from '../../lib/branding';
+import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 
 function TrainingRow({ driver, recurring, expanded, onToggle, onChanged }: {
   driver: DriverSnapshot; recurring: { label: string; count: number }; expanded: boolean; onToggle: () => void; onChanged: () => void;
@@ -103,16 +104,19 @@ function TrainingRow({ driver, recurring, expanded, onToggle, onChanged }: {
 }
 
 export default function TrainingPage() {
-  const { events } = useFleet();
+  const { events, eventsLoading } = useFleet();
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
+  const [tripLoading, setTripLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [refreshTick, setRefreshTick] = useState(0);
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
+  const seedBusy = eventsLoading || tripLoading;
 
   useEffect(() => {
     let cancelled = false;
+    setTripLoading(true);
     (async () => {
       try {
         const [cur, last] = await Promise.all([
@@ -134,6 +138,9 @@ export default function TrainingPage() {
         }
         if (!cancelled) setTripDrivers(Array.from(map.values()));
       } catch { /* keep empty */ }
+      finally {
+        if (!cancelled) setTripLoading(false);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -183,11 +190,13 @@ export default function TrainingPage() {
         <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', marginBottom: 20 }}>
           <div className="bpl-kpi-card">
             <div className="bpl-kpi-label">In Training Queue</div>
-            <div className="bpl-kpi-value">{queue.length}</div>
+            <div className="bpl-kpi-value">{seedBusy ? <SkelValue wide /> : queue.length}</div>
           </div>
           <div className="bpl-kpi-card" style={{ borderTop: '3px solid #d97706' }}>
             <div className="bpl-kpi-label">Needs Priority Review</div>
-            <div className="bpl-kpi-value" style={{ color: '#d97706' }}>{queue.filter(r => r.driver.consequence.category !== 'Green').length}</div>
+            <div className="bpl-kpi-value" style={{ color: '#d97706' }}>
+              {seedBusy ? <SkelValue /> : queue.filter(r => r.driver.consequence.category !== 'Green').length}
+            </div>
           </div>
         </div>
 
@@ -206,7 +215,9 @@ export default function TrainingPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {visible.length === 0 ? (
+          {seedBusy ? (
+            <div className="bpl-card" style={{ padding: 16 }}><SkelTable rows={6} /></div>
+          ) : visible.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--cd-text-muted)' }}>
               <Award size={28} style={{ opacity: 0.4, marginBottom: 8 }} />
               <div>No drivers currently qualify for training</div>
@@ -223,7 +234,7 @@ export default function TrainingPage() {
           ))}
         </div>
 
-        {visible.length > 0 && (
+        {!seedBusy && visible.length > 0 && (
           <div className="bpl-card" style={{ marginTop: 10, padding: 0 }}>
             <PageControls
               page={pagination.page} pageCount={pagination.pageCount}

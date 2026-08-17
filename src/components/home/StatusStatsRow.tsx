@@ -9,6 +9,7 @@ import InfoTip from '../InfoTip';
 import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
 import { useHosRecords } from '../../hooks/useHosRecords';
+import { SkelValue } from '../data/DataBusy';
 
 export type MetricPeriod = DistanceRange;
 
@@ -45,7 +46,7 @@ export default function StatusStatsRow({
   navigateOnStatusClick = false,
 }: Props) {
   const navigate = useNavigate();
-  const { metadata, totalDistanceKm } = useFleet();
+  const { metadata, totalDistanceKm, distanceLoading, vehiclesLoading } = useFleet();
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(metricPeriod);
   const { violationCount: hosViolations, loading: hosLoading } = useHosRecords();
 
@@ -100,7 +101,7 @@ export default function StatusStatsRow({
                     <InfoTip text={stat.tip} label={stat.label} />
                   </span>
                   <div className="bpl-status-stat-value" style={{ color: stat.color }}>
-                    {value}
+                    {vehiclesLoading ? <SkelValue /> : value}
                   </div>
                   <div className="bpl-status-stat-sub">
                     {pct !== null ? `${pct}% of fleet` : 'vehicles'}
@@ -126,8 +127,12 @@ export default function StatusStatsRow({
               <div className="bpl-status-stat-copy">
                 <span className="bpl-status-stat-label">Fleet Distance</span>
                 <div className="bpl-status-stat-value" style={{ color: '#8b5cf6' }}>
-                  {totalDistanceKm.toLocaleString()}
-                  <span className="bpl-status-metric-unit">km</span>
+                  {distanceLoading ? <SkelValue wide /> : (
+                    <>
+                      {totalDistanceKm.toLocaleString()}
+                      <span className="bpl-status-metric-unit">km</span>
+                    </>
+                  )}
                 </div>
                 <div className="bpl-status-stat-sub">
                   <select
@@ -162,9 +167,9 @@ export default function StatusStatsRow({
                 </span>
                 <div
                   className="bpl-status-stat-value"
-                  style={{ color: '#CC0000', animation: hosViolations > 0 ? 'pulse 1.5s infinite' : 'none' }}
+                  style={{ color: '#CC0000', animation: !hosLoading && hosViolations > 0 ? 'pulse 1.5s infinite' : 'none' }}
                 >
-                  {hosLoading ? '…' : hosViolations}
+                  {hosLoading ? <SkelValue /> : hosViolations}
                 </div>
                 <div className="bpl-status-stat-sub">4h / 8h / weekly rest</div>
               </div>
@@ -188,8 +193,12 @@ export default function StatusStatsRow({
                   <InfoTip text="Distance covered only by vehicles that reported fuel probe data in this period — pair with Fuel Used for a fair L/km." label="Fuel Distance" />
                 </span>
                 <div className="bpl-status-stat-value" style={{ color: '#0891b2' }}>
-                  {fuelLoading && fuelDistanceKm === 0 ? '…' : fuelDistanceKm.toLocaleString()}
-                  <span className="bpl-status-metric-unit">km</span>
+                  {fuelLoading ? <SkelValue wide /> : (
+                    <>
+                      {fuelDistanceKm.toLocaleString()}
+                      <span className="bpl-status-metric-unit">km</span>
+                    </>
+                  )}
                 </div>
                 <div className="bpl-status-stat-sub">
                   <select
@@ -220,8 +229,12 @@ export default function StatusStatsRow({
               <div className="bpl-status-stat-copy">
                 <span className="bpl-status-stat-label">Fuel Used</span>
                 <div className="bpl-status-stat-value" style={{ color: '#f97316' }}>
-                  {fuelLoading && quarryFuelLiters === 0 ? '…' : quarryFuelLiters.toLocaleString()}
-                  <span className="bpl-status-metric-unit">L</span>
+                  {fuelLoading ? <SkelValue wide /> : (
+                    <>
+                      {quarryFuelLiters.toLocaleString()}
+                      <span className="bpl-status-metric-unit">L</span>
+                    </>
+                  )}
                 </div>
                 <div className="bpl-status-stat-sub">
                   <select

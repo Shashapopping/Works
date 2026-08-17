@@ -10,6 +10,7 @@ import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useTableSort } from '../../hooks/useTableSort';
 import PageControls from '../../components/PageControls';
+import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 
 type VisionRow = FatigueDriverRow & { visionTotal: number };
 type SortKey = 'driverName' | 'distractionCount' | 'phoneDistractionCount' | 'visionTotal' | 'lastEventTime';
@@ -179,7 +180,7 @@ export default function VisionPage() {
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{k.label}</div>
               <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{loading ? '…' : k.value}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{loading ? <SkelValue wide /> : k.value}</div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{k.hint}</div>
           </div>
         ))}
@@ -209,7 +210,7 @@ export default function VisionPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={columns.length + 1} style={{ padding: 20, textAlign: 'center', color: 'var(--cd-text-muted)' }}>Loading…</td></tr>
+              <tr><td colSpan={columns.length + 1} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
             ) : pagination.pageRows.length === 0 ? (
               <tr><td colSpan={columns.length + 1} style={{ padding: 20, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
                 {search.trim() ? `No drivers match "${search.trim()}"` : 'No vision events in this period'}

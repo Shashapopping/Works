@@ -7,6 +7,7 @@ import InfoTip from '../../components/InfoTip';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useHosRecords } from '../../hooks/useHosRecords';
 import { fmtHosMinutes, hosRuleLabels, type HosRecord, type HosStatus } from '../../lib/hos';
+import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 
 type DaySel = 'today' | 'yesterday' | 'custom';
 
@@ -374,7 +375,7 @@ export default function FatigueManagementPage() {
                 animation: k.label === 'Violations' && counts.violation > 0 ? 'pulse 1.5s infinite' : 'none',
               }}
             >
-              {hosLoading ? '…' : k.value}
+              {hosLoading ? <SkelValue /> : k.value}
             </div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{k.hint}</div>
           </div>
@@ -422,11 +423,9 @@ export default function FatigueManagementPage() {
             </tr>
           </thead>
           <tbody>
-            {hosLoading && filtered.length === 0 ? (
+            {hosLoading ? (
               <tr>
-                <td colSpan={headers.length} style={{ textAlign: 'center', padding: 28, color: 'var(--cd-text-muted)' }}>
-                  Loading…
-                </td>
+                <td colSpan={headers.length} style={{ padding: 12 }}><SkelTable rows={5} /></td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>

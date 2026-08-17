@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, ChevronDown, ChevronUp, WifiOff, MapPin } from 'lucide-react';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { SkelValue, SkelTable } from './data/DataBusy';
 
 interface Warning { eventId: string; label: string; timestamp: string; eventTime: string; }
 
@@ -445,15 +446,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
     ? treeGroups.reduce((n, [, sites]) => n + sites.reduce((m, [, vs]) => m + vs.length, 0), 0)
     : flatGroups.reduce((n, [, vs]) => n + vs.length, 0);
 
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px', color: 'var(--cd-text-muted)', fontSize: '14px' }}>
-        Loading fleet data…
-      </div>
-    );
-  }
-
-  const isEmpty = selectedGroup === 'All' ? treeGroups.length === 0 : flatGroups.length === 0;
+  const isEmpty = !loading && (selectedGroup === 'All' ? treeGroups.length === 0 : flatGroups.length === 0);
 
   return (
     <div className="gv-scene">
@@ -485,7 +478,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
                   background: active ? `${color}22` : 'rgba(128,128,128,0.1)',
                   color: active ? color : 'var(--cd-text-muted)',
                 }}>
-                  {count}
+                  {loading ? '—' : count}
                 </span>
               </button>
             );
@@ -511,7 +504,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
               </span>
             )}
             <span style={{ fontSize: '12px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>
-              {totalShown} vehicles
+              {loading ? <SkelValue /> : `${totalShown} vehicles`}
             </span>
             <button className="gv-btn-ghost" onClick={() => setAllOpen(o => !o)}>
               {allOpen ? 'Collapse all' : 'Expand all'}
@@ -520,7 +513,9 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
         </div>
 
         {/* Vehicle list */}
-        {isEmpty ? (
+        {loading ? (
+          <div style={{ padding: 12 }}><SkelTable rows={8} /></div>
+        ) : isEmpty ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 20px', color: 'var(--cd-text-muted)', gap: '12px' }}>
             <WifiOff size={28} style={{ opacity: 0.35 }} />
             <span style={{ fontSize: '14px' }}>No vehicles match the current filter</span>

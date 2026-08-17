@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Fuel, ZoomIn } from 'lucide-react';
 import { fetchFuelHistoryCached, peekFuelHistory } from '../hooks/useFuelConsumption';
+import { DataRegion } from './data/DataBusy';
 
 export type FuelTimeMode = 'day' | 'week' | 'month' | 'custom';
 
@@ -334,6 +335,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
     if (timeMode === 'custom' && (!customRange.from || !customRange.to)) return;
     const url = historyUrl(timeMode, fetchWindowHours ?? 0, customRange.from, customRange.to);
     if (!silent) {
+      setLoading(true);
       const cached = peekFuelHistory<FuelSeries[]>(url);
       if (cached) {
         const normalized = cached.map(s => ({
@@ -342,9 +344,8 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
         }));
         setAllSeries(normalized);
         onSeriesLoaded?.(normalized);
-        setLoading(false);
       } else {
-        setLoading(true);
+        setAllSeries([]);
       }
     }
     try {
@@ -526,75 +527,75 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
           <div style={{ height: 320, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
             Select a vehicle from the list
           </div>
-        ) : loading ? (
-          <div style={{ height: 320, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
-            Loading…
-          </div>
-        ) : !activeSeries || chartData.length === 0 ? (
-          <div style={{ height: 320, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <Fuel size={32} color="var(--cd-border)" />
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text-muted)' }}>No fuel history for this period</div>
-            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{selectedRegNo}</div>
-          </div>
         ) : (
-          <>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 14 }}>
-              <div>
-                <span style={{ fontSize: 20, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)' }}>{activeSeries.regNo}</span>
-                <span style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 8 }}>{activeSeries.assetName}</span>
+          <DataRegion busy={loading} variant="chart" tall label="Loading fuel chart">
+            {!activeSeries || chartData.length === 0 ? (
+              <div style={{ height: 320, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <Fuel size={32} color="var(--cd-border)" />
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text-muted)' }}>No fuel history for this period</div>
+                <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{selectedRegNo}</div>
               </div>
-              <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
-                  {headerLevel.toFixed(0)}
-                  <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 3 }}>L</span>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 14 }}>
+                  <div>
+                    <span style={{ fontSize: 20, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)' }}>{activeSeries.regNo}</span>
+                    <span style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 8 }}>{activeSeries.assetName}</span>
+                  </div>
+                  <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
+                      {headerLevel.toFixed(0)}
+                      <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 3 }}>L</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Current level</div>
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Current level</div>
-              </div>
-            </div>
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={chartData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" />
-                <XAxis
-                  type="number"
-                  dataKey="ts"
-                  domain={[domainStartMs, domainEndMs]}
-                  ticks={axisTicks}
-                  tickFormatter={t => formatAxisTime(Number(t), chartSpansMultipleDays)}
-                  tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }}
-                  tickLine={false}
-                  axisLine={false}
-                  scale="time"
-                  allowDataOverflow
-                />
-                <YAxis
-                  tickFormatter={v => `${v}L`}
-                  tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={46}
-                  domain={['auto', 'auto']}
-                />
-                <Tooltip
-                  contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }}
-                  labelFormatter={(_label, payload) => {
-                    const row = payload?.[0]?.payload as { readingTs?: number; ts?: number } | undefined;
-                    const t = row?.readingTs ?? row?.ts ?? _label;
-                    return formatTooltipTime(Number(t), chartSpansMultipleDays);
-                  }}
-                  formatter={(v: number) => [`${parseFloat(String(v)).toFixed(0)}L`, 'Fuel Level']}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="level"
-                  stroke={color}
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                  connectNulls
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </>
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={chartData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" />
+                    <XAxis
+                      type="number"
+                      dataKey="ts"
+                      domain={[domainStartMs, domainEndMs]}
+                      ticks={axisTicks}
+                      tickFormatter={t => formatAxisTime(Number(t), chartSpansMultipleDays)}
+                      tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }}
+                      tickLine={false}
+                      axisLine={false}
+                      scale="time"
+                      allowDataOverflow
+                    />
+                    <YAxis
+                      tickFormatter={v => `${v}L`}
+                      tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={46}
+                      domain={['auto', 'auto']}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }}
+                      labelFormatter={(_label, payload) => {
+                        const row = payload?.[0]?.payload as { readingTs?: number; ts?: number } | undefined;
+                        const t = row?.readingTs ?? row?.ts ?? _label;
+                        return formatTooltipTime(Number(t), chartSpansMultipleDays);
+                      }}
+                      formatter={(v: number) => [`${parseFloat(String(v)).toFixed(0)}L`, 'Fuel Level']}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="level"
+                      stroke={color}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4 }}
+                      connectNulls
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </>
+            )}
+          </DataRegion>
         )}
       </div>
     </div>

@@ -13,6 +13,7 @@ import {
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { KPI_DEFINITIONS } from '../lib/metricDefinitions';
 import InfoTip from '../components/InfoTip';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 function fmt(n: number | null | undefined, digits = 1) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -69,13 +70,10 @@ export default function OperationalKpi() {
     const cacheKey = CACHE_KEYS.kpi(url);
 
     if (!silent) {
+      setLoading(true);
       const cached = cachePeek<KpiData>(cacheKey);
-      if (cached) {
-        setData(cached);
-        setLoading(false);
-      } else {
-        setLoading(true);
-      }
+      if (cached) setData(cached);
+      else setData(null);
     }
 
     try {
@@ -90,7 +88,7 @@ export default function OperationalKpi() {
         // Never force — TTL + server cache handle freshness; force made every poll ~20s
       );
       if (next) setData(next);
-    } catch { /* keep prior */ }
+    } catch { /* keep prior on silent poll failure */ }
     finally {
       if (!silent) setLoading(false);
     }
@@ -102,7 +100,7 @@ export default function OperationalKpi() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  const initialLoading = loading && data === null;
+  const initialLoading = loading;
   const summary = data?.summary;
 
   const assets = useMemo(() => {
@@ -256,7 +254,7 @@ export default function OperationalKpi() {
               </div>
               <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{initialLoading ? '…' : k.value}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{initialLoading ? <SkelValue wide /> : k.value}</div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{k.hint}</div>
           </div>
         ))}
@@ -310,7 +308,7 @@ export default function OperationalKpi() {
             </thead>
             <tbody>
               {initialLoading ? (
-                <tr><td colSpan={columns.length} style={{ padding: 20, textAlign: 'center', color: 'var(--cd-text-muted)' }}>Loading…</td></tr>
+                <tr><td colSpan={columns.length} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
               ) : assets.length === 0 ? (
                 <tr><td colSpan={columns.length} style={{ padding: 20, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
                   {search.trim() ? `No assets match "${search.trim()}"` : 'No activity in this period'}

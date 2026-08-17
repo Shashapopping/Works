@@ -241,6 +241,12 @@ interface FleetContextType {
   vehicles: FleetVehicle[];
   events: LogEntry[];
   driverDistance: DriverDistanceSummary | null;
+  /** True until first vehicles payload for this session (or while refreshing empty). */
+  vehiclesLoading: boolean;
+  /** True until first events payload. */
+  eventsLoading: boolean;
+  /** True while driver-distance for current distanceRange is in flight. */
+  distanceLoading: boolean;
   fleetSafetyScore: number;
   fleetScoreDelta: number;
   safetyScore: number;
@@ -337,7 +343,14 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents) ?? [],
   );
   const [driverDistance, setDriverDistance] = useState<DriverDistanceSummary | null>(null);
-  const [distanceRange, setDistanceRange] = useState<DistanceRange>('24h');
+  const [vehiclesLoading, setVehiclesLoading] = useState(() => !cachePeek<Vehicle[]>(CACHE_KEYS.fleetData)?.length);
+  const [eventsLoading, setEventsLoading] = useState(() => !(cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents)?.length));
+  const [distanceLoading, setDistanceLoading] = useState(true);
+  const [distanceRange, setDistanceRangeState] = useState<DistanceRange>('24h');
+  const setDistanceRange = useCallback((range: DistanceRange) => {
+    setDistanceLoading(true);
+    setDistanceRangeState(range);
+  }, []);
   const [fuelSeries, setFuelSeries] = useState<FuelDay[]>(DEFAULT_FUEL_SERIES);
   const [environment, setEnvironment] = useState({ weather: 'Loading…', traffic: 'Moderate', temp: '—' });
   const [notifications, setNotifications] = useState<SafetyNotification[]>([]);
@@ -432,6 +445,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
   const loadVehicles = useCallback(async () => {
     try {
+      if (!vehiclesRef.current.length) setVehiclesLoading(true);
       const raw = await cachedFetchJson<Vehicle[]>(
         CACHE_KEYS.fleetData,
         CACHE_TTL.fleetData,
@@ -448,10 +462,12 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       vehiclesRef.current = data;
       setVehicles(data);
     } catch {}
+    finally { setVehiclesLoading(false); }
   }, []);
 
   const loadEvents = useCallback(async () => {
     try {
+      setEventsLoading(prev => prev || !(cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents)?.length));
       const data = await cachedFetchJson<LogEntry[]>(
         CACHE_KEYS.fleetEvents,
         CACHE_TTL.fleetEvents,
@@ -473,10 +489,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       }
 
         // Surface new safety events as notifications
-        const SAFEIQ_LABELS = ['Harsh Braking', 'Harsh Acceleration', 'Overspeeding', 'Overspeed Tiered'];
+        const SAFEIQ_LABELS = ['Harsh Braking', 'Harsh Acceleration', 'Overspeeding', 'Overspeed Tiered', 'Road Speed Overspeeding'];
         const SAFEIQ_OVERSPEED_MIN_EXCESS_KMH = 5;
         const isOverspeedLabel = (label?: string) =>
-          label === 'Overspeeding' || label === 'Overspeed Tiered';
+          label === 'Overspeeding' || label === 'Overspeed Tiered' || label === 'Road Speed Overspeeding';
         /** SafeIQ only reports overspeed when clearly ≥5 km/h over the posted limit and absolute speed ≥60 kph. */
         const meetsSafeIqOverspeedThreshold = (e: LogEntry) => {
           if (!isOverspeedLabel(e.label)) return true;
@@ -621,15 +637,18 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
           }
         }
     } catch {}
+    finally { setEventsLoading(false); }
   }, []);
 
   const reloadEvents = useCallback(() => { loadEvents(); }, [loadEvents]);
 
   const loadDriverDistance = useCallback(async () => {
+    setDistanceLoading(true);
     try {
       const res = await authFetch(`/api/driver-distance?range=${distanceRange}`);
       if (res.ok) setDriverDistance(await res.json());
     } catch {}
+    finally { setDistanceLoading(false); }
   }, [distanceRange]);
 
   const loadFuelSummary = useCallback(async () => {
@@ -847,6 +866,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   return (
     <FleetContext.Provider value={{
       authFetch, metadata: effectiveMetadata, vehicles: demoVehicles, events: demoEvents, driverDistance: demoDriverDistance,
+      vehiclesLoading, eventsLoading, distanceLoading,
       fleetSafetyScore, fleetScoreDelta,
       safetyScore: fleetSafetyScore,
       safetyDelta: fleetScoreDelta,

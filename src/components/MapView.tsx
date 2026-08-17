@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState} from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.markercluster';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { SkelValue } from './data/DataBusy';
 
 interface Warning {
   eventId: string;
@@ -136,6 +137,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
   const [vehicles, setVehicles] = useState<Vehicle[]>(() =>
     cachePeek<Vehicle[]>(CACHE_KEYS.fleetData) ?? [],
   );
+  const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.fleetData));
   const [searchTerm, setSearchTerm] = useState('');
   const prevWarningIds = useRef<Set<string>>(new Set());
 
@@ -225,8 +227,9 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
           },
         );
         if (data) setVehicles(Array.isArray(data) ? data : []);
+        setLoading(false);
       } catch {
-        // ignore
+        setLoading(false);
       }
     };
     load();
@@ -363,7 +366,11 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
         <div>
           <h2 style={{ fontSize: '20px', fontWeight: '600', color: 'var(--cd-text)', marginBottom: '2px', fontFamily: 'var(--cd-font-display)' }}>Fleet Map</h2>
           <p style={{ fontSize: '13px', color: 'var(--cd-text-muted)' }}>
-            Showing {visibleCount} of {vehicles.filter(v => v.position?.latitude).length} vehicles with GPS
+            {loading ? (
+              <SkelValue wide />
+            ) : (
+              <>Showing {visibleCount} of {vehicles.filter(v => v.position?.latitude).length} vehicles with GPS</>
+            )}
           </p>
         </div>
         <input

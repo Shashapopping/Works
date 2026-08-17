@@ -23,6 +23,7 @@ import {
   ratePer100Vehicles,
   type FleetScoreConfig,
 } from '../lib/fleetSafetyScore';
+import { SkelValue } from '../components/data/DataBusy';
 
 const HIDDEN = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 
@@ -32,11 +33,12 @@ const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, c
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
-function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config }: {
+function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config, busy }: {
   score: number; delta: number; totalIncidents: number;
   weightedRate: number;
   onOpenExplainer: () => void;
   config: FleetScoreConfig;
+  busy?: boolean;
 }) {
   const color = scoreColor(score, config);
   const label = scoreLabel(score, config);
@@ -77,25 +79,33 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
             <circle cx="56" cy="56" r="48" fill="none" stroke="var(--cd-border)" strokeWidth="8" />
             <circle
               cx="56" cy="56" r="48" fill="none"
-              stroke={color} strokeWidth="8"
+              stroke={busy ? 'var(--cd-border)' : color} strokeWidth="8"
               strokeDasharray={circumference}
-              strokeDashoffset={circumference * (1 - score / 100)}
+              strokeDashoffset={circumference * (1 - (busy ? 0 : score) / 100)}
               strokeLinecap="round"
               style={{ transition: 'stroke-dashoffset 0.8s ease' }}
             />
           </svg>
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ fontSize: 28, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>{score}</span>
-            <span style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/100</span>
+            <span style={{ fontSize: 28, fontWeight: 700, color: busy ? 'var(--cd-text-muted)' : color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
+              {busy ? <SkelValue /> : score}
+            </span>
+            {!busy && <span style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/100</span>}
           </div>
         </div>
 
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 20, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1, marginBottom: 4 }}>{label}</div>
-          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.5 }}>{sublabel}</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: busy ? 'var(--cd-text-muted)' : color, fontFamily: 'var(--cd-font-display)', lineHeight: 1, marginBottom: 4 }}>
+            {busy ? <SkelValue wide /> : label}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+            {busy ? 'Loading incident data…' : sublabel}
+          </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginBottom: 14 }}>
-            {delta > 0
+            {busy ? (
+              <SkelValue wide />
+            ) : delta > 0
               ? <><TrendingUp size={13} color="#16a34a" /><span style={{ color: '#16a34a', fontWeight: 600 }}>+{delta} pts vs last month</span></>
               : delta < 0
               ? <><TrendingDown size={13} color="#CC0000" /><span style={{ color: '#CC0000', fontWeight: 600 }}>{delta} pts vs last month</span></>
@@ -110,7 +120,9 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
               { value: `≤${config.leadingRatePer100}`, label: 'leading aim' },
             ].map(m => (
               <div key={m.label}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>{m.value}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
+                  {busy ? <SkelValue /> : m.value}
+                </div>
                 <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{m.label}</div>
               </div>
             ))}
@@ -158,7 +170,13 @@ function IncidentBreakdown({ events }: { events: LogEntry[] }) {
 
   const data = [
     { name: 'Harsh Braking', count: recent.filter(e => e.label === 'Harsh Braking').length, color: '#e05c2a', weight: w.harshBraking },
-    { name: 'Overspeeding', count: recent.filter(e => e.label === 'Overspeeding' || e.label === 'Overspeed Tiered').length, color: '#d97706', weight: w.overspeeding },
+    { name: 'Overspeeding', count: recent.filter(e => e.label === 'Overspeeding').length, color: '#d97706', weight: w.overspeeding },
+    {
+      name: 'Tiered / Road Spd',
+      count: recent.filter(e => e.label === 'Overspeed Tiered' || e.label === 'Road Speed Overspeeding').length,
+      color: '#a855f7',
+      weight: w.overspeeding,
+    },
     { name: 'Harsh Accel.', count: recent.filter(e => e.label === 'Harsh Acceleration').length, color: '#f59e0b', weight: w.harshAcceleration },
     { name: 'Cornering', count: recent.filter(e => e.label === 'Harsh Cornering').length, color: '#8b5cf6', weight: w.harshCornering },
   ].sort((a, b) => b.count - a.count);
@@ -330,10 +348,14 @@ function SafetyRadar({ events }: { events: LogEntry[] }) {
   const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo && isSafetyEvent(e));
   const total = Math.max(recent.length, 1);
 
+  const isTieredSpeed = (label?: string | null) =>
+    label === 'Overspeed Tiered' || label === 'Road Speed Overspeeding';
+
   const data = [
     { subject: 'Braking', value: Math.round((recent.filter(e => e.label === 'Harsh Braking').length / total) * 100) },
-    { subject: 'Speed', value: Math.round((recent.filter(e => e.label?.includes('Overspeed')).length / total) * 100) },
-    { subject: 'Acceleration', value: Math.round((recent.filter(e => e.label === 'Harsh Acceleration').length / total) * 100) },
+    { subject: 'Speed', value: Math.round((recent.filter(e => e.label === 'Overspeeding').length / total) * 100) },
+    { subject: 'Tiered Spd', value: Math.round((recent.filter(e => isTieredSpeed(e.label)).length / total) * 100) },
+    { subject: 'Accel.', value: Math.round((recent.filter(e => e.label === 'Harsh Acceleration').length / total) * 100) },
     { subject: 'Cornering', value: Math.round((recent.filter(e => e.label === 'Harsh Cornering').length / total) * 100) },
   ];
 
@@ -342,15 +364,15 @@ function SafetyRadar({ events }: { events: LogEntry[] }) {
       <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 16 }}>
         Behaviour Profile
       </div>
-      <ResponsiveContainer width="100%" height={180}>
-        <RadarChart data={data} margin={{ top: 0, right: 20, bottom: 0, left: 20 }}>
+      <ResponsiveContainer width="100%" height={200}>
+        <RadarChart data={data} margin={{ top: 8, right: 24, bottom: 8, left: 24 }}>
           <PolarGrid stroke="var(--cd-border)" />
           <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} />
           <Radar dataKey="value" stroke="#0078D4" fill="#0078D4" fillOpacity={0.18} strokeWidth={2} />
         </RadarChart>
       </ResponsiveContainer>
       <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', textAlign: 'center', marginTop: -4 }}>
-        Higher = more of this offence · share of safety events (last 30d)
+        Higher = more of this offence · last 30d · Tiered Spd = Overspeed Tiered + Road Speed (≥60 kph)
       </div>
     </div>
   );
@@ -512,7 +534,7 @@ function PriorityActions({ events, score, vehicleCount }: { events: LogEntry[]; 
 }
 
 // ─── KPI strip ───────────────────────────────────────────────────────────────
-function KpiStrip({ events, vehicleCount }: { events: LogEntry[]; vehicleCount: number }) {
+function KpiStrip({ events, vehicleCount, busy }: { events: LogEntry[]; vehicleCount: number; busy?: boolean }) {
   const now = Date.now();
   const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
   const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
@@ -538,8 +560,10 @@ function KpiStrip({ events, vehicleCount }: { events: LogEntry[]; vehicleCount: 
               <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--cd-text-muted)' }}>{k.label}</span>
               <Icon size={13} style={{ color: k.color, opacity: 0.7 }} />
             </div>
-            <div style={{ fontSize: 26, fontWeight: 700, color: k.color, lineHeight: 1, fontFamily: 'var(--cd-font-display)', marginBottom: 4 }}>{k.value}</div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>{k.sub}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: k.color, lineHeight: 1, fontFamily: 'var(--cd-font-display)', marginBottom: 4 }}>
+              {busy ? <SkelValue wide /> : k.value}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>{busy ? '—' : k.sub}</div>
           </div>
         );
       })}
@@ -549,7 +573,7 @@ function KpiStrip({ events, vehicleCount }: { events: LogEntry[]; vehicleCount: 
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 export default function Safety() {
-  const { events, vehicles, scoreConfig } = useFleet();
+  const { events, vehicles, scoreConfig, eventsLoading } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
 
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -572,7 +596,7 @@ export default function Safety() {
       </div>
 
       {/* KPI strip */}
-      <KpiStrip events={events} vehicleCount={vehicles.length} />
+      <KpiStrip events={events} vehicleCount={vehicles.length} busy={eventsLoading} />
 
       {/* Score + Breakdown + Radar */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 260px', gap: 14, marginBottom: 20 }}>
@@ -582,6 +606,7 @@ export default function Safety() {
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
           config={scoreConfig}
+          busy={eventsLoading}
           onOpenExplainer={() => setExplainerOpen(true)}
         />
         <IncidentBreakdown events={events} />

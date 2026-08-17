@@ -8,6 +8,7 @@ import {
   segmentVehicles, segmentTripAssets, utilizationPct, cementCorridor,
   isSpotHireVehicle, groupByZone, STATUS_COLOR,
 } from '../lib/segmentMetrics';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 function MiniStat({ label, value, color, tip, note }: {
   label: string; value: number; color: string; tip: string; note?: string;
@@ -31,7 +32,7 @@ function MiniStat({ label, value, color, tip, note }: {
 }
 
 export default function Cement() {
-  const { vehicles, driverDistance } = useFleet();
+  const { vehicles, driverDistance, distanceLoading } = useFleet();
   const fleet = useMemo(() => segmentVehicles(vehicles, 'cement'), [vehicles]);
   const assets = useMemo(() => segmentTripAssets(fleet, driverDistance?.assets ?? []), [fleet, driverDistance]);
 
@@ -96,14 +97,14 @@ export default function Cement() {
         <KpiCard
           label="Fleet Size"
           value={fleet.length}
-          sub={`${assets.length} with distance today`}
+          sub={distanceLoading ? 'Loading distance…' : `${assets.length} with distance today`}
           color="#c2410c"
           icon={Truck}
           tip="Count of MiX assets in the Cement segment (zones matching cement corridors — excludes Bulk Tankers, Quarry, and Ready Mix). Sub-line = how many of those have distance recorded today."
         />
         <KpiCard
           label="Distance Today"
-          value={`${distanceKm.toLocaleString()} km`}
+          value={distanceLoading ? <SkelValue wide /> : `${distanceKm.toLocaleString()} km`}
           sub="Segment fleet total"
           color="#ea580c"
           icon={Navigation}
@@ -151,7 +152,7 @@ export default function Cement() {
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 5 }}>
                 <span style={{ fontWeight: 700, color: 'var(--cd-text)' }}>{name}</span>
                 <span style={{ color: 'var(--cd-text-muted)' }}>
-                  {data.vehicles.length} trucks · {Math.round(data.km).toLocaleString()} km
+                  {data.vehicles.length} trucks · {distanceLoading ? <SkelValue /> : `${Math.round(data.km).toLocaleString()} km`}
                 </span>
               </div>
               <div style={{ height: 8, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden', display: 'flex' }}>
@@ -206,7 +207,9 @@ export default function Cement() {
               </tr>
             </thead>
             <tbody>
-              {topDistance.length === 0 ? (
+              {distanceLoading ? (
+                <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
+              ) : topDistance.length === 0 ? (
                 <tr><td colSpan={6} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data today</td></tr>
               ) : topDistance.map((row, i) => {
                 const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';

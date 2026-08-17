@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import FeatureGate from '../components/FeatureGate';
 import ReportAutomate from '../components/ReportAutomate';
+import { SkelTable, DataRegion } from '../components/data/DataBusy';
 import { useAuth } from '../context/AuthContext';
 import { authFetch, useFleet } from '../context/FleetContext';
 import {
@@ -29,6 +30,7 @@ import {
   REPORT_TYPE_OPTIONS,
   reportTypeLabel,
   type ReportType,
+  type TabularReport,
 } from '../lib/reportTypes';
 import { generateTabularReport } from '../lib/reports/generateTabularReport';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
@@ -329,6 +331,8 @@ export default function ReportsPage() {
   const [showTotal, setShowTotal] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [reportType, setReportType] = useState<ReportType>('events');
+  const [tabularPreview, setTabularPreview] = useState<TabularReport | null>(null);
+  const [tabularPreviewLoading, setTabularPreviewLoading] = useState(false);
 
   const reportTitle = brandReportTitle();
   const canExport = isReportExportAllowed(user?.email);
@@ -344,10 +348,9 @@ export default function ReportsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let first = true;
 
-    const load = async () => {
-      if (first) setLoading(true);
+    const load = async (silent = false) => {
+      if (!silent) setLoading(true);
       try {
         const { from, to } = getDateBounds(dateRange, fromDate, toDate);
         const params = new URLSearchParams();
@@ -367,14 +370,11 @@ export default function ReportsPage() {
       } catch {
         if (!cancelled) setEntries(mapDemoEntries(fleetEventsRef.current, vehiclesRef.current));
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-          first = false;
-        }
+        if (!cancelled && !silent) setLoading(false);
       }
     };
-    load();
-    const interval = setInterval(load, EVENTS_REFRESH_MS);
+    void load(false);
+    const interval = setInterval(() => void load(true), EVENTS_REFRESH_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -428,6 +428,61 @@ export default function ReportsPage() {
   const previewRows = useMemo(
     () => filtered.slice(0, EVENT_PREVIEW_LIMIT),
     [filtered],
+  );
+
+  const scorecardEvents = useMemo(
+    () =>
+      entries.filter(e => {
+        if (e.type === 'panic') return false;
+        const label = eventLabel(e);
+        if (HIDDEN_LABELS.includes(label)) return false;
+        return true;
+      }),
+    [entries],
+  );
+
+  useEffect(() => {
+    if (reportType === 'events') {
+      setTabularPreview(null);
+      setTabularPreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setTabularPreviewLoading(true);
+    const { from, to } = getDateBounds(dateRange, fromDate, toDate);
+    void (async () => {
+      try {
+        const tabular = await generateTabularReport({
+          reportType,
+          baseTitle: reportTitle,
+          meta: [
+            `Type: ${reportTypeLabel(reportType)}`,
+            `Date: ${
+              dateRange === 'today' ? 'Today'
+                : dateRange === '7days' ? 'Last 7 days'
+                  : dateRange === '30days' ? 'Last 30 days'
+                    : fromDate && toDate ? `${fromDate} to ${toDate}` : 'Custom'
+            }`,
+            searchTerm ? `Search: ${searchTerm}` : '',
+          ].filter(Boolean).join('  ·  '),
+          search: searchTerm,
+          events: scorecardEvents,
+          fromIso: from,
+          toIso: to,
+        });
+        if (!cancelled) setTabularPreview(tabular);
+      } catch {
+        if (!cancelled) setTabularPreview(null);
+      } finally {
+        if (!cancelled) setTabularPreviewLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reportType, dateRange, fromDate, toDate, searchTerm, scorecardEvents, reportTitle]);
+
+  const tabularPreviewRows = useMemo(
+    () => (tabularPreview?.rows ?? []).slice(0, EVENT_PREVIEW_LIMIT),
+    [tabularPreview],
   );
 
   const trendData = useMemo((): TrendDay[] => {
@@ -548,7 +603,9 @@ export default function ReportsPage() {
 
   const canGenerate =
     canExport &&
-    (reportType === 'events' ? filtered.length > 0 : true);
+    (reportType === 'events'
+      ? filtered.length > 0
+      : !tabularPreviewLoading && (tabularPreview?.rowCount ?? 0) > 0);
 
   const runGenerate = async () => {
     const { from, to } = getDateBounds(dateRange, fromDate, toDate);
@@ -664,7 +721,9 @@ export default function ReportsPage() {
                 ? `Showing ${EVENT_PREVIEW_LIMIT} of ${filtered.length}`
                 : `${filtered.length} event${filtered.length !== 1 ? 's' : ''}`)
               : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} of trends`)
-            : reportTypeLabel(reportType)}
+            : tabularPreviewLoading
+              ? 'Loading preview…'
+              : `${tabularPreview?.rowCount ?? 0} row${(tabularPreview?.rowCount ?? 0) !== 1 ? 's' : ''}`}
         </span>
       </div>
 
@@ -866,24 +925,45 @@ export default function ReportsPage() {
           </div>
 
           {reportType !== 'events' ? (
-            <div className="bpl-reports-empty bpl-reports-type-preview">
-              <strong>{reportTypeLabel(reportType)}</strong>
-              <p>
-                {reportType === 'driver_scorecard' &&
-                  'Download or email builds consequence scorecards (display score, category, penalty points, distance, violation counts) for the selected date range.'}
-                {reportType === 'trips' &&
-                  'Download or email builds journey rows (start/end, distance, driving time, speeds) from live trip data for the selected date range.'}
-                {reportType === 'asset_utilization' &&
-                  'Download or email builds utilization & availability KPIs per asset (engine hours, trips, distance, loaded hours) for the selected date range.'}
-              </p>
-              <p className="bpl-reports-type-preview-note">
-                Use Download report or Email report on the left. Search filters driver / reg / asset where applicable.
-              </p>
+            <div className="bpl-reports-table-wrap">
+              {tabularPreviewLoading || loading ? (
+                <div style={{ padding: 16 }}><SkelTable rows={8} /></div>
+              ) : !tabularPreview || tabularPreview.rowCount === 0 ? (
+                <div className="bpl-reports-empty">No rows for this report type and filters</div>
+              ) : (
+                <>
+                  <table className="bpl-reports-table">
+                    <thead>
+                      <tr>
+                        {tabularPreview.columns.map(col => (
+                          <th key={col.header}>{col.header}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tabularPreviewRows.map((row, i) => (
+                        <tr key={`${row[0]}-${row[2]}-${i}`}>
+                          {row.map((cell, ci) => (
+                            <td key={ci} className={ci === 0 ? undefined : 'muted'}>
+                              {ci === 0 ? <strong>{cell}</strong> : (cell || '—')}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {tabularPreview.rowCount > EVENT_PREVIEW_LIMIT && (
+                    <div className="bpl-reports-preview-note">
+                      Showing {EVENT_PREVIEW_LIMIT} of {tabularPreview.rowCount} rows — download or email for the full set
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           ) : viewMode === 'events' ? (
             <div className="bpl-reports-table-wrap">
-              {loading && filtered.length === 0 ? (
-                <div className="bpl-reports-empty">Loading events…</div>
+              {loading ? (
+                <div style={{ padding: 16 }}><SkelTable rows={8} /></div>
               ) : filtered.length === 0 ? (
                 <div className="bpl-reports-empty">No events match your filters</div>
               ) : (
@@ -942,6 +1022,7 @@ export default function ReportsPage() {
             </div>
           ) : (
             <div className="bpl-reports-trends-body">
+              <DataRegion busy={loading} variant="chart" tall label="Loading trends">
               {trendData.length === 0 ? (
                 <div className="bpl-reports-empty">No data for selected period</div>
               ) : (
@@ -1000,6 +1081,7 @@ export default function ReportsPage() {
                   </p>
                 </>
               )}
+              </DataRegion>
             </div>
           )}
         </div>

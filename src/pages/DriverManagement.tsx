@@ -16,6 +16,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import PageControls from '../components/PageControls';
 import { brandLabel } from '../lib/branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 
@@ -286,7 +287,9 @@ export default function DriverManagement() {
   const [dateRange, setDateRange] = useState<DateRange>('30days');
   const [expandedDrivers, setExpandedDrivers] = useState<Set<string>>(new Set());
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
-  const { events } = useFleet();
+  const [tripLoading, setTripLoading] = useState(true);
+  const { events, eventsLoading } = useFleet();
+  const seedBusy = eventsLoading || tripLoading;
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -299,6 +302,7 @@ export default function DriverManagement() {
   // Seed population + distance from trip activity (current + last month retention)
   useEffect(() => {
     let cancelled = false;
+    setTripLoading(true);
     (async () => {
       try {
         const [cur, last] = await Promise.all([
@@ -325,6 +329,9 @@ export default function DriverManagement() {
         }
         if (!cancelled) setTripDrivers(Array.from(map.values()));
       } catch { /* keep empty */ }
+      finally {
+        if (!cancelled) setTripLoading(false);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -437,21 +444,21 @@ export default function DriverManagement() {
       <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 20 }}>
         <div className="bpl-kpi-card">
           <div className="bpl-kpi-label">Total Drivers</div>
-          <div className="bpl-kpi-value">{drivers.length}</div>
+          <div className="bpl-kpi-value">{seedBusy ? <SkelValue wide /> : drivers.length}</div>
         </div>
         <div className="bpl-kpi-card" style={{ borderTop: '3px solid #CC0000' }}>
           <div className="bpl-kpi-label">High Risk</div>
-          <div className="bpl-kpi-value" style={{ color: '#CC0000' }}>{redCount}</div>
+          <div className="bpl-kpi-value" style={{ color: '#CC0000' }}>{seedBusy ? <SkelValue /> : redCount}</div>
           <div className="bpl-kpi-sub">Red tier</div>
         </div>
         <div className="bpl-kpi-card" style={{ borderTop: '3px solid #d97706' }}>
           <div className="bpl-kpi-label">Needs Action</div>
-          <div className="bpl-kpi-value" style={{ color: '#d97706' }}>{needsAction}</div>
+          <div className="bpl-kpi-value" style={{ color: '#d97706' }}>{seedBusy ? <SkelValue /> : needsAction}</div>
           <div className="bpl-kpi-sub">Amber + Yellow + Red</div>
         </div>
         <div className="bpl-kpi-card" style={{ borderTop: '3px solid #16a34a' }}>
           <div className="bpl-kpi-label">Low Risk</div>
-          <div className="bpl-kpi-value" style={{ color: '#16a34a' }}>{greenCount}</div>
+          <div className="bpl-kpi-value" style={{ color: '#16a34a' }}>{seedBusy ? <SkelValue /> : greenCount}</div>
           <div className="bpl-kpi-sub">Green tier</div>
         </div>
       </div>
@@ -485,11 +492,15 @@ export default function DriverManagement() {
             {r === 'today' ? 'Today' : r === '7days' ? '7 Days' : r === '30days' ? '30 Days' : 'All Time'}
           </button>
         ))}
-        <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{visible.length} drivers</span>
+        <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
+          {seedBusy ? <SkelValue /> : `${visible.length} drivers`}
+        </span>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {visible.length === 0 ? (
+        {seedBusy ? (
+          <div className="bpl-card" style={{ padding: 16 }}><SkelTable rows={6} /></div>
+        ) : visible.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px', color: 'var(--cd-text-muted)' }}>
             No driver data available
           </div>
@@ -503,7 +514,7 @@ export default function DriverManagement() {
         ))}
       </div>
 
-      {visible.length > 0 && (
+      {!seedBusy && visible.length > 0 && (
         <div className="bpl-card" style={{ marginTop: 10, padding: 0 }}>
           <PageControls
             page={pagination.page}

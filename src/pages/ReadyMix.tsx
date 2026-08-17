@@ -13,6 +13,7 @@ import {
   STATUS_COLOR,
 } from '../lib/segmentMetrics';
 import { authFetch } from '../context/FleetContext';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 const DISPATCH_META = {
   transit: { label: 'In transit', color: '#d97706', short: 'Transit' },
@@ -298,11 +299,12 @@ function SiteSection({
 }
 
 export default function ReadyMix() {
-  const { vehicles } = useFleet();
+  const { vehicles, vehiclesLoading } = useFleet();
   const [filter, setFilter] = useState<DispatchFilter>('all');
   const [allOpen, setAllOpen] = useState(true);
   const [density, setDensity] = useState<BoardDensity>('cards');
   const [openTripAssetIds, setOpenTripAssetIds] = useState<Set<string>>(() => new Set());
+  const [tripsLoading, setTripsLoading] = useState(true);
 
   const fleet = useMemo(() => segmentVehicles(vehicles, 'readyMix'), [vehicles]);
   const plantPins = useMemo(() => deriveReadyMixPlantPins(fleet), [fleet]);
@@ -310,9 +312,11 @@ export default function ReadyMix() {
     () => ({ plantPins, openTripAssetIds }),
     [plantPins, openTripAssetIds],
   );
+  const dispatchBusy = vehiclesLoading || tripsLoading;
 
   useEffect(() => {
     let cancelled = false;
+    setTripsLoading(true);
     (async () => {
       try {
         const res = await authFetch('/api/trips/session');
@@ -323,6 +327,8 @@ export default function ReadyMix() {
         }
       } catch {
         /* trips optional — GPS geofence still works */
+      } finally {
+        if (!cancelled) setTripsLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -388,7 +394,7 @@ export default function ReadyMix() {
       <div className="bpl-kpi-grid">
         <KpiCard
           label="In Transit"
-          value={buckets.transit.length}
+          value={dispatchBusy ? <SkelValue /> : buckets.transit.length}
           sub="Moving or speed ≥ 5 km/h"
           color="#d97706"
           icon={Truck}
@@ -396,7 +402,7 @@ export default function ReadyMix() {
         />
         <KpiCard
           label="At Plant"
-          value={buckets.plant.length}
+          value={dispatchBusy ? <SkelValue /> : buckets.plant.length}
           sub="Stopped inside plant geofence"
           color="#16a34a"
           icon={Factory}
@@ -404,7 +410,7 @@ export default function ReadyMix() {
         />
         <KpiCard
           label="Away from plant"
-          value={buckets.jobsite.length}
+          value={dispatchBusy ? <SkelValue /> : buckets.jobsite.length}
           sub="Stopped outside plant geofence"
           color="#7c3aed"
           icon={Timer}
@@ -412,8 +418,8 @@ export default function ReadyMix() {
         />
         <KpiCard
           label="Mixer Fleet"
-          value={fleet.length}
-          sub={`${plants} hubs · ${buckets.offline.length} offline`}
+          value={vehiclesLoading ? <SkelValue /> : fleet.length}
+          sub={vehiclesLoading ? '—' : `${plants} hubs · ${buckets.offline.length} offline`}
           color="#7c3aed"
           icon={Droplets}
           tip="All Ready Mix segment assets. Sub-line = distinct plant hubs inferred from MiX site names, plus Offline/Inactive count."
@@ -422,7 +428,7 @@ export default function ReadyMix() {
 
       <ReadyMixPlantMap plantPins={plantPins} atPlantVehicles={buckets.plant} />
 
-      {(buckets.jobsite.length > 0 || buckets.transit.length > 3) && (
+      {(buckets.jobsite.length > 0 || buckets.transit.length > 3) && !dispatchBusy && (
         <div className="bpl-card" style={{
           padding: '12px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
           background: 'rgba(124,58,237,0.08)', borderColor: 'rgba(124,58,237,0.3)',
@@ -463,7 +469,7 @@ export default function ReadyMix() {
                       marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 99,
                       background: active ? `${t.color}22` : 'var(--cd-surface-2)',
                     }}>
-                      {t.count}
+                      {dispatchBusy ? '—' : t.count}
                     </span>
                   </button>
                 );
@@ -485,7 +491,9 @@ export default function ReadyMix() {
             </div>
           </div>
 
-          {byMixSite.length === 0 ? (
+          {dispatchBusy ? (
+            <div className="bpl-card" style={{ padding: 16 }}><SkelTable rows={6} /></div>
+          ) : byMixSite.length === 0 ? (
             <div className="bpl-card" style={{ padding: 32, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
               No mixers match this filter
             </div>

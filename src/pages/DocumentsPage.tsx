@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import FeatureGate from '../components/FeatureGate';
 import { authFetchInit } from '../lib/authApi';
+import { SkelTable } from '../components/data/DataBusy';
 
 interface DocFolder {
   id: string;
@@ -310,10 +311,7 @@ export default function DocumentsPage() {
 
             <div className="bpl-docs-list-wrap">
               {loading && folders.length === 0 && files.length === 0 ? (
-                <div className="bpl-docs-empty">
-                  <Loader2 size={22} className="spin" />
-                  <span>Opening folder…</span>
-                </div>
+                <div style={{ padding: 16 }}><SkelTable rows={6} /></div>
               ) : folders.length === 0 && files.length === 0 ? (
                 <div className="bpl-docs-empty">
                   <Folder size={28} style={{ opacity: 0.35 }} />

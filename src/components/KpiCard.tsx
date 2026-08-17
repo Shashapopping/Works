@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Info } from 'lucide-react';
 
 /** Shared KPI tile with an info affordance explaining how the metric is calculated. */
@@ -5,7 +6,7 @@ export function KpiCard({
   label, value, sub, color, icon: Icon, tip,
 }: {
   label: string;
-  value: string | number;
+  value: ReactNode;
   sub?: string;
   color: string;
   icon: React.ElementType;

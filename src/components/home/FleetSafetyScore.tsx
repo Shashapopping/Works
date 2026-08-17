@@ -4,9 +4,10 @@ import { TrendingDown, TrendingUp, Minus } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
 import { scoreBandColor, scoreBandLabel, ratePer100Vehicles } from '../../lib/fleetSafetyScore';
 import ConsequenceExplainerModal from '../ConsequenceExplainerModal';
+import { SkelValue } from '../data/DataBusy';
 
 export default function FleetSafetyScore() {
-  const { safetyScore, safetyDelta, events, metadata, scoreConfig } = useFleet();
+  const { safetyScore, safetyDelta, events, eventsLoading, metadata, scoreConfig } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
 
   const color = scoreBandColor(safetyScore, scoreConfig);
@@ -46,21 +47,27 @@ export default function FleetSafetyScore() {
               <circle cx="30" cy="30" r="24" fill="none" stroke="var(--cd-border)" strokeWidth="5" />
               <circle
                 cx="30" cy="30" r="24" fill="none"
-                stroke={color} strokeWidth="5"
+                stroke={eventsLoading ? 'var(--cd-border)' : color} strokeWidth="5"
                 strokeDasharray={`${2 * Math.PI * 24}`}
-                strokeDashoffset={`${2 * Math.PI * 24 * (1 - safetyScore / 100)}`}
+                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (eventsLoading ? 0 : safetyScore) / 100)}`}
                 strokeLinecap="round"
               />
             </svg>
             <div className="bpl-safety-gauge-center">
-              <span className="bpl-safety-gauge-score" style={{ color }}>{safetyScore}</span>
-              <span className="bpl-safety-gauge-denom">/100</span>
+              <span className="bpl-safety-gauge-score" style={{ color: eventsLoading ? 'var(--cd-text-muted)' : color }}>
+                {eventsLoading ? <SkelValue /> : safetyScore}
+              </span>
+              {!eventsLoading && <span className="bpl-safety-gauge-denom">/100</span>}
             </div>
           </div>
           <div className="bpl-safety-score-home-meta">
-            <div className="bpl-safety-score-home-status" style={{ color }}>{label}</div>
+            <div className="bpl-safety-score-home-status" style={{ color: eventsLoading ? 'var(--cd-text-muted)' : color }}>
+              {eventsLoading ? <SkelValue wide /> : label}
+            </div>
             <div className="bpl-safety-score-home-delta">
-              {safetyDelta > 0 ? (
+              {eventsLoading ? (
+                <SkelValue wide />
+              ) : safetyDelta > 0 ? (
                 <><TrendingUp size={13} color="#16a34a" /><span className="bpl-kpi-delta-up">+{safetyDelta} pts</span></>
               ) : safetyDelta < 0 ? (
                 <><TrendingDown size={13} color="#CC0000" /><span className="bpl-kpi-delta-down">{safetyDelta} pts</span></>
@@ -69,12 +76,18 @@ export default function FleetSafetyScore() {
               )}
             </div>
             <div className="bpl-safety-score-home-stats">
-              <span><strong>{weightedRate.toFixed(1)}</strong> wt/100</span>
-              <span className="bpl-safety-score-home-dot" />
-              <span>aim ≤<strong>{scoreConfig.leadingRatePer100}</strong></span>
+              {eventsLoading ? (
+                <SkelValue wide />
+              ) : (
+                <>
+                  <span><strong>{weightedRate.toFixed(1)}</strong> wt/100</span>
+                  <span className="bpl-safety-score-home-dot" />
+                  <span>aim ≤<strong>{scoreConfig.leadingRatePer100}</strong></span>
+                </>
+              )}
             </div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              % of leading fleets · click for detail
+              Aim = 85 · beat aim → 100 · click for detail
             </div>
           </div>
         </button>

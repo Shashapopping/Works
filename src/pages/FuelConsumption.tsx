@@ -20,6 +20,7 @@ import {
 } from '../lib/fuelConsumption';
 import { displayDriverName } from '../lib/driverUtils';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 const COL_COUNT = 10;
 
@@ -92,7 +93,7 @@ function KpiStrip({ summary, initialLoading, scopeLabel }: { summary: SummaryMet
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>{k.label}</div>
               <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{initialLoading ? '…' : k.value}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{initialLoading ? <SkelValue wide /> : k.value}</div>
           </div>
         ))}
       </div>
@@ -215,13 +216,10 @@ export default function FuelConsumption() {
   const fetchData = useCallback(async (silent = false) => {
     const url = buildConsumptionUrl(period, selectedSite, customRange.from, customRange.to);
     if (!silent) {
+      setLoading(true);
       const cached = peekFuelConsumption(url);
-      if (cached) {
-        setData(cached);
-        setLoading(false);
-      } else {
-        setLoading(true);
-      }
+      if (cached) setData(cached);
+      else setData(null);
     }
     try {
       const next = await fetchFuelConsumptionCached(url, { force: silent });
@@ -241,7 +239,7 @@ export default function FuelConsumption() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  const initialLoading = loading && data === null;
+  const initialLoading = loading;
 
   const allAssets = data?.assets ?? [];
 
@@ -452,7 +450,7 @@ export default function FuelConsumption() {
             </thead>
             <tbody>
               {initialLoading ? (
-                <tr><td colSpan={COL_COUNT} style={{ padding: 20, textAlign: 'center', color: 'var(--cd-text-muted)' }}>Loading…</td></tr>
+                <tr><td colSpan={COL_COUNT} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
               ) : assets.length === 0 ? (
                 <tr><td colSpan={COL_COUNT} style={{ padding: 20, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
                   {search.trim() ? `No assets match "${search.trim()}"` : 'No data — run fuel + trips backfill first'}

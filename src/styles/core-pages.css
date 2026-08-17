@@ -1817,6 +1817,102 @@
   flex: 1;
 }
 
+/* ── Small-space data busy skeletons (post-shell loads / period changes) ── */
+.bpl-data-region {
+  position: relative;
+  min-width: 0;
+}
+
+.bpl-data-region.is-busy {
+  min-height: 1.2em;
+}
+
+.bpl-data-region__progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bpl-blue, #0078D4) 12%, transparent);
+  z-index: 1;
+}
+
+.bpl-data-region__progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--bpl-blue, #0078D4),
+    color-mix(in srgb, var(--bpl-blue, #0078D4) 55%, #00a870),
+    transparent
+  );
+  animation: bpl-loader-progress 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.bpl-data-region__body {
+  width: 100%;
+}
+
+.bpl-data-skel-value {
+  display: inline-block;
+  width: 3.25rem;
+  height: 1.35em;
+  vertical-align: -0.15em;
+  border-radius: 7px;
+}
+
+.bpl-data-skel-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.bpl-data-skel-kpi {
+  background: var(--cd-surface, #fff);
+  border: 1px solid var(--cd-border, rgba(0, 0, 0, 0.08));
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: bpl-loader-rise 0.4s ease both;
+}
+
+.bpl-data-skel-chart {
+  margin-top: 4px;
+}
+
+.bpl-data-skel-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.bpl-data-skel-table-row {
+  animation: bpl-loader-rise 0.35s ease both;
+}
+
+.bpl-skel--block {
+  width: 100%;
+  height: 72px;
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bpl-data-region__progress::after,
+  .bpl-data-skel-kpi,
+  .bpl-data-skel-table-row {
+    animation: none !important;
+  }
+}
+
 /* ── Page transition loader (content area only; shell stays put) ── */
 .bpl-page-transition {
   position: relative;

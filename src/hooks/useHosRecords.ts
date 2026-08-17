@@ -28,14 +28,15 @@ export function useHosRecords(date?: string) {
 
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) {
+      setLoading(true);
       const cached = peekHos(url);
-      if (cached) { setData(cached); setLoading(false); }
-      else setLoading(true);
+      if (cached) setData(cached);
+      else setData(null);
     }
     try {
       const next = await fetchHosCached(url, { force: silent });
       if (next) setData(next);
-    } catch { /* keep prior */ }
+    } catch { /* keep prior on silent poll failure */ }
     finally { if (!silent) setLoading(false); }
   }, [url]);
 

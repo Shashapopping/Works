@@ -162,7 +162,7 @@ export default function ConsequenceExplainerModal({
 
             <p style={{ fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55, margin: '0 0 12px' }}>
               Compares your weighted IVMS rate <strong>per 100 vehicles</strong> (last 30 days) to what
-              <strong> leading fleets in Nigeria-style heavy operations</strong> aim for. Match or beat that target → 100.
+              <strong> leading fleets in Nigeria-style heavy operations</strong> aim for. Match that target → 85; beat it → up to 100.
             </p>
 
             <div style={{
@@ -170,7 +170,7 @@ export default function ConsequenceExplainerModal({
               background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)',
               borderRadius: 8, padding: '8px 10px', marginBottom: 12, lineHeight: 1.45,
             }}>
-              Score = 100 × (leading rate ÷ your rate)
+              Score = 85 × (leading rate ÷ your rate), capped at 100
               <div style={{ marginTop: 4, color: 'var(--cd-text)' }}>
                 Leading aim ≤{scoreConfig.leadingRatePer100} · Your rate {actualRateLabel} → <strong style={{ color }}>{fleetScore}</strong>
               </div>

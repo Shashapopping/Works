@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useDeferredValue } from 'react';
 import { Search, ChevronLeft, ChevronRight, WifiOff, AlertTriangle } from 'lucide-react';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { SkelValue, SkelTable } from './data/DataBusy';
 
 interface Warning {
   eventId: string;
@@ -310,14 +311,6 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
     }
   };
 
-  if (loading) {
-    return (
-      <div style={{ padding: '20px', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ textAlign: 'center', color: 'var(--cd-text-muted)' }}>Loading fleet data...</div>
-      </div>
-    );
-  }
-
   return (
     <div style={{ fontFamily: 'var(--cd-font-body)' }}>
       <div>
@@ -345,11 +338,15 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
         <div style={{ backgroundColor: 'var(--cd-surface)', borderRadius: '14px', border: '1px solid var(--cd-border)', overflow: 'hidden', boxShadow: 'var(--cd-card-shadow)' }}>
 
           <div style={{ padding: isMobile ? '16px' : '24px', borderBottom: '1px solid var(--cd-border)' }}>
-            <h2 style={{ fontSize: isMobile ? '18px' : '26px', fontWeight: '600', color: 'var(--cd-text)', marginBottom: '4px', fontFamily: 'var(--cd-font-display)' }}>
-              Fleet Status ({anomalies.length} vehicles)
+            <h2 style={{ fontSize: isMobile ? '18px' : '26px', fontWeight: '600', color: 'var(--cd-text)', marginBottom: '4px', fontFamily: 'var(--cd-font-display)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              Fleet Status ({loading ? <SkelValue /> : `${anomalies.length} vehicles`})
             </h2>
             <p style={{ fontSize: isMobile ? '14px' : '17px', color: 'var(--cd-text-muted)' }}>
-              Fleet — Showing {filteredAnomalies.length === anomalies.length ? `${startIndex + 1}–${Math.min(endIndex, filteredAnomalies.length)} of ${filteredAnomalies.length}` : `${filteredAnomalies.length} of ${anomalies.length}`}
+              {loading ? (
+                <SkelValue wide />
+              ) : (
+                <>Fleet — Showing {filteredAnomalies.length === anomalies.length ? `${startIndex + 1}–${Math.min(endIndex, filteredAnomalies.length)} of ${filteredAnomalies.length}` : `${filteredAnomalies.length} of ${anomalies.length}`}</>
+              )}
             </p>
             {!isStale && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--cd-text-muted)', fontSize: '13px', marginTop: '10px', paddingLeft: '4px' }}>
@@ -409,7 +406,9 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
             )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {currentPageItems.length === 0 ? (
+              {loading ? (
+                <div style={{ padding: 8 }}><SkelTable rows={8} /></div>
+              ) : currentPageItems.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-soft)' }}>
                   {searchTerm || statusFilter !== 'All' ? 'No vehicles match your search' : 'No vehicles found'}
                 </div>

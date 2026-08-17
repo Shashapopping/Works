@@ -11,9 +11,10 @@ import {
   segmentVehicles, segmentTripAssets, segmentEvents, overspeedCount,
   tankerCorridor, utilizationPct, STATUS_COLOR,
 } from '../lib/segmentMetrics';
+import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 export default function Tankers() {
-  const { vehicles, events, driverDistance, scoreConfig } = useFleet();
+  const { vehicles, events, eventsLoading, driverDistance, distanceLoading, scoreConfig } = useFleet();
   const fleet = useMemo(() => segmentVehicles(vehicles, 'tankers'), [vehicles]);
   const segEvents = useMemo(() => segmentEvents(fleet, events), [fleet, events]);
   const assets = useMemo(() => segmentTripAssets(fleet, driverDistance?.assets ?? []), [fleet, driverDistance]);
@@ -88,27 +89,33 @@ export default function Tankers() {
             <div style={{ position: 'relative', width: 80, height: 80, flexShrink: 0 }}>
               <svg width="80" height="80" viewBox="0 0 80 80" style={{ transform: 'rotate(-90deg)' }}>
                 <circle cx="40" cy="40" r="34" fill="none" stroke="var(--cd-border)" strokeWidth="6" />
-                <circle cx="40" cy="40" r="34" fill="none" stroke={scoreColor} strokeWidth="6"
+                <circle cx="40" cy="40" r="34" fill="none" stroke={eventsLoading ? 'var(--cd-border)' : scoreColor} strokeWidth="6"
                   strokeDasharray={`${2 * Math.PI * 34}`}
-                  strokeDashoffset={`${2 * Math.PI * 34 * (1 - score / 100)}`}
+                  strokeDashoffset={`${2 * Math.PI * 34 * (1 - (eventsLoading ? 0 : score) / 100)}`}
                   strokeLinecap="round" />
               </svg>
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>{score}</span>
-                <span style={{ fontSize: 9, color: 'var(--cd-text-muted)' }}>/100</span>
+                <span style={{ fontSize: 22, fontWeight: 700, color: eventsLoading ? 'var(--cd-text-muted)' : scoreColor, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
+                  {eventsLoading ? <SkelValue /> : score}
+                </span>
+                {!eventsLoading && <span style={{ fontSize: 9, color: 'var(--cd-text-muted)' }}>/100</span>}
               </div>
             </div>
             <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: scoreColor, fontFamily: 'var(--cd-font-display)' }}>{scoreLabel}</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: eventsLoading ? 'var(--cd-text-muted)' : scoreColor, fontFamily: 'var(--cd-font-display)' }}>
+                {eventsLoading ? <SkelValue wide /> : scoreLabel}
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, marginTop: 4 }}>
-                {delta > 0
+                {eventsLoading ? (
+                  <SkelValue wide />
+                ) : delta > 0
                   ? <><TrendingUp size={12} color="#16a34a" /><span style={{ color: '#16a34a', fontWeight: 600 }}>+{delta} vs last month</span></>
                   : delta < 0
                   ? <><TrendingDown size={12} color="#CC0000" /><span style={{ color: '#CC0000', fontWeight: 600 }}>{delta} vs last month</span></>
                   : <><Minus size={12} color="var(--cd-text-muted)" /><span style={{ color: 'var(--cd-text-muted)' }}>No change</span></>}
               </div>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 8 }}>
-                {recent.length} incidents / 30d · {overspeeds} overspeed
+                {eventsLoading ? <SkelValue wide /> : `${recent.length} incidents / 30d · ${overspeeds} overspeed`}
               </div>
             </div>
           </div>
@@ -133,7 +140,7 @@ export default function Tankers() {
           />
           <KpiCard
             label="Distance Today"
-            value={`${distanceKm.toLocaleString()} km`}
+            value={distanceLoading ? <SkelValue wide /> : `${distanceKm.toLocaleString()} km`}
             sub="Long-haul total"
             color="#0369a1"
             icon={Navigation}
@@ -141,8 +148,8 @@ export default function Tankers() {
           />
           <KpiCard
             label="Overspeed (30d)"
-            value={overspeeds}
-            sub={`${harshBrakes} harsh braking events`}
+            value={eventsLoading ? <SkelValue /> : overspeeds}
+            sub={eventsLoading ? '—' : `${harshBrakes} harsh braking events`}
             color={overspeeds > 5 ? '#CC0000' : '#d97706'}
             icon={Gauge}
             tip="Count of overspeed events on tanker assets in the last 30 days (MiX events filtered to this segment). Sub-line = harsh braking in the same window."
@@ -164,7 +171,12 @@ export default function Tankers() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, textAlign: 'center' }}>
                 <div><div style={{ fontSize: 22, fontWeight: 700, color }}>{list.length}</div><div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Tankers</div></div>
                 <div><div style={{ fontSize: 22, fontWeight: 700, color: '#16a34a' }}>{moving}</div><div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Moving</div></div>
-                <div><div style={{ fontSize: 22, fontWeight: 700, color }}>{km.toLocaleString()}</div><div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>km today</div></div>
+                <div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color }}>
+                    {distanceLoading ? <SkelValue /> : km.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>km today</div>
+                </div>
               </div>
             </div>
           );
@@ -187,7 +199,9 @@ export default function Tankers() {
                 </tr>
               </thead>
               <tbody>
-                {longHaul.length === 0 ? (
+                {distanceLoading ? (
+                  <tr><td colSpan={5} style={{ padding: 12 }}><SkelTable rows={5} /></td></tr>
+                ) : longHaul.length === 0 ? (
                   <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data today</td></tr>
                 ) : longHaul.map((row, i) => {
                   const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
@@ -218,7 +232,9 @@ export default function Tankers() {
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Bulk tanker incidents — long haul focus</div>
             </div>
           </div>
-          {recentIncidents.length === 0 ? (
+          {eventsLoading ? (
+            <div style={{ padding: 12 }}><SkelTable rows={5} /></div>
+          ) : recentIncidents.length === 0 ? (
             <div style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>No recent incidents</div>
           ) : recentIncidents.map((e, i) => (
             <div key={i} style={{
