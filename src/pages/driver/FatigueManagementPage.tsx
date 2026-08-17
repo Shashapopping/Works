@@ -26,18 +26,65 @@ const COL_TIPS: Record<string, string> = {
   Driver: 'Driver name from completed trips.',
   Vehicle: 'Vehicle plate on their latest trip this day.',
   Site: 'Site or pool linked to that vehicle.',
-  'Drive time': 'Total time spent driving this day (moving time only).',
-  'Trip time': 'Time from first trip start to last trip end (includes stops).',
+  '4h continuous': 'Max 4 hours continuous driving. A parked gap of ≥30 minutes resets the block.',
+  'Daily rest': 'Max 8 hours continuous driving inside a rolling 24-hour cycle.',
+  'Weekly rest': 'At least 24 hours continuous off-duty rest required in every rolling 7-day week.',
+  'Drive time': 'Driving credited inside the selected Lagos day only. Overnight trips are clipped at midnight — yesterday’s hours do not count toward today. Long open trips with almost no distance are also capped.',
+  'Trip time': 'Sum of each trip’s clock time inside the selected day (clipped at midnight). Gaps between trips are not counted — so an overnight open trip cannot stretch Trip time to ~23h.',
   'Longest block': 'Longest continuous drive block this day toward the 4-hour limit. Hover for duration.',
   'Violation drive': 'Extra driving minutes past the 4-hour continuous limit.',
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',
   'Current block': 'How full the live continuous drive block is toward 4 hours. Resets after a ≥30 min rest.',
   'Drive left': 'How much driving remains in the current continuous block before 4 hours.',
-  '8h / 24h': 'Longest continuous drive in the rolling 24-hour cycle toward the 8-hour limit.',
-  'Weekly rest': 'Longest continuous off-duty gap in the last 7 days. Required: ≥24 hours.',
+  '24h longest': 'Longest continuous drive in the rolling 24-hour window, shown toward the 8-hour limit.',
+  'Drive in 24h': 'Total credited driving time in the rolling 24-hour window (all trips, not only the longest continuous block).',
+  'Longest rest': 'Longest continuous off-duty gap in the last 7 days. Required: ≥24 hours.',
+  'Days since 24h rest': 'How many days since the last ≥24h continuous rest ended. 0 = currently in a qualifying rest. 7+ = none found in the week.',
   Status: 'Compliant = under all limits. At risk = near 4h or 8h. Violation = 4h continuous, 8h in 24h, and/or missing 24h weekly rest.',
   Time: 'When the driver crossed the 4-hour continuous limit.',
 };
+
+type HosColGroup = '4h' | 'daily' | 'weekly';
+
+const HOS_GROUPS: {
+  id: HosColGroup;
+  title: string;
+  className: string;
+  fields: { label: string; align: 'left' | 'right' }[];
+}[] = [
+  {
+    id: '4h',
+    title: '4h continuous',
+    className: 'bpl-fatigue-group-4h',
+    fields: [
+      { label: 'Longest block', align: 'right' },
+      { label: 'Current block', align: 'right' },
+      { label: 'Drive left', align: 'right' },
+      { label: 'Violation drive', align: 'right' },
+    ],
+  },
+  {
+    id: 'daily',
+    title: 'Daily rest',
+    className: 'bpl-fatigue-group-daily',
+    fields: [
+      { label: '24h longest', align: 'right' },
+      { label: 'Drive in 24h', align: 'right' },
+    ],
+  },
+  {
+    id: 'weekly',
+    title: 'Weekly rest',
+    className: 'bpl-fatigue-group-weekly',
+    fields: [
+      { label: 'Longest rest', align: 'right' },
+      { label: 'Days since 24h rest', align: 'right' },
+    ],
+  },
+];
+
+const HOS_FIELD_COUNT = HOS_GROUPS.reduce((n, g) => n + g.fields.length, 0);
+const TABLE_COL_COUNT = 3 + HOS_FIELD_COUNT + 1;
 
 function scrubHosRecords(list: HosRecord[]): HosRecord[] {
   if (!DEMO_BRANDING) return list;
@@ -84,15 +131,17 @@ function FatigueMeter({
   limit,
   color,
   title,
+  className,
 }: {
   minutes: number;
   limit: number;
   color: string;
   title: string;
+  className?: string;
 }) {
   const pct = pctOfLimit(minutes, limit);
   return (
-    <td title={title}>
+    <td className={className} title={title}>
       <div className="bpl-fatigue-meter">
         <div className="bpl-fatigue-meter-track">
           <div className="bpl-fatigue-meter-fill" style={{ width: `${pct}%`, background: color }} />
@@ -103,9 +152,21 @@ function FatigueMeter({
   );
 }
 
-function ThLabel({ label, align = 'left' }: { label: string; align?: 'left' | 'right' }) {
+function ThLabel({
+  label,
+  align = 'left',
+  className,
+  rowSpan,
+  colSpan,
+}: {
+  label: string;
+  align?: 'left' | 'right' | 'center';
+  className?: string;
+  rowSpan?: number;
+  colSpan?: number;
+}) {
   return (
-    <th style={{ textAlign: align }}>
+    <th rowSpan={rowSpan} colSpan={colSpan} className={className} style={{ textAlign: align }}>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, whiteSpace: 'nowrap' }}>
         {label}
         {COL_TIPS[label] && <InfoTip text={COL_TIPS[label]} label={label} />}
@@ -238,14 +299,14 @@ export default function FatigueManagementPage() {
     {
       label: 'Violations',
       value: counts.violation,
-      hint: '4h / 8h / weekly rest',
+      hint: '4h / daily / weekly',
       color: '#CC0000',
       icon: AlertTriangle,
     },
     {
       label: '8h in 24h',
       value: counts.cycle8h,
-      hint: 'Over 8h continuous',
+      hint: 'Daily rest breach',
       color: '#b45309',
       icon: AlertTriangle,
     },
@@ -258,22 +319,6 @@ export default function FatigueManagementPage() {
     },
   ];
 
-  const headers = [
-    { label: 'Driver', align: 'left' as const },
-    { label: 'Vehicle', align: 'left' as const },
-    { label: 'Site', align: 'left' as const },
-    { label: 'Drive time', align: 'right' as const },
-    { label: 'Trip time', align: 'right' as const },
-    { label: 'Longest block', align: 'right' as const },
-    { label: 'Violation drive', align: 'right' as const },
-    { label: 'Violation trip', align: 'right' as const },
-    { label: 'Current block', align: 'right' as const },
-    { label: 'Drive left', align: 'right' as const },
-    { label: '8h / 24h', align: 'right' as const },
-    { label: 'Weekly rest', align: 'right' as const },
-    { label: 'Status', align: 'left' as const },
-  ];
-
   return (
     <div>
       <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -281,7 +326,7 @@ export default function FatigueManagementPage() {
         Driver Management — Fatigue Management <MockNamesBadge />
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-        Hours of service — 4h continuous (30-min rest resets), 8h continuous in a 24h cycle, and ≥24h continuous rest in a 7-day week.
+        Hours of service — 4h continuous (30-min rest resets), daily rest (8h in 24h), and weekly rest (≥24h off in 7 days).
       </p>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
@@ -416,20 +461,42 @@ export default function FatigueManagementPage() {
       <div className="bpl-card bpl-table-scroll" style={{ padding: 0 }}>
         <table className="bpl-dispatch-table bpl-fatigue-table">
           <thead>
-            <tr>
-              {headers.map(h => (
-                <ThLabel key={h.label} label={h.label} align={h.align} />
+            <tr className="bpl-fatigue-group-row">
+              <ThLabel label="Driver" className="bpl-fatigue-th-identity" rowSpan={2} />
+              <ThLabel label="Vehicle" className="bpl-fatigue-th-identity" rowSpan={2} />
+              <ThLabel label="Site" className="bpl-fatigue-th-identity" rowSpan={2} />
+              {HOS_GROUPS.map(g => (
+                <ThLabel
+                  key={g.id}
+                  label={g.title}
+                  align="center"
+                  colSpan={g.fields.length}
+                  className={`bpl-fatigue-group ${g.className}`}
+                />
               ))}
+              <ThLabel label="Status" className="bpl-fatigue-th-status" rowSpan={2} />
+            </tr>
+            <tr className="bpl-fatigue-field-row">
+              {HOS_GROUPS.map(g =>
+                g.fields.map((f, i) => (
+                  <ThLabel
+                    key={`${g.id}-${f.label}`}
+                    label={f.label}
+                    align={f.align}
+                    className={`bpl-fatigue-field-${g.id}${i === 0 ? ' bpl-fatigue-field-start' : ''}`}
+                  />
+                )),
+              )}
             </tr>
           </thead>
           <tbody>
             {hosLoading ? (
               <tr>
-                <td colSpan={headers.length} style={{ padding: 12 }}><SkelTable rows={5} /></td>
+                <td colSpan={TABLE_COL_COUNT} style={{ padding: 12 }}><SkelTable rows={5} /></td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={headers.length} style={{ textAlign: 'center', padding: 28, color: 'var(--cd-text-muted)' }}>
+                <td colSpan={TABLE_COL_COUNT} style={{ textAlign: 'center', padding: 28, color: 'var(--cd-text-muted)' }}>
                   No drivers match your filters.
                 </td>
               </tr>
@@ -439,11 +506,12 @@ export default function FatigueManagementPage() {
               const longestMin = longestBlockMinutes(record);
               const currentMin = currentBlockMinutes(record);
               const vDrive = record.violationDriveMinutes ?? 0;
-              const vTrip = record.violationTripMinutes ?? 0;
               const cycle8Limit = record.cycle8hLimitMinutes || 480;
               const cycle8Min = record.maxContinuous24hMinutes ?? 0;
+              const drive24h = record.driveMinutes24h ?? 0;
               const weekRestMin = record.longestRestWeekMinutes ?? 0;
               const weekNeed = record.weeklyRestRequiredMinutes || 1440;
+              const daysSinceRest = record.daysSinceWeeklyRest;
               const ruleHints = hosRuleLabels(record.rulesBreached);
               return (
                 <tr key={record.id}>
@@ -452,21 +520,17 @@ export default function FatigueManagementPage() {
                   </td>
                   <td className="bpl-fatigue-cell-clip" title={record.vehicleReg || undefined}>{record.vehicleReg || '—'}</td>
                   <td className="bpl-fatigue-cell-clip" title={record.site || undefined}>{record.site || '—'}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{fmtHosMinutes(record.driveMinutesToday)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{fmtHosMinutes(record.dutyMinutesToday)}</td>
+
+                  {/* 4h continuous */}
                   <FatigueMeter
+                    className="bpl-fatigue-td-4h bpl-fatigue-td-meter bpl-fatigue-field-start"
                     minutes={longestMin}
                     limit={limit}
                     color={meterColor(longestMin, limit)}
                     title={`Longest continuous block: ${fmtHosMinutes(longestMin)} (${longestMin} min) toward the 4h limit`}
                   />
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} title="Moving time driven past the 4h limit">
-                    {vDrive > 0 ? fmtHosMinutes(vDrive) : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} title="Elapsed time from first breach to block end">
-                    {vTrip > 0 ? fmtHosMinutes(vTrip) : '—'}
-                  </td>
                   <FatigueMeter
+                    className="bpl-fatigue-td-4h bpl-fatigue-td-meter"
                     minutes={currentMin}
                     limit={limit}
                     color={meterColor(currentMin, limit, record.status)}
@@ -477,7 +541,8 @@ export default function FatigueManagementPage() {
                     }
                   />
                   <td
-                    style={{ textAlign: 'right', whiteSpace: 'nowrap' }}
+                    className="bpl-fatigue-td-4h"
+                    style={{ textAlign: 'right' }}
                     title={
                       currentMin <= 0 && isTodayView
                         ? 'Current block reset after a ≥30 min rest — full 4h available again'
@@ -490,16 +555,31 @@ export default function FatigueManagementPage() {
                         ? 'Break now'
                         : `${fmtHosMinutes(record.restMinutesRemaining)} left`}
                   </td>
+                  <td className="bpl-fatigue-td-4h" style={{ textAlign: 'right' }} title="Moving time driven past the 4h limit">
+                    {vDrive > 0 ? fmtHosMinutes(vDrive) : '—'}
+                  </td>
+
+                  {/* Daily rest */}
                   <FatigueMeter
+                    className="bpl-fatigue-td-daily bpl-fatigue-td-meter bpl-fatigue-field-start"
                     minutes={cycle8Min}
                     limit={cycle8Limit}
                     color={meterColor(cycle8Min, cycle8Limit)}
-                    title={`Rolling 24h continuous: ${fmtHosMinutes(cycle8Min)} toward 8h limit`}
+                    title={`Longest continuous in 24h: ${fmtHosMinutes(cycle8Min)} toward 8h limit`}
                   />
                   <td
+                    className="bpl-fatigue-td-daily"
+                    style={{ textAlign: 'right' }}
+                    title={`Total credited driving in rolling 24h: ${fmtHosMinutes(drive24h)}`}
+                  >
+                    {fmtHosMinutes(drive24h)}
+                  </td>
+
+                  {/* Weekly rest */}
+                  <td
+                    className="bpl-fatigue-td-weekly bpl-fatigue-field-start"
                     style={{
                       textAlign: 'right',
-                      whiteSpace: 'nowrap',
                       color: record.weeklyRestOk === false ? '#CC0000' : 'inherit',
                       fontWeight: record.weeklyRestOk === false ? 600 : 400,
                     }}
@@ -510,8 +590,25 @@ export default function FatigueManagementPage() {
                     }
                   >
                     {fmtHosMinutes(weekRestMin)}
-                    {record.weeklyRestOk === false ? ' ✗' : ''}
                   </td>
+                  <td
+                    className="bpl-fatigue-td-weekly"
+                    style={{
+                      textAlign: 'right',
+                      color: daysSinceRest == null || daysSinceRest >= 3 ? '#CC0000' : 'inherit',
+                      fontWeight: daysSinceRest == null || daysSinceRest >= 3 ? 600 : 400,
+                    }}
+                    title={
+                      daysSinceRest == null
+                        ? 'No ≥24h continuous rest found in the last 7 days'
+                        : daysSinceRest === 0
+                          ? 'Currently in (or just completed) a ≥24h continuous rest'
+                          : `${daysSinceRest} day${daysSinceRest === 1 ? '' : 's'} since last ≥24h continuous rest ended`
+                    }
+                  >
+                    {daysSinceRest == null ? '7+' : `${daysSinceRest}d`}
+                  </td>
+
                   <td>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span className="bpl-dispatch-status" style={{ background: st.bg, color: st.color }}>

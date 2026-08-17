@@ -94,7 +94,7 @@ function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
     return true;
   });
 
-  const pagination = useClientPagination(filtered, 100);
+  const pagination = useClientPagination(filtered, 100, `${deferredSearch}|${eventFilter}`);
 
   return (
     <div className="bpl-card" style={{ display: 'flex', flexDirection: 'column', minHeight: 520, padding: 0 }}>

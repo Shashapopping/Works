@@ -170,7 +170,7 @@ export default function TrainingPage() {
     ? queue.filter(row => row.driver.name.toLowerCase().includes(deferredSearch.toLowerCase()) || row.driver.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
     : queue;
 
-  const pagination = useClientPagination(visible, 25);
+  const pagination = useClientPagination(visible, 25, deferredSearch);
 
   const toggle = (key: string) => setExpanded(prev => {
     const n = new Set(prev);

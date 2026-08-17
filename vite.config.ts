@@ -362,7 +362,7 @@ export default defineConfig({
           res.end(JSON.stringify(getSessionTrips()))
         })
 
-        // GET /api/driver-distance?range=24h|currentMonth|lastMonth|month&month=YYYY-MM
+        // GET /api/driver-distance?range=today|7d|24h|currentMonth|lastMonth|month&month=YYYY-MM (or from/to)
         server.middlewares.use('/api/driver-distance', (req, res) => {
           if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
           if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
@@ -379,7 +379,7 @@ export default defineConfig({
           const includeJourneys = params.get('includeJourneys') === '1' || params.get('includeJourneys') === 'true'
           const slim = includeJourneys
             ? summary
-            : { ...summary, assets: summary.assets.map(({ journeys, ...rest }: any) => rest) }
+            : { ...summary, assets: summary.assets.map(({ journeys, trips, ...rest }: any) => rest) }
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(slim))
         })

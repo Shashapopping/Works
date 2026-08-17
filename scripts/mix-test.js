@@ -83,9 +83,19 @@ const TRIPS_MAX_LOOKBACK_DAYS = 6;
 /** Unknown EventTypeIds already sampled this process — avoid unbounded unknown-events.log growth. */
 const unknownEventTypesLogged = new Set();
 
-/** Keep only fields needed for KPI / distance / fuel — drop fat position blobs. */
+/** Keep fields needed for KPI / distance / fuel / drive-idle split. */
 function slimTrip(trip) {
   if (!trip || typeof trip !== 'object') return trip;
+  const fuel = trip.FuelUsedLitres ?? trip.FuelUsedLiters ?? trip.fuelUsedLitres ?? null;
+  const subs = Array.isArray(trip.SubTrips) ? trip.SubTrips.map(s => ({
+    FuelUsedLitres: s.FuelUsedLitres ?? s.FuelUsedLiters ?? null,
+    DrivingTime: s.DrivingTime ?? null,
+    StandingTime: s.StandingTime ?? null,
+    EngineSeconds: s.EngineSeconds ?? null,
+    StartEngineSeconds: s.StartEngineSeconds ?? null,
+    EndEngineSeconds: s.EndEngineSeconds ?? null,
+    Duration: s.Duration ?? null,
+  })) : undefined;
   return {
     TripId: trip.TripId ?? trip.TripID ?? trip.Id ?? trip.tripId ?? null,
     AssetId: (trip.AssetId ?? trip.AssetID ?? trip.assetId)?.toString?.() ?? trip.AssetId ?? null,
@@ -94,8 +104,14 @@ function slimTrip(trip) {
     TripEnd: trip.TripEnd || trip.tripEnd || trip.EndDateTime || null,
     DistanceKilometers: Number(trip.DistanceKilometers ?? trip.distanceKm ?? 0),
     DrivingTime: trip.DrivingTime ?? trip.drivingTimeSeconds ?? null,
+    StandingTime: trip.StandingTime ?? null,
     Duration: trip.Duration ?? trip.durationSeconds ?? null,
     MaxSpeedKilometersPerHour: trip.MaxSpeedKilometersPerHour ?? trip.maxSpeedKph ?? null,
+    FuelUsedLitres: fuel != null && Number.isFinite(Number(fuel)) ? Math.abs(Number(fuel)) : null,
+    EngineSeconds: trip.EngineSeconds ?? null,
+    StartEngineSeconds: trip.StartEngineSeconds ?? null,
+    EndEngineSeconds: trip.EndEngineSeconds ?? null,
+    ...(subs?.length ? { SubTrips: subs } : {}),
   };
 }
 
@@ -1075,15 +1091,41 @@ function getMonthBounds(monthValue) {
   };
 }
 
+function isDateOnlyToken(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
 function getDistanceRangeBounds(range = '24h', monthValue = null, fromIso = null, toIso = null) {
   if (fromIso && toIso) {
-    const start = new Date(fromIso);
-    const end = new Date(toIso);
+    const start = isDateOnlyToken(fromIso)
+      ? new Date(`${fromIso.trim()}T00:00:00`)
+      : new Date(fromIso);
+    const end = isDateOnlyToken(toIso)
+      ? new Date(`${toIso.trim()}T23:59:59.999`)
+      : new Date(toIso);
     if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && end > start) {
       return { start, end };
     }
   }
   const now = new Date();
+  const r = String(range || '').toLowerCase();
+  if (r === 'today' || r === 'day') {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    return { start, end: now };
+  }
+  if (r === '7d' || r === '7days' || r === 'week') {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+    return { start, end: now };
+  }
+  if (r === '30d' || r === '30days') {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 29);
+    return { start, end: now };
+  }
   if (range === 'currentMonth') {
     const m = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
     return getMonthBounds(m);
@@ -1148,7 +1190,10 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
       avgSpeedKph,
       longestJourneyKm,
       drivers: Array.from(asset.driverNames),
+      /** Merged journeys (UI distance cards). */
       journeys,
+      /** Unmerged MiX trips — prefer for trip reports (accurate start/end + distance). */
+      trips: sorted,
     };
   }).sort((a, b) => b.totalDistanceKm - a.totalDistanceKm);
 
@@ -1290,6 +1335,58 @@ function longestRestGapMinutes(trips, windowStart, windowEnd) {
   return Math.round(longest / 60000);
 }
 
+/**
+ * Days since the most recent ≥requiredMin continuous rest ended.
+ * 0 = currently in (or just finished) a qualifying rest. null = none in the window.
+ */
+function daysSinceQualifyingRest(trips, windowStart, windowEnd, requiredMin) {
+  const requiredMs = Math.max(0, requiredMin) * 60000;
+  const end = Math.max(windowStart, windowEnd);
+  const sorted = [...(trips || [])].sort((a, b) => a.startMs - b.startMs);
+  const gaps = [];
+  if (!sorted.length) {
+    gaps.push({ start: windowStart, end });
+  } else {
+    gaps.push({ start: windowStart, end: sorted[0].startMs });
+    for (let i = 1; i < sorted.length; i++) {
+      gaps.push({ start: sorted[i - 1].endMs, end: sorted[i].startMs });
+    }
+    gaps.push({ start: sorted[sorted.length - 1].endMs, end });
+  }
+
+  let lastQualifyingEnd = null;
+  for (const g of gaps) {
+    if (g.end - g.start >= requiredMs) lastQualifyingEnd = g.end;
+  }
+  if (lastQualifyingEnd == null) return null;
+  // Still inside the open trailing rest that already qualifies.
+  if (lastQualifyingEnd >= end - 1000) return 0;
+  return Math.max(0, Math.floor((end - lastQualifyingEnd) / 86400000));
+}
+
+/**
+ * MiX often leaves trips open overnight: DrivingTime ≈ wall clock, tiny km.
+ * That is not continuous driving — cap HOS drive credit by plausible speed.
+ * When DrivingTime is missing/0, do NOT fall back to full wall span for parked
+ * pulses (that alone can invent multi-hour "continuous" blocks).
+ */
+function plausibleHosDriveSec(distanceKm, driveSecCandidate, spanSec) {
+  const span = Math.max(0, Number(spanSec) || 0);
+  let driveSec = Math.max(0, Number(driveSecCandidate) || 0);
+  if (span > 0) driveSec = Math.min(driveSec, span);
+  if (driveSec <= 0) return 0;
+
+  const km = Number(distanceKm);
+  const hours = driveSec / 3600;
+  // ≥1h "driving" under 5 km/h average → parked / ignition-open trip
+  if (hours >= 1 && Number.isFinite(km) && km >= 0 && km / hours < 5) {
+    const estimatedSec = (km / 15) * 3600; // credit distance at 15 kph crawl
+    driveSec = Math.min(driveSec, Math.max(0, estimatedSec));
+    if (span > 0) driveSec = Math.min(driveSec, span);
+  }
+  return driveSec;
+}
+
 function pushNormalizedTrip(byDriver, raw, rangeStart, rangeEnd) {
   const t = normalizeTripForDistance(raw);
   const startMs = t.tripStart ? new Date(t.tripStart).getTime() : NaN;
@@ -1306,17 +1403,53 @@ function pushNormalizedTrip(byDriver, raw, rangeStart, rangeEnd) {
   const key = t.driverId || t.driverName;
   const spanSec = (tEndMs - tStartMs) / 1000;
   const driveSecRaw = Number(t.drivingTimeSeconds);
-  const driveSec = Number.isFinite(driveSecRaw) && driveSecRaw > 0 ? driveSecRaw : spanSec;
+  const km = Number(t.distanceKm) || 0;
+  // Prefer MiX DrivingTime. If missing/0: only invent drive from distance
+  // (never from wall clock — parked open trips would become fake continuous hours).
+  let driveSecCandidate = 0;
+  if (Number.isFinite(driveSecRaw) && driveSecRaw > 0) {
+    driveSecCandidate = driveSecRaw;
+  } else if (km > 0.05) {
+    driveSecCandidate = Math.min(spanSec, (km / 15) * 3600);
+  }
+  const driveSec = plausibleHosDriveSec(km, driveSecCandidate, spanSec);
 
   if (!byDriver.has(key)) byDriver.set(key, []);
   byDriver.get(key).push({
     startMs: tStartMs,
     endMs: tEndMs,
     driveSec,
+    distanceKm: km,
     driverName: t.driverName,
     assetId: t.assetId,
     regNo: t.regNo,
   });
+}
+
+/**
+ * Attribute only the portion of a trip that falls inside [windowStart, windowEnd].
+ * Overnight trips that started yesterday must not dump yesterday's drive into "today".
+ */
+function clipTripsToWindow(trips, windowStart, windowEnd) {
+  const out = [];
+  for (const t of trips || []) {
+    const startMs = Math.max(t.startMs, windowStart);
+    const endMs = Math.min(t.endMs, windowEnd);
+    if (!(endMs > startMs)) continue;
+    const fullSpan = t.endMs - t.startMs;
+    const frac = fullSpan > 0 ? (endMs - startMs) / fullSpan : 0;
+    const clippedSpanSec = (endMs - startMs) / 1000;
+    const clippedKm = (Number(t.distanceKm) || 0) * frac;
+    const clippedDriveCandidate = (Number(t.driveSec) || 0) * frac;
+    out.push({
+      ...t,
+      startMs,
+      endMs,
+      distanceKm: clippedKm,
+      driveSec: plausibleHosDriveSec(clippedKm, clippedDriveCandidate, clippedSpanSec),
+    });
+  }
+  return out;
 }
 
 /**
@@ -1386,8 +1519,16 @@ export function getHosRecords(dayStr) {
   for (const [key, allTrips] of byDriver.entries()) {
     allTrips.sort((a, b) => a.startMs - b.startMs);
 
-    const dayTrips = allTrips.filter(t => t.endMs > startOfDay && t.startMs < endOfDay);
-    const cycleTrips = allTrips.filter(t => t.endMs > cycle24Start && t.startMs < windowEnd);
+    const dayTrips = clipTripsToWindow(
+      allTrips.filter(t => t.endMs > startOfDay && t.startMs < endOfDay),
+      startOfDay,
+      windowEnd,
+    );
+    const cycleTrips = clipTripsToWindow(
+      allTrips.filter(t => t.endMs > cycle24Start && t.startMs < windowEnd),
+      cycle24Start,
+      windowEnd,
+    );
     const weekTrips = allTrips;
 
     // Keep day drivers, plus anyone breaching 8h/24h or weekly rest (so fatigue page sees them).
@@ -1405,11 +1546,11 @@ export function getHosRecords(dayStr) {
 
     const driveMinutesToday = Math.round(dayTrips.reduce((s, t) => s + t.driveSec, 0) / 60);
     const driveMinutes24h = Math.round(cycleTrips.reduce((s, t) => s + t.driveSec, 0) / 60);
-    const firstStart = dayTrips[0]?.startMs;
-    const lastEnd = dayTrips[dayTrips.length - 1]?.endMs;
-    const dutyMinutesToday = dayTrips.length
-      ? Math.max(driveMinutesToday, Math.round((lastEnd - firstStart) / 60000))
-      : 0;
+    // Trip time = sum of clipped trip wall durations inside the day (excludes gaps between
+    // trips, and does not stretch from yesterday's open-trip start to today's last end).
+    const dutyMinutesToday = Math.round(
+      dayTrips.reduce((s, t) => s + Math.max(0, t.endMs - t.startMs) / 60000, 0),
+    );
 
     const {
       maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory,
@@ -1422,6 +1563,9 @@ export function getHosRecords(dayStr) {
 
     const longestRestWeekMinutes = longestRestGapMinutes(weekTrips, weekStart, windowEnd);
     const weeklyRestOk = longestRestWeekMinutes >= WEEKLY_REST_MIN;
+    const daysSinceWeeklyRest = daysSinceQualifyingRest(
+      weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
+    );
 
     const rulesBreached = [];
     if (continuousMin >= DRIVE_LIMIT_MIN || breaches > 0) rulesBreached.push('4h_continuous');
@@ -1466,6 +1610,7 @@ export function getHosRecords(dayStr) {
       longestRestWeekMinutes,
       weeklyRestRequiredMinutes: WEEKLY_REST_MIN,
       weeklyRestOk,
+      daysSinceWeeklyRest,
       rulesBreached,
       breaches,
       violationDriveMinutes,

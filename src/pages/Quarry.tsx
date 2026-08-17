@@ -1,24 +1,24 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Mountain, Gauge, AlertTriangle, Truck, Navigation, Fuel,
   Droplets, ArrowUpRight, Activity,
 } from 'lucide-react';
-import { useFleet, authFetch, type Vehicle, type TripAsset } from '../context/FleetContext';
+import { useFleet, type Vehicle } from '../context/FleetContext';
 import { KpiCard } from '../components/KpiCard';
+import SegmentPeriodBar from '../components/SegmentPeriodBar';
 import {
   QUARRY_SITE_KEYS, QUARRY_SITE_LABELS, fuelZoneColor, type QuarrySiteKey,
 } from '../components/FuelChart';
 import { useFuelConsumption } from '../hooks/useFuelConsumption';
+import { useSegmentPeriod } from '../hooks/useDriverDistancePeriod';
 import { aggregateMetrics } from '../lib/fuelConsumption';
+import { segmentPeriodToFuel } from '../lib/segmentPeriod';
 import {
   segmentVehicles, segmentTripAssets, quarrySiteLabel,
   countByStatus, STATUS_COLOR, utilizationPct,
 } from '../lib/segmentMetrics';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
-
-/** HBM Availability CSV import window (source=excel in fleet.db). */
-const HAUL_HISTORY = { from: '2026-01-01', to: '2026-07-01' };
 
 type QuarryVehicle = Vehicle & { fuelLevel?: { level: number } | null };
 
@@ -33,35 +33,16 @@ function fmtRatio(n: number | null | undefined) {
 }
 
 export default function Quarry() {
-  const { vehicles, driverDistance } = useFleet();
-  const { data: fuelData, loading: fuelLoading } = useFuelConsumption('custom', HAUL_HISTORY);
-  const [historyAssets, setHistoryAssets] = useState<TripAsset[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await authFetch(
-          `/api/driver-distance?from=${encodeURIComponent(HAUL_HISTORY.from)}&to=${encodeURIComponent(HAUL_HISTORY.to)}`,
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled) setHistoryAssets(data.assets || []);
-      } catch { /* keep empty */ }
-      finally {
-        if (!cancelled) setHistoryLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  const { vehicles } = useFleet();
+  const {
+    period, setPeriod, customRange, setCustomRange,
+    assets: periodAssets, loading: historyLoading, label: periodLabel,
+  } = useSegmentPeriod('today');
+  const fuelReq = useMemo(() => segmentPeriodToFuel(period, customRange), [period, customRange]);
+  const { data: fuelData, loading: fuelLoading } = useFuelConsumption(fuelReq.mode, fuelReq.custom);
 
   const fleet = useMemo(() => segmentVehicles(vehicles, 'quarry') as QuarryVehicle[], [vehicles]);
-  // Prefer Availability CSV window for haul KPIs; fall back to live distance strip
-  const haulAssets = useMemo(() => {
-    const base = historyAssets.length ? historyAssets : (driverDistance?.assets ?? []);
-    return segmentTripAssets(fleet, base);
-  }, [fleet, historyAssets, driverDistance]);
+  const haulAssets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
   const distanceKm = Math.round(haulAssets.reduce((s, a) => s + a.totalDistanceKm, 0));
   const activeHaulers = haulAssets.filter(a => a.totalDistanceKm > 0).length;
 
@@ -134,11 +115,19 @@ export default function Quarry() {
 
   return (
     <div>
-      <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Quarry Haulage</h1>
-        <p className="bpl-page-subtitle">
-          Ewekoro & Mfamosing — live status plus haul/fuel from Availability import (Jan–Jun 2026).
-        </p>
+      <div className="bpl-page-header bpl-page-header-row">
+        <div>
+          <h1 className="bpl-page-title">Quarry Haulage</h1>
+          <p className="bpl-page-subtitle">
+            Ewekoro & Mfamosing — live status plus haul and fuel for the selected period.
+          </p>
+        </div>
+        <SegmentPeriodBar
+          period={period}
+          customRange={customRange}
+          onPeriod={setPeriod}
+          onCustomRange={setCustomRange}
+        />
       </div>
 
       <div className="bpl-kpi-grid">
@@ -148,7 +137,7 @@ export default function Quarry() {
           sub={`${fleet.length} quarry assets tracked`}
           color="#0d9488"
           icon={Truck}
-          tip="Quarry assets with distance in the Availability CSV window (Jan–Jun 2026). Live fleet size in the sub-line."
+          tip={`Quarry assets with distance ${periodLabel}. Live fleet size in the sub-line.`}
         />
         <KpiCard
           label="Moving Now"
@@ -161,10 +150,10 @@ export default function Quarry() {
         <KpiCard
           label="Haul Distance"
           value={historyLoading ? <SkelValue wide /> : `${distanceKm.toLocaleString()} km`}
-          sub="Availability window (CSV)"
+          sub={periodLabel}
           color="#059669"
           icon={Mountain}
-          tip="Sum of trip distance from Availability import (excel source) for quarry assets, Jan–Jun 2026."
+          tip={`Sum of MiX trip distance ${periodLabel} for quarry assets.`}
         />
         <KpiCard
           label="Utilization"
@@ -215,7 +204,7 @@ export default function Quarry() {
               <div style={{ fontSize: 28, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
                 {historyLoading ? <SkelValue wide /> : siteKm.toLocaleString()}
                 {!historyLoading && (
-                  <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--cd-text-muted)', marginLeft: 6 }}>km (CSV)</span>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--cd-text-muted)', marginLeft: 6 }}>km</span>
                 )}
               </div>
               <div style={{ height: 6, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden', marginTop: 12 }}>
@@ -239,7 +228,7 @@ export default function Quarry() {
               Haul Distance Leaderboard
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
-              Top assets by km in Availability window (Jan–Jun 2026)
+              Top assets by km {periodLabel}
             </div>
           </div>
           <div style={{ overflowX: 'auto' }}>
@@ -256,7 +245,7 @@ export default function Quarry() {
                   <tr><td colSpan={5} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
                 ) : leaderboard.length === 0 ? (
                   <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
-                    No haul distance in Availability window
+                    No haul distance {periodLabel}
                   </td></tr>
                 ) : leaderboard.map((row, i) => {
                   const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
@@ -293,7 +282,7 @@ export default function Quarry() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Fuel size={16} color="#0d9488" />
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
-                  Fuel Today
+                  Fuel {periodLabel}
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 3 }}>
@@ -321,7 +310,7 @@ export default function Quarry() {
             <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 6 }}>
               {fuelSummary.distance > 0
                 ? `${Math.round(fuelSummary.distance).toLocaleString()} km · ${fmtRatio(fuelSummary.litersPerKm)} L/km`
-                : 'No trip-fuel rows in Availability window'}
+                : `No trip-fuel rows ${periodLabel}`}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 16 }}>
@@ -382,7 +371,7 @@ export default function Quarry() {
             )}
 
             <Link
-              to="/fuel/consumption?period=day"
+              to={`/fuel/consumption?period=${period === 'week' ? 'week' : 'day'}`}
               style={{
                 display: 'block', marginTop: 16, textAlign: 'center', padding: '9px 12px',
                 borderRadius: 8, border: '1px solid rgba(13,148,136,0.35)',

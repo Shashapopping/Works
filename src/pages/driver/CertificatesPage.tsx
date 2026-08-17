@@ -104,7 +104,7 @@ export default function CertificatesPage() {
     return certs.filter(c => c.driverName.toLowerCase().includes(s) || c.certType.toLowerCase().includes(s));
   }, [certs, deferredSearch]);
 
-  const pagination = useClientPagination(filtered, 25);
+  const pagination = useClientPagination(filtered, 25, deferredSearch);
 
   const expiredCt = certs.filter(c => certificateStatus(c.expiryDate).status === 'Expired').length;
   const expiringCt = certs.filter(c => certificateStatus(c.expiryDate).status === 'Expiring Soon').length;

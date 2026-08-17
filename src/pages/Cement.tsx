@@ -4,6 +4,8 @@ import {
 } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import { KpiCard } from '../components/KpiCard';
+import SegmentPeriodBar from '../components/SegmentPeriodBar';
+import { useSegmentPeriod } from '../hooks/useDriverDistancePeriod';
 import {
   segmentVehicles, segmentTripAssets, utilizationPct, cementCorridor,
   isSpotHireVehicle, groupByZone, STATUS_COLOR,
@@ -32,9 +34,13 @@ function MiniStat({ label, value, color, tip, note }: {
 }
 
 export default function Cement() {
-  const { vehicles, driverDistance, distanceLoading } = useFleet();
+  const { vehicles } = useFleet();
+  const {
+    period, setPeriod, customRange, setCustomRange,
+    assets: periodAssets, loading: distanceLoading, label: periodLabel,
+  } = useSegmentPeriod('today');
   const fleet = useMemo(() => segmentVehicles(vehicles, 'cement'), [vehicles]);
-  const assets = useMemo(() => segmentTripAssets(fleet, driverDistance?.assets ?? []), [fleet, driverDistance]);
+  const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
 
   const util = utilizationPct(fleet);
   const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
@@ -78,11 +84,19 @@ export default function Cement() {
 
   return (
     <div>
-      <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Cement Distribution</h1>
-        <p className="bpl-page-subtitle">
-          North, East & West corridors — fleet utilization, turnaround, and owned vs spot-hire mix.
-        </p>
+      <div className="bpl-page-header bpl-page-header-row">
+        <div>
+          <h1 className="bpl-page-title">Cement Distribution</h1>
+          <p className="bpl-page-subtitle">
+            North, East & West corridors — fleet utilization, turnaround, and owned vs spot-hire mix.
+          </p>
+        </div>
+        <SegmentPeriodBar
+          period={period}
+          customRange={customRange}
+          onPeriod={setPeriod}
+          onCustomRange={setCustomRange}
+        />
       </div>
 
       <div className="bpl-kpi-grid">
@@ -97,18 +111,18 @@ export default function Cement() {
         <KpiCard
           label="Fleet Size"
           value={fleet.length}
-          sub={distanceLoading ? 'Loading distance…' : `${assets.length} with distance today`}
+          sub={distanceLoading ? 'Loading distance…' : `${assets.length} with distance ${periodLabel}`}
           color="#c2410c"
           icon={Truck}
-          tip="Count of MiX assets in the Cement segment (zones matching cement corridors — excludes Bulk Tankers, Quarry, and Ready Mix). Sub-line = how many of those have distance recorded today."
+          tip={`Count of MiX assets in the Cement segment (zones matching cement corridors — excludes Bulk Tankers, Quarry, and Ready Mix). Sub-line = how many of those have distance recorded ${periodLabel}.`}
         />
         <KpiCard
-          label="Distance Today"
+          label={`Distance ${periodLabel}`}
           value={distanceLoading ? <SkelValue wide /> : `${distanceKm.toLocaleString()} km`}
           sub="Segment fleet total"
           color="#ea580c"
           icon={Navigation}
-          tip="Sum of MiX trip distance today for cement-segment assets only (driverDistance assets filtered to this segment)."
+          tip={`Sum of MiX trip distance ${periodLabel} for cement-segment assets only.`}
         />
         <KpiCard
           label="Spot Hire"
@@ -194,7 +208,7 @@ export default function Cement() {
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cd-border)' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Distance Leaders</div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
-            Highest MiX trip distance today in the cement segment
+            Highest MiX trip distance {periodLabel} in the cement segment
           </div>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -210,7 +224,7 @@ export default function Cement() {
               {distanceLoading ? (
                 <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
               ) : topDistance.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data today</td></tr>
+                <tr><td colSpan={6} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data {periodLabel}</td></tr>
               ) : topDistance.map((row, i) => {
                 const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
                 return (

@@ -5,7 +5,8 @@
  * 1) 4 hours continuous driving requires a ≥30-minute rest (parked gap between trips).
  * 2) 8 hours continuous driving within a rolling 24-hour cycle.
  * 3) ≥24 hours continuous rest within a rolling 7-day week.
- * "Today" = since 00:00 Africa/Lagos.
+ * "Today" = since 00:00 Africa/Lagos — trip drive time is clipped to that day
+ * (overnight trips do not dump yesterday’s hours into today).
  */
 
 export type HosStatus = 'compliant' | 'warning' | 'violation';
@@ -39,6 +40,8 @@ export interface HosRecord {
   longestRestWeekMinutes?: number;
   weeklyRestRequiredMinutes?: number;
   weeklyRestOk?: boolean;
+  /** Days since last ≥24h continuous rest ended; 0 = in one now; null = none in window. */
+  daysSinceWeeklyRest?: number | null;
   rulesBreached?: HosRuleId[];
   breaches: number;
   violationDriveMinutes: number;

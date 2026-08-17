@@ -35,7 +35,8 @@ import {
   FLEET_SCORE_CONFIG_EVENT,
   type FleetScoreConfig,
 } from '../lib/fleetSafetyScore';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, BOOT_PREFETCH_URLS } from '../lib/apiCache';
+import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
 
@@ -704,18 +705,25 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     loadFuelSummary();
     loadEnvironment();
     const kpiWarm = window.setTimeout(() => { void prefetchKpi(); }, 1500);
+    const bootWarm = window.setTimeout(() => {
+      for (const url of BOOT_PREFETCH_URLS) {
+        void authCachedJson(url, authFetch, { force: true });
+      }
+    }, 2500);
     const metaInterval = setInterval(loadMetadata, 10_000);
     const vehicleInterval = setInterval(loadVehicles, 10_000);
-    const eventInterval = setInterval(loadEvents, 15_000);
-    const distanceInterval = setInterval(loadDriverDistance, 60_000);
-    const fuelInterval = setInterval(loadFuelSummary, 60_000);
+    // Heavy rollups: ~60s + jitter so pages don't all hit SQLite together
+    const stopEvents = startJitteredInterval(loadEvents, 15_000, 4_000);
+    const stopDistance = startJitteredInterval(loadDriverDistance);
+    const stopFuel = startJitteredInterval(loadFuelSummary);
     return () => {
       clearTimeout(kpiWarm);
+      clearTimeout(bootWarm);
       clearInterval(metaInterval);
       clearInterval(vehicleInterval);
-      clearInterval(eventInterval);
-      clearInterval(distanceInterval);
-      clearInterval(fuelInterval);
+      stopEvents();
+      stopDistance();
+      stopFuel();
     };
   }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadFuelSummary, loadEnvironment, prefetchKpi]);
 

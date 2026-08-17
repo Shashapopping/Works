@@ -20,6 +20,7 @@ import {
 } from '../lib/fuelConsumption';
 import { displayDriverName } from '../lib/driverUtils';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
+import { startJitteredInterval } from '../lib/pollSchedule';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 const COL_COUNT = 10;
@@ -235,8 +236,7 @@ export default function FuelConsumption() {
   }, [fetchData]);
 
   useEffect(() => {
-    const id = setInterval(() => void fetchData(true), 60_000);
-    return () => clearInterval(id);
+    return startJitteredInterval(() => { void fetchData(true); });
   }, [fetchData]);
 
   const initialLoading = loading;

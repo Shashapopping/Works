@@ -2,6 +2,8 @@
  * Frontend API cache — memory + sessionStorage, TTL, in-flight dedupe.
  * Used by Fleet polls and Utilization & KPIs so remounts / parallel views
  * don't spam the same endpoints.
+ *
+ * Also exposes URL-keyed helpers (Chevron-style) for page rollups.
  */
 
 const PREFIX = 'bpl_api_cache:';
@@ -10,6 +12,7 @@ type CacheEntry = { data: unknown; at: number };
 
 const memory = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<unknown>>();
+const MAX_ENTRIES = 80;
 
 export const CACHE_TTL = {
   fleetData: 8_000,
@@ -21,6 +24,8 @@ export const CACHE_TTL = {
   fuelHistory: 45_000,
   /** Live continuous-driving clock — keep fairly fresh. */
   hos: 20_000,
+  /** Page rollups — align with ~60s jittered polls. */
+  pageRollup: 55_000,
 } as const;
 
 export const CACHE_KEYS = {
@@ -32,6 +37,12 @@ export const CACHE_KEYS = {
   fuelHistory: (url: string) => `fuel:history:${url}`,
   hos: (url: string) => `hos:${url}`,
 } as const;
+
+function trimMemory() {
+  if (memory.size <= MAX_ENTRIES) return;
+  const sorted = [...memory.entries()].sort((a, b) => a[1].at - b[1].at);
+  for (const [k] of sorted.slice(0, memory.size - MAX_ENTRIES)) memory.delete(k);
+}
 
 function readSession(key: string): CacheEntry | null {
   try {
@@ -70,6 +81,12 @@ export function cachePeek<T>(key: string): T | null {
   return entry ? (entry.data as T) : null;
 }
 
+/** Alias used by Chevron-style page loaders. */
+export function peekQueryCache<T>(key: string): T | undefined {
+  const v = cachePeek<T>(key);
+  return v === null ? undefined : v;
+}
+
 /** Sync read only if still within TTL. */
 export function cacheGetFresh<T>(key: string, ttlMs: number): T | null {
   const entry = resolveEntry(key);
@@ -78,10 +95,19 @@ export function cacheGetFresh<T>(key: string, ttlMs: number): T | null {
   return entry.data as T;
 }
 
+export function isQueryCacheFresh(key: string, ttlMs: number): boolean {
+  return cacheGetFresh(key, ttlMs) != null;
+}
+
 export function cacheSet(key: string, data: unknown) {
   const entry: CacheEntry = { data, at: Date.now() };
   memory.set(key, entry);
   writeSession(key, entry);
+  trimMemory();
+}
+
+export function setQueryCache(key: string, data: unknown) {
+  cacheSet(key, data);
 }
 
 export function cacheInvalidate(key: string) {
@@ -125,3 +151,34 @@ export async function cachedFetchJson<T>(
   inflight.set(key, promise);
   return promise;
 }
+
+/** Fetch JSON via authFetch; URL is the cache key. Dedupes in-flight same URL. */
+export async function authCachedJson<T>(
+  url: string,
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>,
+  opts?: { force?: boolean; ttlMs?: number },
+): Promise<T | null> {
+  const ttlMs = opts?.ttlMs ?? CACHE_TTL.pageRollup;
+  return cachedFetchJson<T>(
+    url,
+    ttlMs,
+    async () => {
+      const res = await authFetch(url);
+      if (!res.ok) {
+        const stale = cachePeek<T>(url);
+        if (stale !== null) return stale;
+        throw new Error(`HTTP ${res.status}`);
+      }
+      return (await res.json()) as T;
+    },
+    { force: opts?.force },
+  );
+}
+
+/** Warm these shortly after login so Fuel / KPI / Vision open faster. */
+export const BOOT_PREFETCH_URLS = [
+  '/api/driver-distance?range=today',
+  '/api/driver-distance?range=7d',
+  '/api/fuel/consumption?period=week',
+  '/api/kpi?period=week&scope=quarry',
+] as const;

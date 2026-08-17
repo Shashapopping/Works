@@ -33,6 +33,7 @@ import {
   type TabularReport,
 } from '../lib/reportTypes';
 import { generateTabularReport } from '../lib/reports/generateTabularReport';
+import type { TripReportGroupBy } from '../lib/reports/buildTripReport';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
 import { reportTitle as brandReportTitle } from '../lib/branding';
 import { authFetchInit } from '../lib/authApi';
@@ -331,6 +332,7 @@ export default function ReportsPage() {
   const [showTotal, setShowTotal] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [reportType, setReportType] = useState<ReportType>('events');
+  const [tripGroupBy, setTripGroupBy] = useState<TripReportGroupBy>('asset');
   const [tabularPreview, setTabularPreview] = useState<TabularReport | null>(null);
   const [tabularPreviewLoading, setTabularPreviewLoading] = useState(false);
 
@@ -469,6 +471,7 @@ export default function ReportsPage() {
           events: scorecardEvents,
           fromIso: from,
           toIso: to,
+          tripGroupBy,
         });
         if (!cancelled) setTabularPreview(tabular);
       } catch {
@@ -478,7 +481,7 @@ export default function ReportsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [reportType, dateRange, fromDate, toDate, searchTerm, scorecardEvents, reportTitle]);
+  }, [reportType, dateRange, fromDate, toDate, searchTerm, scorecardEvents, reportTitle, tripGroupBy]);
 
   const tabularPreviewRows = useMemo(
     () => (tabularPreview?.rows ?? []).slice(0, EVENT_PREVIEW_LIMIT),
@@ -626,6 +629,7 @@ export default function ReportsPage() {
       events: eventsForReport,
       fromIso: from,
       toIso: to,
+      tripGroupBy,
     });
   };
 
@@ -776,13 +780,34 @@ export default function ReportsPage() {
                   : reportType === 'driver_scorecard'
                     ? 'Driver, phone, reg…'
                     : reportType === 'trips'
-                      ? 'Reg no, driver, journey…'
+                      ? 'Reg no, asset, driver…'
                       : 'Reg no, asset, zone…'
               }
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
             />
           </div>
+
+          {reportType === 'trips' && (
+            <>
+              <div className="bpl-field-label">Organize by</div>
+              <div className="bpl-reports-view-toggle">
+                {([
+                  ['asset', 'Assets'],
+                  ['driver', 'Drivers'],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`bpl-reports-view-btn${tripGroupBy === key ? ' active' : ''}`}
+                    onClick={() => setTripGroupBy(key)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           {reportType === 'events' && (
             <>
@@ -941,15 +966,21 @@ export default function ReportsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {tabularPreviewRows.map((row, i) => (
-                        <tr key={`${row[0]}-${row[2]}-${i}`}>
-                          {row.map((cell, ci) => (
-                            <td key={ci} className={ci === 0 ? undefined : 'muted'}>
-                              {ci === 0 ? <strong>{cell}</strong> : (cell || '—')}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
+                      {tabularPreviewRows.map((row, i) => {
+                        const isGroup = Boolean(row[0]);
+                        return (
+                          <tr
+                            key={`${row[0]}-${row[1]}-${row[2]}-${i}`}
+                            style={isGroup ? { background: 'var(--cd-surface-2)' } : undefined}
+                          >
+                            {row.map((cell, ci) => (
+                              <td key={ci} className={!isGroup && ci > 0 ? 'muted' : undefined}>
+                                {isGroup ? <strong>{cell || '—'}</strong> : (ci === 0 ? '' : (cell || '—'))}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                   {tabularPreview.rowCount > EVENT_PREVIEW_LIMIT && (

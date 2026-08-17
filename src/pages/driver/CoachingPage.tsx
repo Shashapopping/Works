@@ -203,7 +203,7 @@ export default function CoachingPage() {
     ? queue.filter(d => d.name.toLowerCase().includes(deferredSearch.toLowerCase()) || d.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
     : queue;
 
-  const pagination = useClientPagination(visible, 25);
+  const pagination = useClientPagination(visible, 25, deferredSearch);
 
   const toggle = (key: string) => setExpanded(prev => {
     const n = new Set(prev);

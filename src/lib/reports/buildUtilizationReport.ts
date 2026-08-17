@@ -25,8 +25,6 @@ export function buildUtilizationReport(opts: {
     { header: 'Loaded hours', width: 12 },
     { header: 'Utilization %', width: 12 },
     { header: 'Availability %', width: 12 },
-    { header: 'Harsh braking', width: 12 },
-    { header: 'Overspeed', width: 10 },
   ];
 
   const rows: string[][] = [];
@@ -51,8 +49,6 @@ export function buildUtilizationReport(opts: {
       Number(a.loadedHours || 0).toFixed(1),
       pct(a.utilizationPct),
       pct(a.availabilityPct),
-      String(a.harshBrakingCount || 0),
-      String(a.overspeedCount || 0),
     ]);
   }
 

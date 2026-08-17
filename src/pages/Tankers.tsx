@@ -7,25 +7,36 @@ import { useFleet } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
 import { scoreFromEvents, scoreBandColor, scoreBandLabel } from '../lib/fleetSafetyScore';
 import { KpiCard } from '../components/KpiCard';
+import SegmentPeriodBar from '../components/SegmentPeriodBar';
+import { useSegmentPeriod } from '../hooks/useDriverDistancePeriod';
+import { eventsInPeriod, previousPeriodBounds } from '../lib/segmentPeriod';
 import {
-  segmentVehicles, segmentTripAssets, segmentEvents, overspeedCount,
+  segmentVehicles, segmentTripAssets, segmentEvents,
   tankerCorridor, utilizationPct, STATUS_COLOR,
 } from '../lib/segmentMetrics';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 export default function Tankers() {
-  const { vehicles, events, eventsLoading, driverDistance, distanceLoading, scoreConfig } = useFleet();
+  const { vehicles, events, eventsLoading, scoreConfig } = useFleet();
+  const {
+    period, setPeriod, customRange, setCustomRange,
+    assets: periodAssets, loading: distanceLoading, label: periodLabel,
+  } = useSegmentPeriod('today');
   const fleet = useMemo(() => segmentVehicles(vehicles, 'tankers'), [vehicles]);
   const segEvents = useMemo(() => segmentEvents(fleet, events), [fleet, events]);
-  const assets = useMemo(() => segmentTripAssets(fleet, driverDistance?.assets ?? []), [fleet, driverDistance]);
+  const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
 
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-  const recent = segEvents.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-  const prev = segEvents.filter(e => {
-    const t = new Date(e.eventTime || e.timestamp).getTime();
-    return t >= sixtyDaysAgo && t < thirtyDaysAgo;
-  });
+  const recent = useMemo(
+    () => eventsInPeriod(segEvents, period, customRange),
+    [segEvents, period, customRange],
+  );
+  const prev = useMemo(() => {
+    const b = previousPeriodBounds(period, customRange);
+    return segEvents.filter(e => {
+      const t = new Date(e.eventTime || e.timestamp).getTime();
+      return t >= b.fromMs && t < b.toMs;
+    });
+  }, [segEvents, period, customRange]);
   const score = scoreFromEvents(recent, fleet.length, scoreConfig);
   const delta = score - scoreFromEvents(prev, fleet.length, scoreConfig);
   const scoreColor = scoreBandColor(score, scoreConfig);
@@ -33,7 +44,7 @@ export default function Tankers() {
 
   const util = utilizationPct(fleet);
   const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
-  const overspeeds = overspeedCount(segEvents, 30);
+  const overspeeds = recent.filter(e => e.label === 'Overspeeding' || e.label === 'Overspeed Tiered').length;
   const harshBrakes = recent.filter(e => e.label === 'Harsh Braking').length;
 
   const corridors = useMemo(() => {
@@ -56,25 +67,33 @@ export default function Tankers() {
     })),
   [assets, fleet]);
 
-  const recentIncidents = segEvents.filter(e => e.type !== 'panic').slice(0, 8);
+  const recentIncidents = recent.filter(e => e.type !== 'panic').slice(0, 8);
 
   return (
     <div>
-      <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Bulk Tankers</h1>
-        <p className="bpl-page-subtitle">
-          East & West pneumatic bulk cement — long-haul safety, utilization, and corridor performance.
-        </p>
+      <div className="bpl-page-header bpl-page-header-row">
+        <div>
+          <h1 className="bpl-page-title">Bulk Tankers</h1>
+          <p className="bpl-page-subtitle">
+            East & West pneumatic bulk cement — long-haul safety, utilization, and corridor performance.
+          </p>
+        </div>
+        <SegmentPeriodBar
+          period={period}
+          customRange={customRange}
+          onPeriod={setPeriod}
+          onCustomRange={setCustomRange}
+        />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 14, marginBottom: 20 }}>
-        <div className="bpl-card" style={{ padding: '22px 24px' }} title="Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (30d vs prior 30d) and Settings score weights. Not based on trip counts.">
+        <div className="bpl-card" style={{ padding: '22px 24px' }} title={`Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (${periodLabel} vs prior period) and Settings score weights. Not based on trip counts.`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)' }}>
               Tanker HSE Score
             </div>
             <span
-              title="Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (30d vs prior 30d) and Settings score weights. Not based on trip counts."
+              title={`Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (${periodLabel} vs prior period) and Settings score weights. Not based on trip counts.`}
               aria-label="Score explanation"
               style={{
                 display: 'inline-flex', width: 14, height: 14, borderRadius: '50%',
@@ -109,13 +128,13 @@ export default function Tankers() {
                 {eventsLoading ? (
                   <SkelValue wide />
                 ) : delta > 0
-                  ? <><TrendingUp size={12} color="#16a34a" /><span style={{ color: '#16a34a', fontWeight: 600 }}>+{delta} vs last month</span></>
+                  ? <><TrendingUp size={12} color="#16a34a" /><span style={{ color: '#16a34a', fontWeight: 600 }}>+{delta} vs prior period</span></>
                   : delta < 0
-                  ? <><TrendingDown size={12} color="#CC0000" /><span style={{ color: '#CC0000', fontWeight: 600 }}>{delta} vs last month</span></>
+                  ? <><TrendingDown size={12} color="#CC0000" /><span style={{ color: '#CC0000', fontWeight: 600 }}>{delta} vs prior period</span></>
                   : <><Minus size={12} color="var(--cd-text-muted)" /><span style={{ color: 'var(--cd-text-muted)' }}>No change</span></>}
               </div>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 8 }}>
-                {eventsLoading ? <SkelValue wide /> : `${recent.length} incidents / 30d · ${overspeeds} overspeed`}
+                {eventsLoading ? <SkelValue wide /> : `${recent.length} incidents ${periodLabel} · ${overspeeds} overspeed`}
               </div>
             </div>
           </div>
@@ -139,20 +158,20 @@ export default function Tankers() {
             tip="Count of MiX assets whose zone matches Bulk Tankers (East/West pneumatic bulk)."
           />
           <KpiCard
-            label="Distance Today"
+            label={`Distance ${periodLabel}`}
             value={distanceLoading ? <SkelValue wide /> : `${distanceKm.toLocaleString()} km`}
             sub="Long-haul total"
             color="#0369a1"
             icon={Navigation}
-            tip="Sum of MiX trip distance today for bulk-tanker assets only."
+            tip={`Sum of MiX trip distance ${periodLabel} for bulk-tanker assets only.`}
           />
           <KpiCard
-            label="Overspeed (30d)"
+            label={`Overspeed (${periodLabel})`}
             value={eventsLoading ? <SkelValue /> : overspeeds}
             sub={eventsLoading ? '—' : `${harshBrakes} harsh braking events`}
             color={overspeeds > 5 ? '#CC0000' : '#d97706'}
             icon={Gauge}
-            tip="Count of overspeed events on tanker assets in the last 30 days (MiX events filtered to this segment). Sub-line = harsh braking in the same window."
+            tip={`Count of overspeed events on tanker assets ${periodLabel} (MiX events filtered to this segment). Sub-line = harsh braking in the same window.`}
           />
         </div>
       </div>
@@ -162,7 +181,7 @@ export default function Tankers() {
           { label: 'East Corridor', list: corridors.east, color: '#0078D4' },
           { label: 'West Corridor', list: corridors.west, color: '#0284c7' },
         ] as const).map(({ label, list, color }) => {
-          const corridorAssets = segmentTripAssets(list, driverDistance?.assets ?? []);
+          const corridorAssets = segmentTripAssets(list, periodAssets);
           const km = Math.round(corridorAssets.reduce((s, a) => s + a.totalDistanceKm, 0));
           const moving = list.filter(v => v.status === 'Moving').length;
           return (
@@ -175,7 +194,7 @@ export default function Tankers() {
                   <div style={{ fontSize: 22, fontWeight: 700, color }}>
                     {distanceLoading ? <SkelValue /> : km.toLocaleString()}
                   </div>
-                  <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>km today</div>
+                  <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>km {periodLabel}</div>
                 </div>
               </div>
             </div>
@@ -187,7 +206,7 @@ export default function Tankers() {
         <div className="bpl-card" style={{ overflow: 'hidden' }}>
           <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cd-border)' }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Long-Haul Leaderboard</div>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Highest distance today — monitor fatigue & overspeed risk</div>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Highest distance {periodLabel} — monitor fatigue & overspeed risk</div>
           </div>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -202,7 +221,7 @@ export default function Tankers() {
                 {distanceLoading ? (
                   <tr><td colSpan={5} style={{ padding: 12 }}><SkelTable rows={5} /></td></tr>
                 ) : longHaul.length === 0 ? (
-                  <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data today</td></tr>
+                  <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data {periodLabel}</td></tr>
                 ) : longHaul.map((row, i) => {
                   const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
                   return (
@@ -229,7 +248,7 @@ export default function Tankers() {
             <Shield size={16} color="#CC0000" />
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Recent HSE Events</div>
-              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Bulk tanker incidents — long haul focus</div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Bulk tanker incidents — {periodLabel}</div>
             </div>
           </div>
           {eventsLoading ? (

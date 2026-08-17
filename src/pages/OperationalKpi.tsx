@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Gauge, AlertTriangle, Search, Truck, Activity, Clock, Package, Zap } from 'lucide-react';
+import { Gauge, AlertTriangle, Search, Truck, Activity, Clock, Package } from 'lucide-react';
 import { authFetch } from '../context/FleetContext';
 import {
   type KpiPeriodMode,
@@ -11,6 +11,7 @@ import {
   ASSET_CLASS_LABELS,
 } from '../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { startJitteredInterval } from '../lib/pollSchedule';
 import { KPI_DEFINITIONS } from '../lib/metricDefinitions';
 import InfoTip from '../components/InfoTip';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
@@ -96,8 +97,7 @@ export default function OperationalKpi() {
 
   useEffect(() => { void fetchData(false); }, [fetchData]);
   useEffect(() => {
-    const id = setInterval(() => void fetchData(true), 5 * 60_000);
-    return () => clearInterval(id);
+    return startJitteredInterval(() => { void fetchData(true); }, 5 * 60_000, 15_000);
   }, [fetchData]);
 
   const initialLoading = loading;
@@ -137,8 +137,6 @@ export default function OperationalKpi() {
     { label: 'Availability (avg)', value: fmtPct(summary?.avgAvailabilityPct), hint: 'Engine runtime / period hours', tip: KPI_DEFINITIONS.availability, color: '#0d9488', icon: Activity },
     { label: 'Engine runtime', value: fmtHours(summary?.totalEngineHours ?? 0), hint: `${summary?.assetCount ?? 0} assets`, tip: KPI_DEFINITIONS.engineRuntime, color: '#7c3aed', icon: Clock },
     { label: 'Loaded duration', value: fmtHours(summary?.totalLoadedHours ?? 0), hint: 'From loaded-truck events', tip: KPI_DEFINITIONS.loadedDuration, color: '#ea580c', icon: Package },
-    { label: 'Harsh braking', value: String(summary?.harshBrakingTotal ?? 0), hint: 'Event count', tip: KPI_DEFINITIONS.harshBraking, color: '#dc2626', icon: AlertTriangle },
-    { label: 'Overspeeding', value: String(summary?.overspeedTotal ?? 0), hint: `${fmtHours(summary?.overspeedHoursTotal ?? 0)} duration`, tip: KPI_DEFINITIONS.overspeeding, color: '#d97706', icon: Zap },
   ];
 
   const columns: { key: keyof KpiAssetRow; label: string; tip?: string; dot?: string }[] = [
@@ -149,8 +147,6 @@ export default function OperationalKpi() {
     { key: 'loadCount', label: 'Loads' },
     { key: 'utilizationPct', label: 'Utilization', tip: KPI_DEFINITIONS.utilization, dot: '#0078D4' },
     { key: 'availabilityPct', label: 'Availability', tip: KPI_DEFINITIONS.availability, dot: '#0d9488' },
-    { key: 'harshBrakingCount', label: 'Harsh braking', tip: KPI_DEFINITIONS.harshBraking, dot: '#dc2626' },
-    { key: 'overspeedCount', label: 'Overspeed', tip: KPI_DEFINITIONS.overspeeding, dot: '#d97706' },
   ];
 
   return (
@@ -161,7 +157,7 @@ export default function OperationalKpi() {
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 20 }}>
         Utilization = how much the truck was actually working while it was in use (operational time ÷ available engine time).
-        Availability = engine runtime vs hours in the selected period. Harsh braking and overspeeding come from MiX event telemetry.
+        Availability = engine runtime vs hours in the selected period.
       </p>
 
       {/* Controls */}
@@ -279,7 +275,7 @@ export default function OperationalKpi() {
           <Truck size={14} color="#0078D4" />
           By asset
           <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 4 }}>
-            Click a column to sort · harsh braking score = count ÷ 3 · overspeed score = count ÷ 1
+            Click a column to sort
           </span>
         </div>
         <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--cd-border)' }}>
@@ -322,26 +318,6 @@ export default function OperationalKpi() {
                   <td style={{ padding: '8px 12px' }}>{a.loadCount || '—'}</td>
                   <td style={{ padding: '8px 12px' }}><PctBar pct={a.utilizationPct} /></td>
                   <td style={{ padding: '8px 12px' }}><PctBar pct={a.availabilityPct} /></td>
-                  <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
-                    {a.harshBrakingCount > 0 ? (
-                      <span style={{ color: '#dc2626', fontWeight: 600 }}>
-                        {a.harshBrakingCount}
-                        <span style={{ fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 6, fontSize: 11 }}>
-                          {a.harshBrakingSharePct != null ? `${a.harshBrakingSharePct.toFixed(0)}% of fleet` : ''}
-                        </span>
-                      </span>
-                    ) : '0'}
-                  </td>
-                  <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
-                    {a.overspeedCount > 0 ? (
-                      <span style={{ color: '#d97706', fontWeight: 600 }}>
-                        {a.overspeedCount}
-                        <span style={{ fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 6, fontSize: 11 }}>
-                          {fmtHours(a.overspeedHours)}
-                        </span>
-                      </span>
-                    ) : '0'}
-                  </td>
                 </tr>
               ))}
             </tbody>

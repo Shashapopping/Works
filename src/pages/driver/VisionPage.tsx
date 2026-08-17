@@ -82,7 +82,7 @@ export default function VisionPage() {
     return row[key];
   };
   const { sorted, toggle, ariaSort, indicator } = useTableSort(filtered, getSortValue);
-  const pagination = useClientPagination(sorted, 25);
+  const pagination = useClientPagination(sorted, 25, `${debouncedSearch}`);
 
   const totals = useMemo(() => ({
     distraction: rows.reduce((s, d) => s + d.distractionCount, 0),

@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { qualifiesAsOverspeed, isOverspeedLabel } from './overspeed-filter.js';
+import { splitTripFuel } from './trip-metrics.js';
 
 let db;
 
@@ -226,6 +227,13 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_document_files_created ON document_files(created_at);
   `);
 
+  function ensureColumn(table, column, typeSql) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+    if (!cols.includes(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typeSql}`);
+    }
+  }
+
   // Migrations for existing DBs
   const userCols = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
   if (!userCols.includes('is_organisational')) {
@@ -238,6 +246,17 @@ function initSchema() {
   if (!eventCols.includes('speed_limit')) {
     db.exec(`ALTER TABLE events ADD COLUMN speed_limit REAL`);
   }
+
+  // Trip rollup metrics (Chevron-style) — column store, no JSON payload required
+  ensureColumn('trips', 'fuel_litres', 'REAL');
+  ensureColumn('trips', 'drive_fuel_litres', 'REAL');
+  ensureColumn('trips', 'idle_fuel_litres', 'REAL');
+  ensureColumn('trips', 'driving_hours', 'REAL');
+  ensureColumn('trips', 'standing_hours', 'REAL');
+  ensureColumn('trips', 'idle_hours', 'REAL');
+  ensureColumn('trips', 'engine_hours', 'REAL');
+  ensureColumn('trips', 'has_subtrips', 'INTEGER NOT NULL DEFAULT 0');
+
   // Keep known BPL / bootstrap accounts organisational (idempotent)
   db.prepare(`
     UPDATE users SET is_organisational = 1
@@ -418,13 +437,32 @@ export function upsertTrip(row, source = 'mix') {
   const tripId = (row.trip_id ?? row.TripId ?? row.tripId)?.toString();
   if (!tripId) return false;
 
+  const tripStart = row.trip_start ?? row.TripStart ?? row.tripStart ?? null;
+  const tripEnd = row.trip_end ?? row.TripEnd ?? row.tripEnd ?? null;
+  const drivingTime = row.driving_time ?? row.DrivingTime ?? row.drivingTimeSeconds ?? null;
+  const fuelRaw = row.fuel_litres ?? row.FuelUsedLitres ?? row.FuelUsedLiters ?? row.fuelUsedLitres;
+  const fuelLitres = fuelRaw != null && Number.isFinite(Number(fuelRaw))
+    ? Math.abs(Number(fuelRaw))
+    : null;
+  const split = splitTripFuel(row, {
+    fuelUsedLitres: fuelLitres,
+    tripStart,
+    tripEnd,
+    drivingTimeSeconds: drivingTime,
+  });
+  const hasSubtrips = (split.hasSubTrips || (Array.isArray(row.SubTrips) && row.SubTrips.length > 0)) ? 1 : 0;
+
   getDb().prepare(`
     INSERT INTO trips (
       trip_id, asset_id, driver_id, trip_start, trip_end,
-      distance_km, driving_time, duration, max_speed_kph, source
+      distance_km, driving_time, duration, max_speed_kph, source,
+      fuel_litres, drive_fuel_litres, idle_fuel_litres,
+      driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
     ) VALUES (
       @trip_id, @asset_id, @driver_id, @trip_start, @trip_end,
-      @distance_km, @driving_time, @duration, @max_speed_kph, @source
+      @distance_km, @driving_time, @duration, @max_speed_kph, @source,
+      @fuel_litres, @drive_fuel_litres, @idle_fuel_litres,
+      @driving_hours, @standing_hours, @idle_hours, @engine_hours, @has_subtrips
     )
     ON CONFLICT(trip_id) DO UPDATE SET
       asset_id = excluded.asset_id,
@@ -435,18 +473,37 @@ export function upsertTrip(row, source = 'mix') {
       driving_time = excluded.driving_time,
       duration = excluded.duration,
       max_speed_kph = excluded.max_speed_kph,
-      source = excluded.source
+      source = excluded.source,
+      fuel_litres = COALESCE(excluded.fuel_litres, trips.fuel_litres),
+      drive_fuel_litres = COALESCE(excluded.drive_fuel_litres, trips.drive_fuel_litres),
+      idle_fuel_litres = COALESCE(excluded.idle_fuel_litres, trips.idle_fuel_litres),
+      driving_hours = COALESCE(excluded.driving_hours, trips.driving_hours),
+      standing_hours = COALESCE(excluded.standing_hours, trips.standing_hours),
+      idle_hours = COALESCE(excluded.idle_hours, trips.idle_hours),
+      engine_hours = COALESCE(excluded.engine_hours, trips.engine_hours),
+      has_subtrips = CASE
+        WHEN excluded.has_subtrips = 1 THEN 1
+        ELSE trips.has_subtrips
+      END
   `).run({
     trip_id: tripId,
     asset_id: (row.asset_id ?? row.AssetId ?? row.assetId)?.toString?.() ?? row.asset_id ?? null,
     driver_id: (row.driver_id ?? row.DriverId ?? row.driverId)?.toString?.() ?? row.driver_id ?? null,
-    trip_start: row.trip_start ?? row.TripStart ?? row.tripStart ?? null,
-    trip_end: row.trip_end ?? row.TripEnd ?? row.tripEnd ?? null,
+    trip_start: tripStart,
+    trip_end: tripEnd,
     distance_km: Number(row.distance_km ?? row.DistanceKilometers ?? row.distanceKm ?? 0) || 0,
-    driving_time: row.driving_time ?? row.DrivingTime ?? row.drivingTimeSeconds ?? null,
+    driving_time: drivingTime,
     duration: row.duration ?? row.Duration ?? row.durationSeconds ?? null,
     max_speed_kph: row.max_speed_kph ?? row.MaxSpeedKilometersPerHour ?? row.maxSpeedKph ?? null,
     source: row.source ?? source,
+    fuel_litres: fuelLitres,
+    drive_fuel_litres: split.driveFuelLiters || 0,
+    idle_fuel_litres: split.idleFuelLiters || 0,
+    driving_hours: split.drivingHours || 0,
+    standing_hours: split.standingHours || 0,
+    idle_hours: split.idleHours || 0,
+    engine_hours: split.engineHours || 0,
+    has_subtrips: hasSubtrips,
   });
   return true;
 }
@@ -717,4 +774,84 @@ export function pruneFleetHistory({
     fuel: fuelDeleted,
     kpi: kpiDeleted,
   };
+}
+
+/** Lightweight trip metrics for rollups — column-only (no JSON parse). */
+export function loadTripMetricsInRange(fromIso, toIso) {
+  const database = getDb();
+  const conditions = [];
+  const params = [];
+  if (fromIso) {
+    conditions.push('COALESCE(trip_end, trip_start) >= ?');
+    params.push(fromIso);
+  }
+  if (toIso) {
+    conditions.push('COALESCE(trip_end, trip_start) < ?');
+    params.push(toIso);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  return database.prepare(`
+    SELECT trip_id AS tripId,
+           asset_id AS assetId,
+           driver_id AS driverId,
+           trip_start AS tripStart,
+           trip_end AS tripEnd,
+           distance_km AS distanceKm,
+           fuel_litres AS fuelLitres,
+           drive_fuel_litres AS driveFuelLitres,
+           idle_fuel_litres AS idleFuelLitres,
+           driving_hours AS drivingHours,
+           standing_hours AS standingHours,
+           idle_hours AS idleHours,
+           engine_hours AS engineHours,
+           has_subtrips AS hasSubtrips
+    FROM trips
+    ${where}
+  `).all(...params);
+}
+
+/** Pre-aggregated trip rollups by asset (SQL GROUP BY). */
+export function loadTripRollupsByAsset(fromIso, toIso) {
+  const database = getDb();
+  const conditions = [];
+  const params = [];
+  if (fromIso && toIso) {
+    conditions.push(`(
+      (trip_end IS NOT NULL AND trip_end >= ? AND trip_end < ?)
+      OR (trip_end IS NULL AND trip_start IS NOT NULL AND trip_start >= ? AND trip_start < ?)
+    )`);
+    params.push(fromIso, toIso, fromIso, toIso);
+  } else if (fromIso) {
+    conditions.push(`(
+      (trip_end IS NOT NULL AND trip_end >= ?)
+      OR (trip_end IS NULL AND trip_start IS NOT NULL AND trip_start >= ?)
+    )`);
+    params.push(fromIso, fromIso);
+  } else if (toIso) {
+    conditions.push(`(
+      (trip_end IS NOT NULL AND trip_end < ?)
+      OR (trip_end IS NULL AND trip_start IS NOT NULL AND trip_start < ?)
+    )`);
+    params.push(toIso, toIso);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  return database.prepare(`
+    SELECT asset_id AS assetId,
+           COUNT(*) AS tripCount,
+           COALESCE(SUM(distance_km), 0) AS totalDistanceKm,
+           COALESCE(SUM(CASE WHEN fuel_litres IS NOT NULL AND fuel_litres > 0 THEN fuel_litres ELSE 0 END), 0) AS totalFuelLitres,
+           COALESCE(SUM(CASE WHEN fuel_litres IS NOT NULL AND fuel_litres > 0 THEN distance_km ELSE 0 END), 0) AS fuelCohortDistanceKm,
+           SUM(CASE WHEN fuel_litres IS NOT NULL AND fuel_litres > 0 THEN 1 ELSE 0 END) AS fuelTripCount,
+           COALESCE(SUM(CASE WHEN fuel_litres IS NOT NULL AND fuel_litres > 0 THEN COALESCE(drive_fuel_litres, fuel_litres) ELSE 0 END), 0) AS totalDriveFuelLitres,
+           COALESCE(SUM(CASE WHEN fuel_litres IS NOT NULL AND fuel_litres > 0 THEN COALESCE(idle_fuel_litres, 0) ELSE 0 END), 0) AS totalIdleFuelLitres,
+           COALESCE(SUM(COALESCE(driving_hours, 0)), 0) AS totalDrivingHours,
+           COALESCE(SUM(COALESCE(standing_hours, 0)), 0) AS totalStandingHours,
+           COALESCE(SUM(COALESCE(idle_hours, 0)), 0) AS totalIdleHours,
+           COALESCE(SUM(COALESCE(engine_hours, 0)), 0) AS totalEngineHours,
+           SUM(CASE WHEN has_subtrips = 1 THEN 1 ELSE 0 END) AS subTripTripCount,
+           MAX(COALESCE(trip_end, trip_start)) AS lastEndedAt
+    FROM trips
+    ${where}
+    GROUP BY asset_id
+  `).all(...params);
 }

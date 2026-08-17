@@ -422,7 +422,7 @@ export default function DriverManagement() {
     ? drivers.filter(d => d.name.toLowerCase().includes(deferredSearch.toLowerCase()) || d.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
     : drivers;
 
-  const pagination = useClientPagination(visible, 50);
+  const pagination = useClientPagination(visible, 50, deferredSearch);
 
   const toggle = (name: string) => setExpandedDrivers(prev => {
     const n = new Set(prev);

@@ -83,7 +83,7 @@ export default function Maintenance() {
     return true;
   });
 
-  const pagination = useClientPagination(filtered, 50);
+  const pagination = useClientPagination(filtered, 50, `${deferredSearch}|${serviceFilter}`);
 
   return (
     <FeatureGate featureId="maintenance">

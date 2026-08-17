@@ -6,10 +6,12 @@ import {
 import { useFleet } from '../context/FleetContext';
 import type { Vehicle } from '../context/FleetContext';
 import { KpiCard } from '../components/KpiCard';
+import SegmentPeriodBar from '../components/SegmentPeriodBar';
 import ReadyMixPlantMap from '../components/ReadyMixPlantMap';
+import { useSegmentPeriod } from '../hooks/useDriverDistancePeriod';
 import {
   segmentVehicles, readyMixPlant, readyMixDispatchState, locationLabel,
-  deriveReadyMixPlantPins, openTripAssetIdsFromSession,
+  deriveReadyMixPlantPins, openTripAssetIdsFromSession, segmentTripAssets,
   STATUS_COLOR,
 } from '../lib/segmentMetrics';
 import { authFetch } from '../context/FleetContext';
@@ -300,6 +302,10 @@ function SiteSection({
 
 export default function ReadyMix() {
   const { vehicles, vehiclesLoading } = useFleet();
+  const {
+    period, setPeriod, customRange, setCustomRange,
+    assets: periodAssets, loading: distanceLoading, label: periodLabel,
+  } = useSegmentPeriod('today');
   const [filter, setFilter] = useState<DispatchFilter>('all');
   const [allOpen, setAllOpen] = useState(true);
   const [density, setDensity] = useState<BoardDensity>('cards');
@@ -307,6 +313,9 @@ export default function ReadyMix() {
   const [tripsLoading, setTripsLoading] = useState(true);
 
   const fleet = useMemo(() => segmentVehicles(vehicles, 'readyMix'), [vehicles]);
+  const tripAssets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
+  const periodKm = Math.round(tripAssets.reduce((s, a) => s + a.totalDistanceKm, 0));
+  const periodJourneys = tripAssets.reduce((s, a) => s + (a.journeyCount || 0), 0);
   const plantPins = useMemo(() => deriveReadyMixPlantPins(fleet), [fleet]);
   const dispatchOpts = useMemo(
     () => ({ plantPins, openTripAssetIds }),
@@ -384,11 +393,19 @@ export default function ReadyMix() {
 
   return (
     <div>
-      <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Ready Mix Dispatch</h1>
-        <p className="bpl-page-subtitle">
-          “At plant” = stopped inside a ±1.5 km GPS plant geofence. “Away from plant” = stopped outside it (not a confirmed customer jobsite).
-        </p>
+      <div className="bpl-page-header bpl-page-header-row">
+        <div>
+          <h1 className="bpl-page-title">Ready Mix Dispatch</h1>
+          <p className="bpl-page-subtitle">
+            “At plant” = stopped inside a ±1.5 km GPS plant geofence. “Away from plant” = stopped outside it (not a confirmed customer jobsite).
+          </p>
+        </div>
+        <SegmentPeriodBar
+          period={period}
+          customRange={customRange}
+          onPeriod={setPeriod}
+          onCustomRange={setCustomRange}
+        />
       </div>
 
       <div className="bpl-kpi-grid">
@@ -424,6 +441,33 @@ export default function ReadyMix() {
           icon={Droplets}
           tip="All Ready Mix segment assets. Sub-line = distinct plant hubs inferred from MiX site names, plus Offline/Inactive count."
         />
+      </div>
+
+      <div className="bpl-card" style={{
+        padding: '12px 16px', marginBottom: 16,
+        display: 'flex', flexWrap: 'wrap', gap: '10px 28px', alignItems: 'center',
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)' }}>
+          Trips {periodLabel}
+        </div>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: '#7c3aed', fontFamily: 'var(--cd-font-display)' }}>
+            {distanceLoading ? <SkelValue /> : `${periodKm.toLocaleString()} km`}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Distance</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+            {distanceLoading ? <SkelValue /> : periodJourneys}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Journeys</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
+            {distanceLoading ? <SkelValue /> : tripAssets.length}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>Mixers with trips</div>
+        </div>
       </div>
 
       <ReadyMixPlantMap plantPins={plantPins} atPlantVehicles={buckets.plant} />

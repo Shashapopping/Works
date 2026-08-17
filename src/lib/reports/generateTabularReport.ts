@@ -11,6 +11,7 @@ import {
 import {
   buildTripReport,
   flattenJourneysFromDistanceAssets,
+  type TripReportGroupBy,
 } from './buildTripReport';
 import { buildUtilizationReport } from './buildUtilizationReport';
 
@@ -24,6 +25,8 @@ export interface ReportBuildContext {
   /** ISO from/to for distance + KPI */
   fromIso: string | null;
   toIso: string | null;
+  /** Trip report: nest under assets or drivers */
+  tripGroupBy?: TripReportGroupBy;
 }
 
 async function fetchDistanceSummary(fromIso: string | null, toIso: string | null, includeJourneys: boolean) {
@@ -72,11 +75,13 @@ export async function generateTabularReport(ctx: ReportBuildContext): Promise<Ta
   if (ctx.reportType === 'trips') {
     const data = await fetchDistanceSummary(ctx.fromIso, ctx.toIso, true);
     const journeys = flattenJourneysFromDistanceAssets(data.assets || []);
+    const groupBy = ctx.tripGroupBy === 'driver' ? 'driver' : 'asset';
     return buildTripReport({
       journeys,
       reportTitle: typeTitle,
-      meta: ctx.meta,
+      meta: `${ctx.meta}  ·  Grouped by ${groupBy === 'driver' ? 'driver' : 'asset'}`,
       search: ctx.search,
+      groupBy,
     });
   }
 
