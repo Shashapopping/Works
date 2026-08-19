@@ -358,22 +358,18 @@ export async function handleAuthRequest(req, res) {
       return true;
     }
 
-    // ── Ad-hoc report export email (allowlisted accounts only) ───────────────
+    // ── Ad-hoc report export email (any authenticated user) ──────────────────
     if (path === '/api/reports/email' && method === 'POST') {
       const user = await requireUser(req, res, 'reports');
       if (!user) return true;
-      if (!isReportExportAllowed(user.email)) {
-        sendJson(res, 403, { error: 'Report export limited to approved HBM domains' });
-        return true;
-      }
       if (!isEmailConfigured()) {
         sendJson(res, 503, { error: 'Email is not configured (RESEND_API_KEY)' });
         return true;
       }
       const body = await readBody(req);
       const to = normalizeReportEmail(body.to || user.email);
-      if (!isReportExportAllowed(to)) {
-        sendJson(res, 403, { error: 'Recipient domain is not allowed for report export' });
+      if (!to) {
+        sendJson(res, 400, { error: 'Recipient email is required' });
         return true;
       }
       const contentBase64 = body.contentBase64 || body.content || '';

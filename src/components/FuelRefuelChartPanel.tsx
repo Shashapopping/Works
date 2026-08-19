@@ -239,7 +239,7 @@ export default function FuelRefuelChartPanel({
     const min = Math.min(...values);
     const max = Math.max(...values);
     if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 8];
-    return [Math.max(0, min - 8), max + 8];
+    return [Math.max(0, min - 20), max + 20];
   }, [chartData, selectedDropout]);
 
   const note = highlightRefuel
@@ -290,8 +290,8 @@ export default function FuelRefuelChartPanel({
               onSelect={setHighlightedSparkId}
             />
             <div className="hbm-fuel-chart-plot hbm-fuel-chart-plot-compact">
-              <ResponsiveContainer width="100%" height={220}>
-                <ComposedChart data={plotData} margin={{ top: 8, right: 8, left: 4, bottom: 24 }}>
+              <ResponsiveContainer width="100%" height={300}>
+                <ComposedChart data={plotData} margin={{ top: 24, right: 16, left: 4, bottom: 24 }}>
                   <CartesianGrid stroke="var(--cd-border)" strokeDasharray="4 8" vertical={false} />
                   <XAxis
                     type="number"

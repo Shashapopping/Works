@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { authFetchInit } from '../lib/authApi';
 
 type Frequency = 'daily' | 'weekly' | 'monthly';
+type MonthlyPeriodMode = 'beginning' | 'end' | 'custom';
 
 interface PackDef {
   id: string;
@@ -75,7 +76,18 @@ export default function ReportAutomate() {
   const [recipients, setRecipients] = useState('');
   const [sendHour, setSendHour] = useState(7);
   const [dayOfWeek, setDayOfWeek] = useState(1);
-  const [dayOfMonth, setDayOfMonth] = useState(1);
+  const [monthlyPeriodMode, setMonthlyPeriodMode] = useState<MonthlyPeriodMode>('end');
+  // dayOfMonth meanings:
+  // - 0: end-of-month
+  // - 1..28: custom/beginning day-of-month (1 == beginning report window)
+  const [dayOfMonth, setDayOfMonth] = useState(0);
+
+  const chooseMonthlyPeriod = (mode: MonthlyPeriodMode) => {
+    setMonthlyPeriodMode(mode);
+    if (mode === 'beginning') setDayOfMonth(1);
+    else if (mode === 'end') setDayOfMonth(0);
+    else setDayOfMonth(prev => (prev === 0 ? 15 : prev));
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -289,15 +301,37 @@ export default function ReportAutomate() {
 
               {frequency === 'monthly' && (
                 <div className="bpl-automate-section">
-                  <div className="bpl-automate-label">Day of month</div>
-                  <input
-                    className="bpl-automate-input"
-                    type="number"
-                    min={1}
-                    max={28}
-                    value={dayOfMonth}
-                    onChange={e => setDayOfMonth(Number(e.target.value) || 1)}
-                  />
+                  <div className="bpl-automate-label">Monthly report window</div>
+                  <div className="bpl-automate-seg bpl-automate-seg--wrap">
+                    {([
+                      ['beginning', 'Beginning of month'],
+                      ['end', 'End of month'],
+                      ['custom', 'Custom day'],
+                    ] as const).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={monthlyPeriodMode === key ? 'on' : ''}
+                        onClick={() => chooseMonthlyPeriod(key)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {monthlyPeriodMode === 'custom' && (
+                    <div style={{ marginTop: 10 }}>
+                      <div className="bpl-automate-label">Custom day (1-28)</div>
+                      <input
+                        className="bpl-automate-input"
+                        type="number"
+                        min={1}
+                        max={28}
+                        value={dayOfMonth}
+                        onChange={e => setDayOfMonth(Number(e.target.value) || 1)}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 

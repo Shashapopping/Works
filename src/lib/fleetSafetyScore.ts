@@ -1,16 +1,19 @@
 /**
  * Fleet Safety Score — rooted on distance, then HOS duration.
  *
- *   100 = zero weighted harm per 100 km (IVMS + HOS)
- *   score = clamp(0, 100, 100 − 5 × rate)
- *   5 is this fleet's working-day calibration (≈4.3 pt/100 km → Good Standing 80)
+ *   score = clamp(0, MAX_FLEET_SCORE, 100 − 1 × rate)
+ *   1 point deducted per 1 weighted harm point per 100 km.
+ *   Fleet score is capped at 93 — a perfect run still reads ≤93%.
  *
  *   actualRate = (IVMS points + HOS points) ÷ (km ÷ 100)
  *   Facts come from /api/safety/summary (SQL), not the live event list.
  */
 
 /** Score points lost per 1 weighted point per 100 km. */
-export const SCORE_DROP_PER_HARM_UNIT = 5;
+export const SCORE_DROP_PER_HARM_UNIT = 1;
+
+/** Fleet score ceiling — can never exceed this regardless of distance or events. */
+export const MAX_FLEET_SCORE = 93;
 
 export const FLEET_SCORE_CONFIG_KEY = 'bpl_fleet_score_config';
 export const FLEET_SCORE_CONFIG_EVENT = 'bpl-fleet-score-config';
@@ -248,10 +251,10 @@ export function scoreFromCensus(
   config: FleetScoreConfig = loadFleetScoreConfig(),
 ): number {
   const { total } = totalSafetyPointsFromCensus(exposure, config);
-  if (total <= 0) return 100;
+  if (total <= 0) return MAX_FLEET_SCORE;
   if (!(exposure.distanceKm > 0)) return config.scoreFloor;
   const pct = Math.round(100 - SCORE_DROP_PER_HARM_UNIT * ratePer100Km(total, exposure.distanceKm));
-  return Math.max(config.scoreFloor, Math.min(100, pct));
+  return Math.max(config.scoreFloor, Math.min(MAX_FLEET_SCORE, pct));
 }
 
 export function scoreFromInputs(
@@ -268,10 +271,10 @@ export function scoreFromInputs(
     : weightedIncidentPoints(input.events || [], config);
   const hos = hosPointsFromHeldMinutes(input.hosHeldMinutes ?? 0, config);
   const total = ivms + hos;
-  if (total <= 0) return 100;
+  if (total <= 0) return MAX_FLEET_SCORE;
   if (!(input.distanceKm > 0)) return config.scoreFloor;
   const pct = Math.round(100 - SCORE_DROP_PER_HARM_UNIT * ratePer100Km(total, input.distanceKm));
-  return Math.max(config.scoreFloor, Math.min(100, pct));
+  return Math.max(config.scoreFloor, Math.min(MAX_FLEET_SCORE, pct));
 }
 
 /** Second arg is distance km. Optional 4th arg is HOS held minutes. */

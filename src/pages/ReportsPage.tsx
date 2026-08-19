@@ -24,7 +24,6 @@ import {
 import {
   isReportExportAllowed,
   normalizeReportEmail,
-  REPORT_EXPORT_ALLOWED_DOMAINS,
 } from '../lib/reportExportAllowlist';
 import {
   REPORT_TYPE_OPTIONS,
@@ -338,7 +337,6 @@ export default function ReportsPage() {
   const [tabularPreviewLoading, setTabularPreviewLoading] = useState(false);
 
   const reportTitle = brandReportTitle();
-  const canExport = isReportExportAllowed(user?.email);
   const defaultEmailTo = useMemo(() => {
     const me = normalizeReportEmail(user?.email);
     if (isReportExportAllowed(me)) return me;
@@ -618,10 +616,9 @@ export default function ReportsPage() {
   ].filter(Boolean).join('  ·  ');
 
   const canGenerate =
-    canExport &&
-    (reportType === 'events'
+    reportType === 'events'
       ? eventCensusTotal > 0
-      : !tabularPreviewLoading && (tabularPreview?.rowCount ?? 0) > 0);
+      : !tabularPreviewLoading && (tabularPreview?.rowCount ?? 0) > 0;
 
   const runGenerate = async () => {
     const { from, to } = getDateBounds(dateRange, fromDate, toDate);
@@ -697,8 +694,8 @@ export default function ReportsPage() {
   const handleEmailReport = async () => {
     if (!canGenerate) return;
     const to = normalizeReportEmail(emailTo || defaultEmailTo);
-    if (!isReportExportAllowed(to)) {
-      setEmailStatus(`Recipient must be @${REPORT_EXPORT_ALLOWED_DOMAINS.join(' or @')}`);
+    if (!to) {
+      setEmailStatus('Please enter a recipient email address.');
       return;
     }
     setEmailing(true);
@@ -932,11 +929,6 @@ export default function ReportsPage() {
                 </button>
               ))}
             </div>
-            {!canExport && (
-              <div className="bpl-reports-export-note">
-                Report export limited to approved HBM domains (@{REPORT_EXPORT_ALLOWED_DOMAINS.join(', @')}).
-              </div>
-            )}
             <button
               type="button"
               className="bpl-reports-download-btn"
@@ -954,8 +946,8 @@ export default function ReportsPage() {
                 className="bpl-reports-email-select"
                 value={emailTo}
                 onChange={e => setEmailTo(e.target.value)}
-                placeholder={`name@${REPORT_EXPORT_ALLOWED_DOMAINS[0]}`}
-                disabled={!canExport || emailing}
+                placeholder="name@example.com"
+                disabled={emailing}
               />
               <button
                 type="button"

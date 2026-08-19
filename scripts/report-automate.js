@@ -76,16 +76,66 @@ function zonedParts(date, timeZone) {
   };
 }
 
-function periodBounds(frequency) {
-  const end = Date.now();
-  const ms =
-    frequency === 'daily' ? 86400000
-      : frequency === 'monthly' ? 30 * 86400000
-        : 7 * 86400000;
-  return {
-    from: new Date(end - ms).toISOString(),
-    to: new Date(end).toISOString(),
-  };
+function lastDayOfMonth(year, month1to12) {
+  return new Date(Date.UTC(year, month1to12, 0)).getUTCDate();
+}
+
+function getTimeZoneOffsetMs(date, timeZone) {
+  const p = zonedParts(date, timeZone);
+  // Interpret local wall-clock parts as if they were UTC, then compare.
+  const asUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0, 0);
+  return asUTC - date.getTime();
+}
+
+function localToUtcIso({ year, month, day, hour = 0, minute = 0 }, timeZone) {
+  const baseUtcMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  let utcMs = baseUtcMs;
+  // Refine offset once or twice; good enough for fixed-offset zones (e.g. Lagos).
+  for (let i = 0; i < 2; i++) {
+    const offsetMs = getTimeZoneOffsetMs(new Date(utcMs), timeZone);
+    utcMs = baseUtcMs - offsetMs;
+  }
+  return new Date(utcMs).toISOString();
+}
+
+function periodBounds({ frequency, dayOfMonth = 1, timezone = 'Africa/Lagos', now = new Date() }) {
+  const end = now;
+
+  if (frequency === 'daily') {
+    return {
+      from: new Date(end.getTime() - 86400000).toISOString(),
+      to: end.toISOString(),
+    };
+  }
+
+  if (frequency === 'weekly') {
+    return {
+      from: new Date(end.getTime() - 7 * 86400000).toISOString(),
+      to: end.toISOString(),
+    };
+  }
+
+  // Monthly: avoid a fixed "30 days" window.
+  // dayOfMonth meaning:
+  // - 0: end-of-month report window (from 1st of current month)
+  // - 1..28: cycle from dayOfMonth in previous month
+  const pEnd = zonedParts(end, timezone);
+
+  if (dayOfMonth === 0) {
+    const from = localToUtcIso(
+      { year: pEnd.year, month: pEnd.month, day: 1, hour: 0, minute: 0 },
+      timezone,
+    );
+    return { from, to: end.toISOString() };
+  }
+
+  const prevMonth = pEnd.month === 1 ? 12 : pEnd.month - 1;
+  const prevYear = pEnd.month === 1 ? pEnd.year - 1 : pEnd.year;
+  const from = localToUtcIso(
+    { year: prevYear, month: prevMonth, day: dayOfMonth, hour: 0, minute: 0 },
+    timezone,
+  );
+  return { from, to: end.toISOString() };
 }
 
 function computeNextSendAt({
@@ -103,7 +153,12 @@ function computeNextSendAt({
     const p = zonedParts(candidate, timezone);
     if (p.hour !== sendHour || p.minute > 29) continue;
     if (frequency === 'weekly' && p.weekday !== dayOfWeek) continue;
-    if (frequency === 'monthly' && p.day !== dayOfMonth) continue;
+    if (frequency === 'monthly') {
+      if (dayOfMonth === 0) {
+        const last = lastDayOfMonth(p.year, p.month);
+        if (p.day !== last) continue;
+      } else if (p.day !== dayOfMonth) continue;
+    }
     return candidate.toISOString();
   }
   return new Date(from.getTime() + 86400000).toISOString();
@@ -118,8 +173,13 @@ function loadMetadata() {
   }
 }
 
-function buildPackPayload(packs, frequency) {
-  const { from, to } = periodBounds(frequency);
+function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now }) {
+  const { from, to } = periodBounds({
+    frequency,
+    dayOfMonth,
+    timezone,
+    now,
+  });
   const agg = querySafetyEventAggregates({ from, to });
   const safetyLabels = [
     'Harsh Braking', 'Harsh Acceleration', 'Overspeeding',
@@ -278,7 +338,13 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
     throw Object.assign(new Error('Email is not configured (RESEND_API_KEY)'), { status: 503 });
   }
 
-  const payload = buildPackPayload(auto.packs, auto.frequency);
+  const sendAt = new Date();
+  const payload = buildPackPayload(auto.packs, {
+    frequency: auto.frequency,
+    dayOfMonth: auto.dayOfMonth ?? 1,
+    timezone: auto.timezone,
+    now: sendAt,
+  });
   const result = await sendAutomatedReportEmail({
     to: auto.recipients,
     frequency: auto.frequency,
@@ -287,7 +353,7 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
     test,
   });
 
-  const now = nowIso();
+  const now = sendAt.toISOString();
   if (result.sent) {
     const nextSendAt = computeNextSendAt({
       frequency: auto.frequency,
@@ -295,7 +361,7 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
       dayOfWeek: auto.dayOfWeek ?? 1,
       dayOfMonth: auto.dayOfMonth ?? 1,
       timezone: auto.timezone,
-      from: new Date(),
+      from: sendAt,
     });
     getDb().prepare(`
       UPDATE report_automations
@@ -401,5 +467,6 @@ function clampDow(d) {
 function clampDom(d) {
   const n = Number(d);
   if (!Number.isFinite(n)) return 1;
+  if (n === 0) return 0;
   return Math.min(28, Math.max(1, Math.round(n)));
 }
