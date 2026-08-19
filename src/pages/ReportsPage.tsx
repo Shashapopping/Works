@@ -378,12 +378,13 @@ export default function ReportsPage() {
           setEntries(demo);
           setEventCensusTotal(demo.length);
         }
-      } catch {
+      } catch (e) {
         if (!cancelled) {
           const demo = mapDemoEntries(fleetEventsRef.current, vehiclesRef.current);
           setEntries(demo);
           setEventCensusTotal(demo.length);
-        } finally {
+        }
+      } finally {
         if (!cancelled && !silent) setLoading(false);
       }
     };
