@@ -4,7 +4,8 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { getDb, getAllEvents } from './db.js';
+import { getDb } from './db.js';
+import { querySafetyEventAggregates } from './event-aggregates.js';
 import { sendAutomatedReportEmail, isEmailConfigured } from './email.js';
 
 export const REPORT_PACKS = [
@@ -119,19 +120,13 @@ function loadMetadata() {
 
 function buildPackPayload(packs, frequency) {
   const { from, to } = periodBounds(frequency);
-  const events = getAllEvents({ from, to, limit: 5000 });
+  const agg = querySafetyEventAggregates({ from, to });
   const safetyLabels = [
     'Harsh Braking', 'Harsh Acceleration', 'Overspeeding',
     'Overspeed Tiered', 'Harsh Cornering',
   ];
-  const byLabel = {};
-  let safetyTotal = 0;
-  for (const e of events) {
-    const label = e.label || 'Unknown';
-    if (!safetyLabels.includes(label)) continue;
-    byLabel[label] = (byLabel[label] || 0) + 1;
-    safetyTotal += 1;
-  }
+  const byLabel = agg.byLabel || {};
+  const safetyTotal = safetyLabels.reduce((n, label) => n + (byLabel[label] || 0), 0);
 
   const sections = [];
   if (packs.includes('safety_events')) {
@@ -158,7 +153,7 @@ function buildPackPayload(packs, frequency) {
     });
   }
 
-  return { from, to, frequency, sections, eventSampleCount: events.length };
+  return { from, to, frequency, sections, eventCensusCount: safetyTotal };
 }
 
 export function listAutomationsForUser(userId) {

@@ -13,6 +13,8 @@ import {
   filterVehiclesBySegment,
   type FleetSegmentId,
 } from '../lib/fleetSegments';
+import { locationLabel } from '../lib/segmentMetrics';
+import { vehicleHasResolvedPlace } from '../lib/placeAddress';
 
 type StatusFilter = 'All' | 'Moving' | 'Idle' | 'Stationary' | 'Parked' | 'Inactive';
 
@@ -58,18 +60,21 @@ function StatCard({
 // ── Safety Score ─────────────────────────────────────────────────────────────
 
 function SegmentSafetyScore({
-  events, vehicleCount, title,
+  events, distanceKm, title,
 }: {
-  events: LogEntry[]; vehicleCount: number; title: string;
+  events: LogEntry[]; distanceKm: number; title: string;
 }) {
   const { scoreConfig } = useFleet();
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const twoDaysAgo = Date.now() - 48 * 60 * 60 * 1000;
 
-  const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-  const prev   = events.filter(e => { const t = new Date(e.eventTime || e.timestamp).getTime(); return t >= sixtyDaysAgo && t < thirtyDaysAgo; });
-  const score  = scoreFromEvents(recent, vehicleCount, scoreConfig);
-  const delta  = score - scoreFromEvents(prev, vehicleCount, scoreConfig);
+  const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= dayAgo);
+  const prev = events.filter(e => {
+    const t = new Date(e.eventTime || e.timestamp).getTime();
+    return t >= twoDaysAgo && t < dayAgo;
+  });
+  const score = scoreFromEvents(recent, distanceKm, scoreConfig);
+  const delta = score - scoreFromEvents(prev, distanceKm, scoreConfig);
 
   const color = scoreBandColor(score, scoreConfig);
   const label = scoreBandLabel(score, scoreConfig);
@@ -335,9 +340,16 @@ function SegmentTable({
 }: {
   vehicles: Vehicle[]; statusFilter: StatusFilter; fleetLabel: string;
 }) {
-  const filtered = statusFilter === 'All' ? vehicles : vehicles.filter(v =>
+  const filtered = (statusFilter === 'All' ? vehicles : vehicles.filter(v =>
     statusFilter === 'Inactive' ? (v.status === 'Inactive' || v.status === 'Offline') : v.status === statusFilter
-  );
+  ))
+    .filter(v => vehicleHasResolvedPlace(v))
+    .sort((a, b) => {
+      const aOk = vehicleHasResolvedPlace(a);
+      const bOk = vehicleHasResolvedPlace(b);
+      if (aOk !== bOk) return aOk ? -1 : 1;
+      return 0;
+    });
 
   return (
     <div className="bpl-card" style={{ overflow: 'hidden' }}>
@@ -376,7 +388,7 @@ function SegmentTable({
                     {v.position?.speed != null && v.position.speed > 0 ? `${Math.round(v.position.speed)} km/h` : '—'}
                   </td>
                   <td style={{ padding: '10px 16px', color: 'var(--cd-text-muted)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {v.position?.address || '—'}
+                    {locationLabel(v)}
                   </td>
                 </tr>
               );
@@ -427,7 +439,7 @@ export default function FleetSegmentPage({ segment }: Props) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 14, marginBottom: 20 }}>
-        <SegmentSafetyScore events={segmentEvents} vehicleCount={total} title={def.title} />
+        <SegmentSafetyScore events={segmentEvents} distanceKm={distanceKm} title={def.title} />
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>

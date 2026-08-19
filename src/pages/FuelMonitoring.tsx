@@ -56,7 +56,7 @@ export default function FuelMonitoring() {
   const [siteMenuOpen, setSiteMenuOpen] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(linkedAsset);
   const [eventsPeriod, setEventsPeriod] = useState<'day' | 'week' | 'month'>('week');
-  const eventsUrl = `/api/fuel/consumption?period=${eventsPeriod}`;
+  const eventsUrl = `/api/fuel/consumption?period=${eventsPeriod}&trips=0`;
   const [fuelEvents, setFuelEvents] = useState<ConsumptionData | null>(
     () => peekFuelConsumption(eventsUrl),
   );
@@ -104,7 +104,7 @@ export default function FuelMonitoring() {
 
   useEffect(() => {
     let cancelled = false;
-    const url = `/api/fuel/consumption?period=${eventsPeriod}`;
+    const url = `/api/fuel/consumption?period=${eventsPeriod}&trips=0`;
     setEventsLoading(true);
     const cached = peekFuelConsumption(url);
     if (cached) setFuelEvents(cached);
@@ -336,7 +336,7 @@ export default function FuelMonitoring() {
                                 background: 'rgba(22,163,74,0.1)', color: '#16a34a',
                                 fontSize: 11, fontWeight: 700, cursor: 'pointer',
                               }}
-                              title="Open refill details"
+                              title="Chart-confirmed refuel — open details"
                             >
                               {refuelDisplay(events)}
                             </button>

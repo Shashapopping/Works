@@ -3,6 +3,7 @@ import { Search, ChevronLeft, ChevronRight, WifiOff, AlertTriangle } from 'lucid
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { SkelValue, SkelTable } from './data/DataBusy';
+import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../lib/placeAddress';
 
 interface Warning {
   eventId: string;
@@ -115,6 +116,16 @@ const formatDate = (dateStr: string) => {
     return dateStr;
   }
 };
+
+function displayPlaceLabel(anomaly: Anomaly): string {
+  const raw = vehiclePlaceAddress(anomaly as any);
+  if (isUsablePlaceAddress(raw)) return raw;
+  if (/^locating/i.test(raw)) return 'Locating…';
+  const lat = (anomaly as any).position?.latitude;
+  const lng = (anomaly as any).position?.longitude;
+  if (lat != null && lng != null) return 'Locating…';
+  return 'Unknown location';
+}
 
 export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch }: Props) {
   const [anomalies, setAnomalies] = useState<Anomaly[]>(() => {
@@ -257,6 +268,9 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
   };
 
   const sortedAnomalies = [...anomalies].sort((a, b) => {
+    const aResolved = vehicleHasResolvedPlace(a as any);
+    const bResolved = vehicleHasResolvedPlace(b as any);
+    if (aResolved !== bResolved) return aResolved ? -1 : 1;
     if (a.panic && !b.panic) return -1;
     if (!a.panic && b.panic) return 1;
     const aHasWarning = a.warnings && a.warnings.length > 0;
@@ -266,6 +280,8 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
     return new Date(b.date).getTime() - new Date(a.date).getTime();
   });
 
+  const hasSearch = deferredSearchTerm.trim().length > 0;
+
   const filteredAnomalies = sortedAnomalies.filter(anomaly => {
     const matchesSearch =
       anomaly.regNo.toLowerCase().includes(deferredSearchTerm.toLowerCase()) ||
@@ -273,6 +289,9 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
       anomaly.transporter.toLowerCase().includes(deferredSearchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'All' || anomaly.status === statusFilter
       || (statusFilter === 'Inactive' && anomaly.status === 'Offline');
+    // Default list: wait until reverse-geocode fills a place name.
+    // Search still surfaces unresolved assets (they sort to the bottom).
+    if (!hasSearch && !vehicleHasResolvedPlace(anomaly as any)) return false;
     return matchesSearch && matchesStatus;
   });
 
@@ -445,7 +464,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
                         <span style={{ fontSize: '12px', color: isPanic ? 'var(--cd-danger)' : hasWarnings ? '#854F0B' : 'var(--cd-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '220px' }}>
-                          {(anomaly as any).position?.address || 'Unknown location'}
+                          {displayPlaceLabel(anomaly)}
                         </span>
                         {(anomaly as any).position?.latitude && (
                           <a href={`https://www.google.com/maps?q=${(anomaly as any).position.latitude},${(anomaly as any).position.longitude}`} target="_blank" rel="noopener noreferrer" style={{ flexShrink: 0, color: '#0d9488', lineHeight: 1, textDecoration: 'none', fontSize: '14px' }}>📍</a>
@@ -507,8 +526,8 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
-                        <span title={(anomaly as any).position?.address || 'Unknown'} style={{ fontSize: '13px', color: isPanic ? 'var(--cd-danger)' : hasWarnings ? '#854F0B' : 'var(--cd-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', maxInlineSize: '160px' }}>
-                          {(anomaly as any).position?.address || 'Unknown'}
+                        <span title={displayPlaceLabel(anomaly)} style={{ fontSize: '13px', color: isPanic ? 'var(--cd-danger)' : hasWarnings ? '#854F0B' : 'var(--cd-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', maxInlineSize: '160px' }}>
+                          {displayPlaceLabel(anomaly)}
                         </span>
                         {(anomaly as any).position?.latitude && (
                           <a href={`https://www.google.com/maps?q=${(anomaly as any).position.latitude},${(anomaly as any).position.longitude}`} target="_blank" rel="noopener noreferrer" title="Open in Google Maps" style={{ flexShrink: 0, color: '#0d9488', lineHeight: 1, textDecoration: 'none' }}>📍</a>

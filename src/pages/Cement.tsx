@@ -1,16 +1,20 @@
-import { useMemo } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import {
-  Truck, Users, MapPin, TrendingUp, Navigation, Info,
+  Truck, MapPin, TrendingUp, Navigation, Info,
 } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import { KpiCard } from '../components/KpiCard';
 import SegmentPeriodBar from '../components/SegmentPeriodBar';
+import PageControls from '../components/PageControls';
 import { useSegmentPeriod } from '../hooks/useDriverDistancePeriod';
+import { useClientPagination } from '../hooks/useClientPagination';
 import {
   segmentVehicles, segmentTripAssets, utilizationPct, cementCorridor,
-  isSpotHireVehicle, groupByZone, STATUS_COLOR,
+  groupByZone, locationLabel, STATUS_COLOR,
 } from '../lib/segmentMetrics';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
+
+const PAGE_SIZE = 20;
 
 function MiniStat({ label, value, color, tip, note }: {
   label: string; value: number; color: string; tip: string; note?: string;
@@ -41,12 +45,10 @@ export default function Cement() {
   } = useSegmentPeriod('today');
   const fleet = useMemo(() => segmentVehicles(vehicles, 'cement'), [vehicles]);
   const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
 
   const util = utilizationPct(fleet);
   const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
-  const spotHire = fleet.filter(isSpotHireVehicle);
-  const owned = fleet.length - spotHire.length;
-  const spotPct = fleet.length ? Math.round((spotHire.length / fleet.length) * 100) : 0;
 
   const moving = fleet.filter(v => v.status === 'Moving').length;
   const idle = fleet.filter(v => v.status === 'Idle' || v.status === 'Stationary' || v.status === 'Excessive Idle').length;
@@ -70,17 +72,29 @@ export default function Cement() {
     return Object.entries(map).sort((a, b) => b[1].vehicles.length - a[1].vehicles.length);
   }, [fleet, assets]);
 
-  const topDistance = useMemo(() =>
-    [...assets]
-      .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm)
-      .slice(0, 12)
-      .map(a => ({
-        ...a,
-        vehicle: fleet.find(f => f.id?.toString() === a.assetId?.toString()),
-      })),
-  [assets, fleet]);
+  const kmByAsset = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const a of assets) map.set(String(a.assetId), a.totalDistanceKm);
+    return map;
+  }, [assets]);
 
   const zones = useMemo(() => groupByZone(fleet), [fleet]);
+
+  const leaderRows = useMemo(() => {
+    const rows = fleet.map(v => ({
+      assetId: String(v.id),
+      regNo: v.regNo || '—',
+      zone: (v.zone || 'Unknown').trim(),
+      distanceKm: kmByAsset.get(String(v.id)) ?? 0,
+      transporter: v.transporter || v.site || '—',
+      status: v.status,
+      location: locationLabel(v),
+    })).sort((a, b) => b.distanceKm - a.distanceKm);
+    if (!selectedZone) return rows;
+    return rows.filter(r => r.zone === selectedZone);
+  }, [fleet, kmByAsset, selectedZone]);
+
+  const pagination = useClientPagination(leaderRows, PAGE_SIZE, selectedZone ?? 'all');
 
   return (
     <div>
@@ -88,7 +102,7 @@ export default function Cement() {
         <div>
           <h1 className="bpl-page-title">Cement Distribution</h1>
           <p className="bpl-page-subtitle">
-            North, East & West corridors — fleet utilization, turnaround, and owned vs spot-hire mix.
+            North, East & West corridors — fleet utilization, turnaround, and distance by zone.
           </p>
         </div>
         <SegmentPeriodBar
@@ -99,7 +113,7 @@ export default function Cement() {
         />
       </div>
 
-      <div className="bpl-kpi-grid">
+      <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
         <KpiCard
           label="Fleet Utilization"
           value={`${util}%`}
@@ -124,14 +138,6 @@ export default function Cement() {
           icon={Navigation}
           tip={`Sum of MiX trip distance ${periodLabel} for cement-segment assets only.`}
         />
-        <KpiCard
-          label="Spot Hire"
-          value={`${spotPct}%`}
-          sub={`${spotHire.length} hire · ${owned} owned/contract`}
-          color="#d97706"
-          icon={Users}
-          tip={`Counted as spot hire if MiX zone contains "SPOT HIRE", or site contains "SPOT" / "NON LH". Percent = hire ÷ cement fleet × 100 (rounded). Today: ${spotHire.length} hire ÷ ${fleet.length} cement assets = ${spotPct}%. Remaining ${owned} are treated as owned/contract.`}
-        />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
@@ -155,14 +161,14 @@ export default function Cement() {
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(280px, 0.8fr)', gap: 14, marginBottom: 20 }}>
-        <div className="bpl-card" style={{ padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
-            Corridor Breakdown
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 16 }}>Assets and distance by distribution corridor</div>
+      <div className="bpl-card" style={{ padding: 20, marginBottom: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
+          Corridor Breakdown
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 16 }}>Assets and distance by distribution corridor</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '4px 28px' }}>
           {corridors.map(([name, data]) => (
-            <div key={name} style={{ marginBottom: 14 }}>
+            <div key={name} style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 5 }}>
                 <span style={{ fontWeight: 700, color: 'var(--cd-text)' }}>{name}</span>
                 <span style={{ color: 'var(--cd-text-muted)' }}>
@@ -179,73 +185,89 @@ export default function Cement() {
             </div>
           ))}
         </div>
-
-        <div className="bpl-card" style={{ padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', marginBottom: 14, fontFamily: 'var(--cd-font-display)' }}>
-            Owned vs Spot Hire
-          </div>
-          <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>
-            <div style={{ width: `${100 - spotPct}%`, background: '#c2410c' }} title="Owned/contract" />
-            <div style={{ width: `${spotPct}%`, background: '#d97706' }} title="Spot hire" />
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.55, marginBottom: 16 }}>
-            Spot hire spikes cost and reduces visibility. High hire % often signals capacity shortfall on a corridor.
-          </div>
-          <div style={{ fontSize: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ color: 'var(--cd-text)' }}>Owned / contract fleet</span>
-              <strong style={{ color: '#c2410c' }}>{owned}</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--cd-text)' }}>Spot hire</span>
-              <strong style={{ color: '#d97706' }}>{spotHire.length}</strong>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div className="bpl-card" style={{ overflow: 'hidden' }}>
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cd-border)' }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Distance Leaders</div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
-            Highest MiX trip distance {periodLabel} in the cement segment
+        <div style={{ padding: '12px 16px 10px', borderBottom: '1px solid var(--cd-border)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Distance Leaders</div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>
+                {selectedZone ? selectedZone : 'All zones'} · highest MiX trip distance {periodLabel} · {PAGE_SIZE} per page
+              </div>
+            </div>
+            <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>
+              {distanceLoading ? <SkelValue /> : `${leaderRows.length.toLocaleString()} assets`}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 76, overflowY: 'auto' }}>
+            <button
+              type="button"
+              aria-pressed={!selectedZone}
+              onClick={() => setSelectedZone(null)}
+              style={zoneChipStyle(!selectedZone)}
+            >
+              All <strong style={{ color: 'var(--cd-text)' }}>{fleet.length}</strong>
+            </button>
+            {zones.map(([zone, list]) => {
+              const on = selectedZone === zone;
+              return (
+                <button
+                  key={zone}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => setSelectedZone(on ? null : zone)}
+                  title={zone}
+                  style={zoneChipStyle(on)}
+                >
+                  <span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{zone}</span>
+                  {' '}
+                  <strong style={{ color: 'var(--cd-text)' }}>{list.length}</strong>
+                </button>
+              );
+            })}
           </div>
         </div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <div className="bpl-table-scroll">
+          <table className="bpl-table" style={{ fontSize: 12 }}>
             <thead>
-              <tr style={{ background: 'var(--cd-surface-2)' }}>
-                {['Reg No', 'Corridor', 'Distance', 'Transporter', 'Status', 'Location'].map(h => (
-                  <th key={h} style={{ padding: '9px 14px', textAlign: 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
+              <tr>
+                {['Reg No', 'Zone', 'Distance', 'Transporter', 'Status', 'Location'].map(h => (
+                  <th key={h} style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {distanceLoading ? (
                 <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={6} /></td></tr>
-              ) : topDistance.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data {periodLabel}</td></tr>
-              ) : topDistance.map((row, i) => {
-                const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
+              ) : pagination.pageRows.length === 0 ? (
+                <tr>
+                  <td colSpan={6} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
+                    {selectedZone ? `No assets in ${selectedZone}` : `No assets ${periodLabel}`}
+                  </td>
+                </tr>
+              ) : pagination.pageRows.map((row, i) => {
+                const color = STATUS_COLOR[row.status ?? ''] ?? '#6B7A8D';
                 return (
-                  <tr key={row.assetId} style={{
-                    borderTop: '1px solid var(--cd-border)',
-                    background: i % 2 ? 'var(--cd-surface-2)' : undefined,
-                  }}>
-                    <td style={{ padding: '9px 14px', fontWeight: 700, fontFamily: 'var(--cd-font-display)' }}>{row.regNo}</td>
-                    <td style={{ padding: '9px 14px' }}>{cementCorridor(row.vehicle?.zone)}</td>
-                    <td style={{ padding: '9px 14px' }}>{row.totalDistanceKm.toFixed(0)} km</td>
-                    <td style={{ padding: '9px 14px', color: 'var(--cd-text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {row.vehicle?.site ?? '—'}
+                  <tr key={row.assetId} style={{ background: i % 2 ? 'var(--cd-surface-2)' : undefined }}>
+                    <td style={{ padding: '7px 12px', fontWeight: 700, fontFamily: 'var(--cd-font-display)', whiteSpace: 'nowrap' }}>{row.regNo}</td>
+                    <td style={{ padding: '7px 12px', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.zone}>
+                      {row.zone}
                     </td>
-                    <td style={{ padding: '9px 14px' }}>
+                    <td style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>
+                      {row.distanceKm > 0 ? `${Math.round(row.distanceKm).toLocaleString()} km` : '—'}
+                    </td>
+                    <td style={{ padding: '7px 12px', color: 'var(--cd-text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.transporter}>
+                      {row.transporter}
+                    </td>
+                    <td style={{ padding: '7px 12px' }}>
                       <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 99, background: `${color}18`, color }}>
-                        {row.vehicle?.status ?? '—'}
+                        {row.status || '—'}
                       </span>
                     </td>
-                    <td style={{ padding: '9px 14px', color: 'var(--cd-text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '7px 12px', color: 'var(--cd-text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.location}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <MapPin size={11} /> {row.vehicle?.position?.address || '—'}
+                        <MapPin size={11} /> {row.location || '—'}
                       </span>
                     </td>
                   </tr>
@@ -254,21 +276,37 @@ export default function Cement() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      <div className="bpl-card" style={{ marginTop: 14, padding: 18 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--cd-text)', marginBottom: 10, fontFamily: 'var(--cd-font-display)' }}>All Zones ({zones.length})</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {zones.map(([zone, list]) => (
-            <span key={zone} style={{
-              fontSize: 11, padding: '4px 10px', borderRadius: 99,
-              background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', color: 'var(--cd-text-muted)',
-            }}>
-              {zone} <strong style={{ color: 'var(--cd-text)' }}>{list.length}</strong>
-            </span>
-          ))}
-        </div>
+        {leaderRows.length > 0 && (
+          <PageControls
+            page={pagination.page}
+            pageCount={pagination.pageCount}
+            from={pagination.from}
+            to={pagination.to}
+            total={pagination.total}
+            hasPrev={pagination.hasPrev}
+            hasNext={pagination.hasNext}
+            onPrev={pagination.prev}
+            onNext={pagination.next}
+            itemLabel="assets"
+          />
+        )}
       </div>
     </div>
   );
+}
+
+function zoneChipStyle(on: boolean): CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 11,
+    padding: '4px 10px',
+    borderRadius: 99,
+    cursor: 'pointer',
+    background: on ? 'rgba(194,65,12,0.12)' : 'var(--cd-surface-2)',
+    border: `1px solid ${on ? 'rgba(194,65,12,0.45)' : 'var(--cd-border)'}`,
+    color: on ? 'var(--cd-text)' : 'var(--cd-text-muted)',
+    fontWeight: on ? 700 : 500,
+  };
 }

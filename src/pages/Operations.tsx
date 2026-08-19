@@ -97,7 +97,7 @@ function useDistanceData(range: DistanceRange) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    authFetch(`/api/driver-distance?range=${range}`)
+    authFetch(`/api/driver-distance?range=${range}&trips=0`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
       .catch(() => { if (!cancelled) setLoading(false); });

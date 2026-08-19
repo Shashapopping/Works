@@ -1,5 +1,6 @@
 import type { Vehicle } from '../context/FleetContext';
 import { brandLabel } from './branding';
+import { isUsablePlaceAddress } from './placeAddress';
 
 export interface FleetLocationHub {
   key: string;
@@ -66,8 +67,12 @@ export function deriveFleetLocationHubs(vehicles: Vehicle[], limit = 8): FleetLo
 
   active.forEach(v => {
     const zone = (v.zone || '').trim().toUpperCase();
-    const city = cityFromAddress(v.position?.address);
-    const key = zone && zone !== 'N/A' && zone !== 'UNKNOWN'
+    const addr = v.position?.address;
+    if (!isUsablePlaceAddress(addr) && (!zone || zone === 'N/A' || zone === 'UNKNOWN' || zone === 'UNKNOWN ZONE')) {
+      return;
+    }
+    const city = isUsablePlaceAddress(addr) ? cityFromAddress(addr) : null;
+    const key = zone && zone !== 'N/A' && zone !== 'UNKNOWN' && zone !== 'UNKNOWN ZONE'
       ? `zone:${zone}`
       : city
       ? `city:${city.toLowerCase()}`
@@ -75,7 +80,7 @@ export function deriveFleetLocationHubs(vehicles: Vehicle[], limit = 8): FleetLo
     if (!key) return;
 
     const label = brandLabel(
-      zone && zone !== 'N/A' && zone !== 'UNKNOWN'
+      zone && zone !== 'N/A' && zone !== 'UNKNOWN' && zone !== 'UNKNOWN ZONE'
         ? titleCaseZone(zone)
         : city!,
     );
@@ -94,7 +99,7 @@ export function deriveFleetLocationHubs(vehicles: Vehicle[], limit = 8): FleetLo
         key,
         label,
         regionHint,
-        address: v.position?.address || label,
+        address: isUsablePlaceAddress(addr) ? addr! : label,
         latSum: lat,
         lngSum: lng,
         n: 1,
@@ -105,7 +110,7 @@ export function deriveFleetLocationHubs(vehicles: Vehicle[], limit = 8): FleetLo
       prev.lngSum += lng;
       prev.n += 1;
       if (v.status === 'Moving') prev.moving += 1;
-      if (v.position?.address && prev.address.length < 8) prev.address = v.position.address;
+      if (isUsablePlaceAddress(addr) && prev.address.length < 8) prev.address = addr!;
     }
   });
 

@@ -353,7 +353,7 @@ async function fetchTripStats(): Promise<Omit<TripStats, 'loading'>> {
     'trends:driver-distance:currentMonth',
     60_000,
     async () => {
-      const res = await authFetch('/api/driver-distance?range=currentMonth');
+      const res = await authFetch('/api/driver-distance?range=currentMonth&trips=0');
       if (!res.ok) return null;
       return res.json();
     },
@@ -403,7 +403,7 @@ export function TrendsSharedDataProvider({
   useEffect(() => {
     let cancelled = false;
     setConsumptionLoading(true);
-    const url = '/api/fuel/consumption?period=week';
+    const url = '/api/fuel/consumption?period=week&trips=0';
     cachedFetchJson<ConsumptionData>(
       CACHE_KEYS.fuelConsumption(url),
       CACHE_TTL.fuelConsumption,
@@ -487,7 +487,7 @@ function useConsumption(period: 'week' | 'month' = 'week') {
       return;
     }
     let cancelled = false;
-    const url = `/api/fuel/consumption?period=${period}`;
+    const url = `/api/fuel/consumption?period=${period}&trips=0`;
     cachedFetchJson<ConsumptionData>(
       CACHE_KEYS.fuelConsumption(url),
       CACHE_TTL.fuelConsumption,

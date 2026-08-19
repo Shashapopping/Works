@@ -12,13 +12,8 @@
  */
 import type { LogEntry } from '../context/FleetContext';
 import { isActiveDriver, isActiveDriverId } from './driverUtils';
-import { buildDriverConsequenceCard, type ConsequenceCard } from './consequenceScore';
-import {
-  COACHING_EVENT_COUNT,
-  COACHING_SCORE_THRESHOLD,
-  TRAINING_SAME_LABEL_COUNT,
-  TRAINING_SAME_LABEL_DAYS,
-} from '../config/interventionRules';
+import { buildDriverConsequenceCard, countPenaltyEvents, type ConsequenceCard } from './consequenceScore';
+import { COACHING_EVENT_COUNT, COACHING_SCORE_THRESHOLD, COACHING_WINDOW_DAYS } from '../config/interventionRules';
 
 const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 
@@ -81,33 +76,33 @@ export function buildDriverSnapshots(
   return map;
 }
 
-/** Coaching: score at/below threshold, OR event count at/above threshold. */
-export function qualifyCoaching(d: DriverSnapshot): boolean {
-  return d.consequence.displayScore <= COACHING_SCORE_THRESHOLD
-    || d.consequence.counts.eventCount >= COACHING_EVENT_COUNT;
-}
-
-/** Training: same violation label repeated N times within the lookback window. */
-export function recurringViolation(d: DriverSnapshot): { label: string; count: number } | null {
-  const counts: Record<string, LogEntry[]> = {};
-  const cutoff = Date.now() - TRAINING_SAME_LABEL_DAYS * 24 * 60 * 60 * 1000;
-  d.events.forEach(e => {
+/** Scored IVMS events inside the coaching lookback window. */
+export function scoredEventsInWindow(events: LogEntry[], windowDays = COACHING_WINDOW_DAYS): number {
+  const cutoff = Date.now() - windowDays * 24 * 60 * 60 * 1000;
+  return countPenaltyEvents(events.filter(e => {
     const ts = new Date(e.eventTime || e.timestamp).getTime();
-    if (!Number.isFinite(ts) || ts < cutoff) return;
-    const label = e.label || 'Unknown';
-    (counts[label] ||= []).push(e);
-  });
-  let best: { label: string; count: number } | null = null;
-  for (const [label, list] of Object.entries(counts)) {
-    if (list.length >= TRAINING_SAME_LABEL_COUNT && (!best || list.length > best.count)) {
-      best = { label, count: list.length };
-    }
-  }
-  return best;
+    return Number.isFinite(ts) && ts >= cutoff;
+  })).eventCount;
 }
 
-export function qualifyTraining(d: DriverSnapshot): { label: string; count: number } | null {
-  return recurringViolation(d);
+/** Coaching: score at/below threshold, OR event count at/above threshold (30-day window). */
+export function qualifyCoaching(d: DriverSnapshot, windowEventCount?: number): boolean {
+  const n = windowEventCount ?? scoredEventsInWindow(d.events);
+  return d.consequence.displayScore <= COACHING_SCORE_THRESHOLD
+    || n >= COACHING_EVENT_COUNT;
+}
+
+export function hasWrittenWarning(d: DriverSnapshot): boolean {
+  return getNotesForDriver(d.key).some(n => n.kind === 'written_warning');
+}
+
+/**
+ * Training = Mandatory Driver Retraining from the same consequence card
+ * Drivers already uses: Amber (driverScore −2 to −5.9) + 2nd occurrence.
+ */
+export function qualifyTraining(d: DriverSnapshot, occurrenceIndex: number): boolean {
+  if (d.consequence.category !== 'Amber') return false;
+  return occurrenceIndex >= 2 || hasWrittenWarning(d);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +116,9 @@ export interface CoachingNote {
   comment: string;
   addedBy: string;
   createdAt: string;
+  kind?: 'note' | 'written_warning';
+  taggedUserIds?: string[];
+  warningId?: string;
 }
 
 const NOTES_KEY = 'bpl_coaching_notes';
@@ -152,12 +150,21 @@ export function getNotesForDriver(key: string): CoachingNote[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function addCoachingNote(driverKey: string, driverName: string, comment: string, addedBy = 'You'): CoachingNote[] {
+export function addCoachingNote(
+  driverKey: string,
+  driverName: string,
+  comment: string,
+  addedBy = 'You',
+  opts?: { kind?: 'note' | 'written_warning'; taggedUserIds?: string[]; warningId?: string },
+): CoachingNote[] {
   const notes = getCoachingNotes();
   const next: CoachingNote = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     driverKey, driverName, comment, addedBy,
     createdAt: new Date().toISOString(),
+    kind: opts?.kind || 'note',
+    taggedUserIds: opts?.taggedUserIds,
+    warningId: opts?.warningId,
   };
   const updated = [...notes, next];
   writeJson(NOTES_KEY, updated);

@@ -19,16 +19,8 @@ export interface AlertItem {
   driver: string;
   time: string;
   severity: 'critical' | 'warning' | 'info';
-}
-
-export interface DriverScore {
-  name: string;
-  score: number;
-  trend: 'up' | 'down' | 'stable';
-  incidents: number;
-  harshBraking: number;
-  overspeeding: number;
-  lastEvent: string | null;
+  speed?: number | null;
+  speedLimit?: number | null;
 }
 
 export interface MaintenanceItem {
@@ -80,51 +72,9 @@ export function deriveAlerts(events: LogEntry[]): AlertItem[] {
         : e.label === 'Overspeeding'
         ? 'critical' as const
         : 'info' as const,
+      speed: e.speed ?? null,
+      speedLimit: e.speedLimit ?? null,
     }));
-}
-
-export function deriveDriverScores(events: LogEntry[], penaltyPerEvent = 3): DriverScore[] {
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-  const byDriver = new Map<string, {
-    recent: number;
-    prev: number;
-    harshBraking: number;
-    overspeeding: number;
-    lastMs: number;
-  }>();
-
-  events.forEach(e => {
-    const name = e.driverName;
-    if (!isKnownDriver(name)) return;
-    const t = new Date(e.eventTime || e.timestamp).getTime();
-    if (!Number.isFinite(t)) return;
-    if (!byDriver.has(name!)) {
-      byDriver.set(name!, { recent: 0, prev: 0, harshBraking: 0, overspeeding: 0, lastMs: 0 });
-    }
-    const row = byDriver.get(name!)!;
-    if (t >= thirtyDaysAgo) {
-      row.recent++;
-      if (e.label === 'Harsh Braking') row.harshBraking++;
-      if (e.label === 'Overspeeding' || e.label === 'Overspeed Tiered') row.overspeeding++;
-      if (t > row.lastMs) row.lastMs = t;
-    } else if (t >= sixtyDaysAgo) {
-      row.prev++;
-    }
-  });
-
-  return [...byDriver.entries()]
-    .map(([name, row]) => ({
-      name: displayDriverName(name),
-      score: Math.max(35, Math.min(100, 100 - row.recent * penaltyPerEvent)),
-      trend: row.recent < row.prev ? 'up' as const : row.recent > row.prev ? 'down' as const : 'stable' as const,
-      incidents: row.recent,
-      harshBraking: row.harshBraking,
-      overspeeding: row.overspeeding,
-      lastEvent: row.lastMs > 0 ? timeAgo(new Date(row.lastMs).toISOString()) : null,
-    }))
-    .sort((a, b) => a.score - b.score || b.incidents - a.incidents)
-    .slice(0, 12);
 }
 
 export function deriveInsights(events: LogEntry[], vehicles: Vehicle[]): AiInsight[] {

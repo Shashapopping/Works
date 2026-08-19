@@ -7,13 +7,25 @@ import {
   FUEL_EVENT_TYPE,
   QUARRY_ZONES,
 } from './fuel-constants.js';
-import { getFuelHistory, getTripsInRange } from './db.js';
+import { getFuelHistory, getTripsInRange, loadTripRollupsByAsset } from './db.js';
+import {
+  detectRefuelsFromAssets,
+  periodBucketMinutes,
+  periodFuelDropFromStable,
+} from './fuel-signal.js';
 
-const REFUEL_LITERS = 50;
-const REFUEL_WINDOW_MS = 30 * 60 * 1000;
 const FUEL_MATCH_MS = 15 * 60 * 1000;
-const RESULT_CACHE_TTL_MS = 30_000;
+// Stale-while-revalidate: serve instantly, refresh in background.
+const RESULT_CACHE_FRESH_TTL_MS = 90_000;   // instant "fresh" window
+const RESULT_CACHE_STALE_TTL_MS = 300_000;   // serve stale instantly + refresh
 const resultCache = new Map();
+const inflightRefresh = new Set();
+
+// mtime-guarded cache for rarely-changing lookups.
+let vehicleLookupCache = null;
+let vehicleLookupMtimeMs = 0;
+let driverLookupCache = null;
+let driverLookupMtimeMs = 0;
 
 function parsePeriodBounds(period, fromQ, toQ) {
   const now = Date.now();
@@ -36,27 +48,47 @@ function loadFuelEntries(start, end) {
 }
 
 function loadVehicleLookup(cwd) {
-  const map = new Map();
   const dataPath = path.join(cwd, 'public', 'data.json');
-  if (!fs.existsSync(dataPath)) return map;
-  JSON.parse(fs.readFileSync(dataPath, 'utf8')).forEach(v => {
-    map.set(v.id?.toString(), {
-      regNo: v.regNo,
-      assetName: v.assetName,
-      zone: (v.zone || '').toUpperCase(),
+  if (!fs.existsSync(dataPath)) return new Map();
+  try {
+    const mtimeMs = fs.statSync(dataPath).mtimeMs;
+    if (vehicleLookupCache && mtimeMs === vehicleLookupMtimeMs) return vehicleLookupCache;
+
+    const map = new Map();
+    JSON.parse(fs.readFileSync(dataPath, 'utf8')).forEach(v => {
+      map.set(v.id?.toString(), {
+        regNo: v.regNo,
+        assetName: v.assetName,
+        zone: (v.zone || '').toUpperCase(),
+      });
     });
-  });
-  return map;
+
+    vehicleLookupCache = map;
+    vehicleLookupMtimeMs = mtimeMs;
+    return map;
+  } catch {
+    return vehicleLookupCache ?? new Map();
+  }
 }
 
 function loadDriverLookup(cwd) {
-  const map = new Map();
   const p = path.join(cwd, 'public', 'drivers.json');
-  if (!fs.existsSync(p)) return map;
-  JSON.parse(fs.readFileSync(p, 'utf8')).forEach(d => {
-    map.set(d.DriverId?.toString(), d.Name || 'N/A');
-  });
-  return map;
+  if (!fs.existsSync(p)) return new Map();
+  try {
+    const mtimeMs = fs.statSync(p).mtimeMs;
+    if (driverLookupCache && mtimeMs === driverLookupMtimeMs) return driverLookupCache;
+
+    const map = new Map();
+    JSON.parse(fs.readFileSync(p, 'utf8')).forEach(d => {
+      map.set(d.DriverId?.toString(), d.Name || 'N/A');
+    });
+
+    driverLookupCache = map;
+    driverLookupMtimeMs = mtimeMs;
+    return map;
+  } catch {
+    return driverLookupCache ?? new Map();
+  }
 }
 
 function nearestFuelReading(indexedRows, targetMs, preferTypes, direction) {
@@ -121,50 +153,6 @@ function indexFuelByAsset(entries) {
   return byAsset;
 }
 
-function detectRefuels(byAsset, start, end) {
-  const refuels = [];
-
-  byAsset.forEach((sorted, assetId) => {
-    for (let i = 1; i < sorted.length; i++) {
-      const prev = sorted[i - 1];
-      const cur = sorted[i];
-      if (cur.ms < start || prev.ms > end) continue;
-      const delta = cur.level - prev.level;
-      const dt = cur.ms - prev.ms;
-      if (delta >= REFUEL_LITERS && dt <= REFUEL_WINDOW_MS) {
-        refuels.push({
-          assetId,
-          timestamp: cur.timestamp,
-          startTime: prev.timestamp,
-          endTime: cur.timestamp,
-          durationMinutes: Math.round(dt / 60_000),
-          beforeLevel: prev.level,
-          afterLevel: cur.level,
-          deltaLiters: delta,
-        });
-      }
-    }
-  });
-  return refuels;
-}
-
-function periodFuelDrop(rows, start, end) {
-  if (!rows?.length) return 0;
-  const inWindow = rows.filter(e => e.ms >= start && e.ms <= end);
-  if (inWindow.length < 2) return 0;
-
-  let used = 0;
-  for (let i = 1; i < inWindow.length; i++) {
-    const prev = inWindow[i - 1];
-    const cur = inWindow[i];
-    const delta = prev.level - cur.level;
-    const dt = cur.ms - prev.ms;
-    if (cur.level - prev.level >= REFUEL_LITERS && dt <= REFUEL_WINDOW_MS) continue;
-    if (delta > 0) used += delta;
-  }
-  return used;
-}
-
 function groupByAssetId(rows) {
   const map = new Map();
   for (const row of rows) {
@@ -184,11 +172,42 @@ export function computeConsumption({
   from,
   to,
   siteFilter = null,
+  includeTrips = true,
+  _bypassCache = false,
 }) {
-  const cacheKey = `${period}|${from || ''}|${to || ''}|${siteFilter || ''}`;
-  const cached = resultCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < RESULT_CACHE_TTL_MS) {
-    return cached.data;
+  const cacheKey = `${period}|${from || ''}|${to || ''}|${siteFilter || ''}|trips=${includeTrips ? 1 : 0}`;
+
+  if (!_bypassCache) {
+    const cached = resultCache.get(cacheKey);
+    if (cached) {
+      const ageMs = Date.now() - cached.at;
+      if (ageMs < RESULT_CACHE_FRESH_TTL_MS) return cached.data;
+
+      if (ageMs < RESULT_CACHE_STALE_TTL_MS) {
+        if (!inflightRefresh.has(cacheKey)) {
+          inflightRefresh.add(cacheKey);
+          setImmediate(() => {
+            try {
+              computeConsumption({
+                cwd,
+                period,
+                from,
+                to,
+                siteFilter,
+                includeTrips,
+                _bypassCache: true,
+              });
+            } catch {
+              // Keep stale value if refresh fails.
+            } finally {
+              inflightRefresh.delete(cacheKey);
+            }
+          });
+        }
+        return cached.data;
+      }
+      // else: expired beyond stale window → fall through to recompute synchronously
+    }
   }
 
   const { start, end } = parsePeriodBounds(period, from, to);
@@ -206,87 +225,101 @@ export function computeConsumption({
   const fuelEntries = loadFuelEntries(start - FUEL_MATCH_MS, end);
   const fuelByAsset = indexFuelByAsset(fuelEntries);
 
-  const trips = getTripsInRange(
-    new Date(start).toISOString(),
-    new Date(end + 1).toISOString(),
-    quarryAssetIds,
-  );
-
-  const refuels = detectRefuels(fuelByAsset, start, end);
+  const bucketMinutes = periodBucketMinutes(period);
+  const refuels = detectRefuelsFromAssets(fuelByAsset, start, end, bucketMinutes);
   const refuelsByAsset = groupByAssetId(refuels);
 
-  const startFuelTypes = new Set([FUEL_EVENT_TYPE.TRIP_START, FUEL_EVENT_TYPE.FIVE_MIN]);
-  const endFuelTypes = new Set([FUEL_EVENT_TYPE.TRIP_END, FUEL_EVENT_TYPE.FIVE_MIN]);
+  const fromIso = new Date(start).toISOString();
+  const toIso = new Date(end + 1).toISOString();
 
-  const tripRows = trips
-    .filter(t => quarryAssetIdSet.has(t.AssetId?.toString()))
-    .filter(t => {
-      const ts = new Date(t.TripEnd || t.TripStart).getTime();
-      return ts >= start && ts <= end;
-    })
-    .map(t => {
-      const assetId = t.AssetId?.toString();
-      const tripStartMs = new Date(t.TripStart).getTime();
-      const tripEndMs = new Date(t.TripEnd).getTime();
-      const assetFuel = fuelByAsset.get(assetId);
-      const startFuel = nearestFuelReading(assetFuel, tripStartMs, startFuelTypes, 'before');
-      const endFuel = nearestFuelReading(assetFuel, tripEndMs, endFuelTypes, 'after');
-      const fuelUsed = (startFuel && endFuel && startFuel.level > endFuel.level)
-        ? startFuel.level - endFuel.level
-        : null;
-      const distanceKm = t.DistanceKilometers ?? 0;
-      const drivingHours = (t.DrivingTime ?? t.Duration ?? 0) / 3600;
-      const info = vehicles.get(assetId) || {};
-      const driverId = t.DriverId?.toString() || null;
-      return {
-        tripId: t.TripId?.toString(),
-        assetId,
-        regNo: info.regNo || assetId,
-        assetName: info.assetName || '',
-        zone: info.zone || '',
-        driverId,
-        driverName: driverId ? (drivers.get(driverId) || 'N/A') : 'N/A',
-        tripStart: t.TripStart,
-        tripEnd: t.TripEnd,
-        distanceKm,
-        drivingHours,
-        durationHours: (t.Duration ?? 0) / 3600,
-        fuelUsedLiters: fuelUsed,
-        litersPerKm: fuelUsed != null && distanceKm > 0 ? fuelUsed / distanceKm : null,
-        litersPerHour: fuelUsed != null && drivingHours > 0 ? fuelUsed / drivingHours : null,
-        startAddress: t.StartPosition?.FormattedAddress || null,
-        endAddress: t.EndPosition?.FormattedAddress || null,
-        maxSpeedKmh: t.MaxSpeedKilometersPerHour ?? null,
-      };
+  let tripRows = [];
+
+  if (includeTrips) {
+    const trips = getTripsInRange(fromIso, toIso, quarryAssetIds);
+    const startFuelTypes = new Set([FUEL_EVENT_TYPE.TRIP_START, FUEL_EVENT_TYPE.FIVE_MIN]);
+    const endFuelTypes = new Set([FUEL_EVENT_TYPE.TRIP_END, FUEL_EVENT_TYPE.FIVE_MIN]);
+
+    tripRows = trips
+      .filter(t => quarryAssetIdSet.has(t.AssetId?.toString()))
+      .filter(t => {
+        const ts = new Date(t.TripEnd || t.TripStart).getTime();
+        return ts >= start && ts <= end;
+      })
+      .map(t => {
+        const assetId = t.AssetId?.toString();
+        const tripStartMs = new Date(t.TripStart).getTime();
+        const tripEndMs = new Date(t.TripEnd).getTime();
+        const assetFuel = fuelByAsset.get(assetId);
+        const startFuel = nearestFuelReading(assetFuel, tripStartMs, startFuelTypes, 'before');
+        const endFuel = nearestFuelReading(assetFuel, tripEndMs, endFuelTypes, 'after');
+        const fuelUsed = (startFuel && endFuel && startFuel.level > endFuel.level)
+          ? startFuel.level - endFuel.level
+          : null;
+        const distanceKm = t.DistanceKilometers ?? 0;
+        const drivingHours = (t.DrivingTime ?? t.Duration ?? 0) / 3600;
+        const info = vehicles.get(assetId) || {};
+        const driverId = t.DriverId?.toString() || null;
+        return {
+          tripId: t.TripId?.toString(),
+          assetId,
+          regNo: info.regNo || assetId,
+          assetName: info.assetName || '',
+          zone: info.zone || '',
+          driverId,
+          driverName: driverId ? (drivers.get(driverId) || 'N/A') : 'N/A',
+          tripStart: t.TripStart,
+          tripEnd: t.TripEnd,
+          distanceKm,
+          drivingHours,
+          durationHours: (t.Duration ?? 0) / 3600,
+          fuelUsedLiters: fuelUsed,
+          litersPerKm: fuelUsed != null && distanceKm > 0 ? fuelUsed / distanceKm : null,
+          litersPerHour: fuelUsed != null && drivingHours > 0 ? fuelUsed / drivingHours : null,
+          startAddress: t.StartPosition?.FormattedAddress || null,
+          endAddress: t.EndPosition?.FormattedAddress || null,
+          maxSpeedKmh: t.MaxSpeedKilometersPerHour ?? null,
+        };
+      });
+  }
+
+  const rollupByAsset = new Map();
+  if (!includeTrips) {
+    loadTripRollupsByAsset(fromIso, toIso).forEach(row => {
+      if (row.assetId != null) rollupByAsset.set(String(row.assetId), row);
     });
+  }
 
   const assetMap = new Map();
   quarryAssetIds.forEach(assetId => {
     const info = vehicles.get(assetId) || {};
     const assetRefuels = refuelsByAsset.get(assetId) || [];
+    const periodFuelLiters = periodFuelDropFromStable(fuelByAsset.get(assetId), start, end, bucketMinutes);
+    const rollup = rollupByAsset.get(assetId);
     assetMap.set(assetId, {
       assetId,
       regNo: info.regNo || assetId,
       assetName: info.assetName || '',
       zone: info.zone || '',
-      tripCount: 0,
-      totalFuelLiters: 0,
-      totalDistanceKm: 0,
-      totalDrivingHours: 0,
-      periodFuelLiters: periodFuelDrop(fuelByAsset.get(assetId), start, end),
+      tripCount: rollup ? Number(rollup.tripCount) || 0 : 0,
+      totalFuelLiters: includeTrips ? 0 : periodFuelLiters,
+      totalDistanceKm: rollup ? Number(rollup.totalDistanceKm) || 0 : 0,
+      totalDrivingHours: rollup ? Number(rollup.totalDrivingHours) || 0 : 0,
+      periodFuelLiters,
       refuelCount: assetRefuels.length,
       refuelLiters: assetRefuels.reduce((sum, r) => sum + r.deltaLiters, 0),
     });
   });
 
-  tripRows.forEach(t => {
-    const row = assetMap.get(t.assetId);
-    if (!row) return;
-    row.tripCount += 1;
-    row.totalDistanceKm += t.distanceKm || 0;
-    row.totalDrivingHours += t.drivingHours || 0;
-    if (t.fuelUsedLiters != null) row.totalFuelLiters += t.fuelUsedLiters;
-  });
+  if (includeTrips) {
+    tripRows.forEach(t => {
+      const row = assetMap.get(t.assetId);
+      if (!row) return;
+      row.tripCount += 1;
+      row.totalDistanceKm += t.distanceKm || 0;
+      row.totalDrivingHours += t.drivingHours || 0;
+      if (t.fuelUsedLiters != null) row.totalFuelLiters += t.fuelUsedLiters;
+    });
+  }
 
   const assets = [...assetMap.values()].map(a => ({
     ...a,
@@ -319,7 +352,12 @@ export function computeConsumption({
   const totalFuelLiters = assets.reduce((s, a) => s + a.totalFuelLiters, 0);
   const totalDistanceKm = assets.reduce((s, a) => s + a.totalDistanceKm, 0);
   const totalDrivingHours = assets.reduce((s, a) => s + a.totalDrivingHours, 0);
-  const dailySeries = buildDailySeries(tripRows, start, end, period);
+  const tripCount = includeTrips
+    ? tripRows.length
+    : assets.reduce((s, a) => s + a.tripCount, 0);
+  const dailySeries = includeTrips
+    ? buildDailySeries(tripRows, start, end, period)
+    : buildDailySeriesFromFuel(fuelByAsset, quarryAssetIds, start, end, period);
 
   const data = {
     period: { start: new Date(start).toISOString(), end: new Date(end).toISOString() },
@@ -327,12 +365,14 @@ export function computeConsumption({
       totalFuelLiters,
       totalDistanceKm,
       totalDrivingHours,
-      tripCount: tripRows.length,
+      tripCount,
       refuelCount: refuels.length,
     },
     dailySeries,
     assets,
-    trips: tripRows.sort((a, b) => new Date(b.tripEnd).getTime() - new Date(a.tripEnd).getTime()),
+    trips: includeTrips
+      ? tripRows.sort((a, b) => new Date(b.tripEnd).getTime() - new Date(a.tripEnd).getTime())
+      : [],
     refuels: refuels.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     siteTotals: Object.values(siteTotals).sort((a, b) => a.zone.localeCompare(b.zone)),
   };
@@ -357,6 +397,48 @@ function buildDailySeries(tripRows, start, end, period) {
     const key = d.toISOString().slice(0, 10);
     buckets.set(key, (buckets.get(key) || 0) + t.fuelUsedLiters);
   });
+
+  const series = [];
+  const cur = new Date(start);
+  cur.setHours(0, 0, 0, 0);
+  const endD = new Date(end);
+  endD.setHours(0, 0, 0, 0);
+
+  while (cur <= endD) {
+    const key = cur.toISOString().slice(0, 10);
+    const liters = Math.round((buckets.get(key) || 0) * 10) / 10;
+    const day = WEEKDAY_LABELS[cur.getDay()];
+    const label = period === 'month'
+      ? cur.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      : day;
+    series.push({ date: key, day, label, liters });
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  if (period === 'week' && series.length <= 7) {
+    const byDay = new Map(series.map(row => [row.day, row]));
+    return WEEK_ORDER.map(day => byDay.get(day) || { date: '', day, label: day, liters: 0 });
+  }
+
+  return series;
+}
+
+/** Probe-based daily fuel drops when trip detail is omitted (trips=0). */
+function buildDailySeriesFromFuel(fuelByAsset, assetIds, start, end, period) {
+  const buckets = new Map();
+  for (const assetId of assetIds) {
+    const rows = fuelByAsset.get(assetId);
+    if (!rows?.length) continue;
+    for (let i = 1; i < rows.length; i++) {
+      const prev = rows[i - 1];
+      const cur = rows[i];
+      if (cur.ms < start || cur.ms > end) continue;
+      if (prev.level > cur.level) {
+        const key = new Date(cur.ms).toISOString().slice(0, 10);
+        buckets.set(key, (buckets.get(key) || 0) + (prev.level - cur.level));
+      }
+    }
+  }
 
   const series = [];
   const cur = new Date(start);

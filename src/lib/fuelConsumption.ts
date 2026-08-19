@@ -93,10 +93,11 @@ export function buildConsumptionUrl(
   customTo?: string,
 ): string {
   const siteQ = site !== 'ALL' ? `&site=${encodeURIComponent(site)}` : '';
+  const tripsQ = '&trips=0';
   if (mode === 'custom' && customFrom && customTo) {
-    return `/api/fuel/consumption?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}${siteQ}`;
+    return `/api/fuel/consumption?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}${siteQ}${tripsQ}`;
   }
-  return `/api/fuel/consumption?period=${mode}${siteQ}`;
+  return `/api/fuel/consumption?period=${mode}${siteQ}${tripsQ}`;
 }
 
 export function aggregateMetrics(

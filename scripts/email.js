@@ -367,3 +367,91 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+function disciplinePlainLabel(band) {
+  const map = {
+    Green: 'On track',
+    Amber: 'Needs coaching',
+    Yellow: 'Suspension review',
+    Red: 'Critical',
+  };
+  return map[band] || band || 'Needs coaching';
+}
+
+function coachingUrl(link) {
+  const base = (process.env.APP_PUBLIC_URL || 'http://localhost:5173').replace(/\/$/, '');
+  if (link?.startsWith('http')) return link;
+  if (link?.startsWith('/#/')) return `${base}${link.slice(1)}`;
+  if (link?.startsWith('/')) return `${base}/#${link}`;
+  return `${base}/#/drivers/coaching`;
+}
+
+/**
+ * Notify tagged dashboard users when a written warning is issued.
+ * @returns {{ sent: boolean, error?: string, id?: string }}
+ */
+export async function sendDriverWarningEmail({
+  to,
+  recipientName,
+  driverName,
+  comment,
+  disciplineBand,
+  issuedByName,
+  link,
+}) {
+  const resend = getClient();
+  if (!resend) {
+    return { sent: false, error: 'RESEND_API_KEY not configured' };
+  }
+
+  const safeRecipient = recipientName || 'there';
+  const band = disciplinePlainLabel(disciplineBand);
+  const url = coachingUrl(link);
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: fromAddress(),
+      to: [to],
+      subject: `Written warning · ${driverName} · Lafarge fleet`,
+      html: `
+        <div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.5;color:#0f172a;max-width:520px">
+          <h2 style="margin:0 0 12px;font-size:18px">Driver written warning</h2>
+          <p style="margin:0 0 12px">Hi ${escapeHtml(safeRecipient)},</p>
+          <p style="margin:0 0 12px">
+            <strong>${escapeHtml(issuedByName || 'A fleet manager')}</strong> issued a formal written warning for
+            <strong>${escapeHtml(driverName)}</strong> (${escapeHtml(band)}).
+          </p>
+          <blockquote style="margin:0 0 16px;padding:12px 14px;background:#f8fafc;border-left:3px solid #f59e0b;border-radius:4px;color:#334155">
+            ${escapeHtml(comment || '')}
+          </blockquote>
+          <p style="margin:0 0 20px">
+            <a href="${escapeHtml(url)}" style="display:inline-block;background:#0078D4;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600">
+              Open Coaching
+            </a>
+          </p>
+          <p style="margin:0;font-size:12px;color:#64748b">
+            You were tagged on this warning in HBM Fleet Intelligence.
+          </p>
+        </div>
+      `,
+      text: [
+        `Hi ${safeRecipient},`,
+        '',
+        `${issuedByName || 'A fleet manager'} issued a written warning for ${driverName} (${band}).`,
+        '',
+        comment || '',
+        '',
+        `Open Coaching: ${url}`,
+      ].join('\n'),
+    });
+
+    if (error) {
+      console.warn('Resend driver warning failed:', error);
+      return { sent: false, error: error.message || String(error) };
+    }
+    return { sent: true, id: data?.id };
+  } catch (e) {
+    console.warn('Resend driver warning error:', e?.message || e);
+    return { sent: false, error: e?.message || 'Email send failed' };
+  }
+}

@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
 import { displayDriverName } from '../lib/driverUtils';
-import { displayDriverName } from '../lib/driverUtils';
 
 declare const jspdf: any;
 
@@ -62,29 +61,33 @@ export default function DownloadModal({ onClose, authFetch }: Props) {
     setSelectedVehicles(prev => prev.filter(x => x !== v));
   };
 
-  const getDateFilter = (entry: any): boolean => {
-    const ts = new Date(entry.eventTime || entry.timestamp).getTime();
-    const now = Date.now();
-    if (dateRange === 'today') {
-      const start = new Date(); start.setHours(0, 0, 0, 0);
-      return ts >= start.getTime();
-    }
-    if (dateRange === '7days') return ts >= now - 7 * 24 * 60 * 60 * 1000;
-    if (dateRange === '30days') return ts >= now - 30 * 24 * 60 * 60 * 1000;
-    if (dateRange === 'custom' && fromDate && toDate) {
-      const from = new Date(fromDate).getTime();
-      const to = new Date(toDate).getTime() + 86400000;
-      return ts >= from && ts <= to;
-    }
-    return true;
-  };
-
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      const res = await authFetch('/api/events/log');
+      const now = new Date();
+      let from: string | null = '2020-01-01T00:00:00.000Z';
+      let to: string | null = now.toISOString();
+      if (dateRange === 'today') {
+        const start = new Date(); start.setHours(0, 0, 0, 0);
+        from = start.toISOString();
+      } else if (dateRange === '7days') {
+        from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      } else if (dateRange === '30days') {
+        from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      } else if (dateRange === 'custom' && fromDate && toDate) {
+        from = new Date(fromDate).toISOString();
+        to = new Date(new Date(toDate).getTime() + 86400000 - 1).toISOString();
+      }
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (selectedEvents.length > 0 && selectedEvents.length < EVENT_TYPES.length) {
+        params.set('types', selectedEvents.join(','));
+      }
+      const res = await authFetch(`/api/events/log?${params.toString()}`);
       if (!res.ok) throw new Error('Failed to fetch logs');
-      const allEntries: any[] = await res.json();
+      const payload = await res.json();
+      const allEntries: any[] = Array.isArray(payload) ? payload : payload?.entries ?? [];
 
       const filtered = allEntries.filter(e => {
         const label = e.label || 'Panic';
@@ -99,7 +102,7 @@ export default function DownloadModal({ onClose, authFetch }: Props) {
             (e.assetId && e.assetId.includes(v)) ||
             (e.driverName && e.driverName.toUpperCase().includes(v))
           );
-        return matchesEvent && matchesVehicle && getDateFilter(e);
+        return matchesEvent && matchesVehicle;
       });
 
       if (format === 'csv') downloadCSV(filtered);

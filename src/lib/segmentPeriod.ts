@@ -58,11 +58,11 @@ export function buildDriverDistanceUrl(
   customRange?: { from: string; to: string },
 ) {
   if (period === 'custom' && customRange?.from && customRange?.to) {
-    return `/api/driver-distance?from=${encodeURIComponent(customRange.from)}&to=${encodeURIComponent(customRange.to)}`;
+    return `/api/driver-distance?from=${encodeURIComponent(customRange.from)}&to=${encodeURIComponent(customRange.to)}&trips=0`;
   }
   return period === 'today'
-    ? '/api/driver-distance?range=today'
-    : '/api/driver-distance?range=7d';
+    ? '/api/driver-distance?range=today&trips=0'
+    : '/api/driver-distance?range=7d&trips=0';
 }
 
 export function segmentPeriodToFuel(

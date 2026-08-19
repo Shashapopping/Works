@@ -1,20 +1,118 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Shield, Truck, Gauge, OctagonAlert, Navigation, AlertTriangle,
-  TrendingUp, TrendingDown, Minus, Info,
+  TrendingUp, TrendingDown, Minus, Info, ArrowUp, ArrowDown,
 } from 'lucide-react';
-import { useFleet } from '../context/FleetContext';
-import { displayDriverName } from '../lib/driverUtils';
-import { scoreFromEvents, scoreBandColor, scoreBandLabel } from '../lib/fleetSafetyScore';
+import { useFleet, authFetch, type LogEntry } from '../context/FleetContext';
+import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
+import {
+  scoreFromEvents,
+  scoreBandColor,
+  scoreBandLabel,
+  computeFleetScore,
+  type FleetSafetyExposure,
+} from '../lib/fleetSafetyScore';
 import { KpiCard } from '../components/KpiCard';
 import SegmentPeriodBar from '../components/SegmentPeriodBar';
-import { useSegmentPeriod } from '../hooks/useDriverDistancePeriod';
-import { eventsInPeriod, previousPeriodBounds } from '../lib/segmentPeriod';
+import { useSegmentPeriod, useDriverDistancePeriod } from '../hooks/useDriverDistancePeriod';
+import {
+  eventsInPeriod,
+  previousPeriodBounds,
+  segmentPeriodBounds,
+} from '../lib/segmentPeriod';
+import { toLocalDateValue } from '../lib/dateRange';
 import {
   segmentVehicles, segmentTripAssets, segmentEvents,
   tankerCorridor, utilizationPct, STATUS_COLOR,
 } from '../lib/segmentMetrics';
+import { useTableSort } from '../hooks/useTableSort';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
+import { authCachedJson, CACHE_TTL } from '../lib/apiCache';
+
+type TankerSortKey = 'corridor' | 'regNo' | 'driver' | 'distanceKm' | 'avgSpeedKph' | 'status';
+
+type TankerRow = {
+  assetId: string;
+  corridor: string;
+  regNo: string;
+  driver: string;
+  distanceKm: number;
+  avgSpeedKph: number | null;
+  status: string;
+};
+
+const TANKER_COLS: { key: TankerSortKey; label: string; numeric?: boolean }[] = [
+  { key: 'corridor', label: 'Corridor' },
+  { key: 'regNo', label: 'Reg No' },
+  { key: 'driver', label: 'Driver' },
+  { key: 'distanceKm', label: 'Distance', numeric: true },
+  { key: 'avgSpeedKph', label: 'Avg Speed', numeric: true },
+  { key: 'status', label: 'Status' },
+];
+
+function fmtEventTime(iso?: string) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-GB', {
+    timeZone: 'Africa/Lagos',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function latestDriverByAsset(events: LogEntry[]) {
+  const map = new Map<string, { name: string; t: number }>();
+  for (const e of events) {
+    if (!e.assetId || !isKnownDriver(e.driverName)) continue;
+    const t = new Date(e.eventTime || e.timestamp).getTime();
+    if (!Number.isFinite(t)) continue;
+    const id = String(e.assetId);
+    const prev = map.get(id);
+    if (!prev || t > prev.t) map.set(id, { name: e.driverName!, t });
+  }
+  return map;
+}
+
+function censusUrl(fromIso: string, toIso: string, assetIds: string[]) {
+  const ids = encodeURIComponent(assetIds.join(','));
+  return `/api/safety/summary?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&assetIds=${ids}`;
+}
+
+function useTankerCensus(assetIds: string[], fromIso: string, toIso: string, prevFromIso: string, prevToIso: string) {
+  const [current, setCurrent] = useState<FleetSafetyExposure | null>(null);
+  const [previous, setPrevious] = useState<FleetSafetyExposure | null>(null);
+
+  const idKey = assetIds.join(',');
+
+  const load = useCallback(async () => {
+    if (!assetIds.length) {
+      setCurrent(null);
+      setPrevious(null);
+      return;
+    }
+    try {
+      const [cur, prev] = await Promise.all([
+        authCachedJson<FleetSafetyExposure>(censusUrl(fromIso, toIso, assetIds), authFetch, {
+          ttlMs: CACHE_TTL.safetySummary,
+        }),
+        authCachedJson<FleetSafetyExposure>(censusUrl(prevFromIso, prevToIso, assetIds), authFetch, {
+          ttlMs: CACHE_TTL.safetySummary,
+        }),
+      ]);
+      if (cur) setCurrent(cur);
+      if (prev) setPrevious(prev);
+    } catch {
+      /* keep prior / fall back to event score */
+    }
+  }, [assetIds, idKey, fromIso, toIso, prevFromIso, prevToIso]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  return { current, previous };
+}
 
 export default function Tankers() {
   const { vehicles, events, eventsLoading, scoreConfig } = useFleet();
@@ -26,24 +124,55 @@ export default function Tankers() {
   const segEvents = useMemo(() => segmentEvents(fleet, events), [fleet, events]);
   const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
 
+  const periodBounds = useMemo(() => segmentPeriodBounds(period, customRange), [period, customRange]);
+  const prevBounds = useMemo(() => previousPeriodBounds(period, customRange), [period, customRange]);
+  const prevCustom = useMemo(() => ({
+    from: toLocalDateValue(new Date(prevBounds.fromMs)),
+    to: toLocalDateValue(new Date(Math.max(prevBounds.toMs - 1, prevBounds.fromMs))),
+  }), [prevBounds.fromMs, prevBounds.toMs]);
+  const { assets: prevPeriodAssets } = useDriverDistancePeriod('custom', prevCustom);
+
   const recent = useMemo(
     () => eventsInPeriod(segEvents, period, customRange),
     [segEvents, period, customRange],
   );
   const prev = useMemo(() => {
-    const b = previousPeriodBounds(period, customRange);
     return segEvents.filter(e => {
       const t = new Date(e.eventTime || e.timestamp).getTime();
-      return t >= b.fromMs && t < b.toMs;
+      return t >= prevBounds.fromMs && t < prevBounds.toMs;
     });
-  }, [segEvents, period, customRange]);
-  const score = scoreFromEvents(recent, fleet.length, scoreConfig);
-  const delta = score - scoreFromEvents(prev, fleet.length, scoreConfig);
-  const scoreColor = scoreBandColor(score, scoreConfig);
-  const scoreLabel = scoreBandLabel(score, scoreConfig);
+  }, [segEvents, prevBounds.fromMs, prevBounds.toMs]);
 
   const util = utilizationPct(fleet);
   const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
+  const prevDistanceKm = Math.round(
+    segmentTripAssets(fleet, prevPeriodAssets).reduce((s, a) => s + a.totalDistanceKm, 0),
+  );
+
+  const tankerIds = useMemo(
+    () => fleet.map(v => v.id).filter(Boolean).map(String),
+    [fleet],
+  );
+  const census = useTankerCensus(
+    tankerIds,
+    periodBounds.fromIso,
+    periodBounds.toIso,
+    new Date(prevBounds.fromMs).toISOString(),
+    new Date(Math.max(prevBounds.toMs - 1, prevBounds.fromMs)).toISOString(),
+  );
+
+  const { score, delta } = useMemo(() => {
+    if (census.current) {
+      return computeFleetScore(census.current, census.previous, scoreConfig);
+    }
+    const now = scoreFromEvents(recent, distanceKm, scoreConfig);
+    const was = scoreFromEvents(prev, prevDistanceKm, scoreConfig);
+    return { score: now, delta: now - was };
+  }, [census.current, census.previous, scoreConfig, recent, distanceKm, prev, prevDistanceKm]);
+
+  const scoreColor = scoreBandColor(score, scoreConfig);
+  const scoreLabel = scoreBandLabel(score, scoreConfig);
+
   const overspeeds = recent.filter(e => e.label === 'Overspeeding' || e.label === 'Overspeed Tiered').length;
   const harshBrakes = recent.filter(e => e.label === 'Harsh Braking').length;
 
@@ -60,14 +189,43 @@ export default function Tankers() {
     return { east, west, other };
   }, [fleet]);
 
-  const longHaul = useMemo(() =>
-    [...assets].sort((a, b) => b.totalDistanceKm - a.totalDistanceKm).slice(0, 10).map(a => ({
-      ...a,
-      vehicle: fleet.find(f => f.id?.toString() === a.assetId?.toString()),
-    })),
-  [assets, fleet]);
+  const eventDrivers = useMemo(() => latestDriverByAsset(recent), [recent]);
+  const assetById = useMemo(() => {
+    const map = new Map(assets.map(a => [a.assetId?.toString(), a]));
+    return map;
+  }, [assets]);
+
+  const tankerRows = useMemo<TankerRow[]>(() => {
+    return fleet.map(v => {
+      const id = v.id?.toString() || '';
+      const trip = assetById.get(id);
+      const tripDriver = trip?.drivers?.find(d => isKnownDriver(d));
+      const eventDriver = eventDrivers.get(id)?.name;
+      return {
+        assetId: id || v.regNo,
+        corridor: tankerCorridor(v.zone),
+        regNo: v.regNo,
+        driver: displayDriverName(tripDriver || eventDriver),
+        distanceKm: trip?.totalDistanceKm ?? 0,
+        avgSpeedKph: trip?.avgSpeedKph ?? null,
+        status: v.status,
+      };
+    });
+  }, [fleet, assetById, eventDrivers]);
+
+  const getSortValue = useCallback((row: TankerRow, key: TankerSortKey) => {
+    if (key === 'avgSpeedKph') return row.avgSpeedKph;
+    return row[key];
+  }, []);
+
+  const { sorted, sort, toggle, ariaSort } = useTableSort<TankerRow, TankerSortKey>(tankerRows, getSortValue, {
+    initial: { key: 'distanceKm', dir: 'desc' },
+    persist: true,
+    defaultDirForKey: key => (key === 'distanceKm' || key === 'avgSpeedKph' ? 'desc' : 'asc'),
+  });
 
   const recentIncidents = recent.filter(e => e.type !== 'panic').slice(0, 8);
+  const scoreTip = `Same Fleet Safety Score engine (100 − 5 × weighted IVMS+HOS harm per 100 km), scoped to bulk-tanker assets only. Uses tanker incidents, tanker kilometres, and tanker HOS for ${periodLabel} vs the prior window. Settings weights apply.`;
 
   return (
     <div>
@@ -87,13 +245,13 @@ export default function Tankers() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 14, marginBottom: 20 }}>
-        <div className="bpl-card" style={{ padding: '22px 24px' }} title={`Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (${periodLabel} vs prior period) and Settings score weights. Not based on trip counts.`}>
+        <div className="bpl-card" style={{ padding: '22px 24px' }} title={scoreTip}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)' }}>
               Tanker HSE Score
             </div>
             <span
-              title={`Same Fleet Safety Score engine as Home/Safety, scoped to bulk-tanker assets only. Uses MiX incidents for those vehicles (${periodLabel} vs prior period) and Settings score weights. Not based on trip counts.`}
+              title={scoreTip}
               aria-label="Score explanation"
               style={{
                 display: 'inline-flex', width: 14, height: 14, borderRadius: '50%',
@@ -134,7 +292,7 @@ export default function Tankers() {
                   : <><Minus size={12} color="var(--cd-text-muted)" /><span style={{ color: 'var(--cd-text-muted)' }}>No change</span></>}
               </div>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 8 }}>
-                {eventsLoading ? <SkelValue wide /> : `${recent.length} incidents ${periodLabel} · ${overspeeds} overspeed`}
+                {eventsLoading ? <SkelValue wide /> : `${recent.length} tanker incidents ${periodLabel} · ${overspeeds} overspeed`}
               </div>
             </div>
           </div>
@@ -202,37 +360,68 @@ export default function Tankers() {
         })}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(280px, 0.8fr)', gap: 14 }}>
-        <div className="bpl-card" style={{ overflow: 'hidden' }}>
-          <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cd-border)' }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>Long-Haul Leaderboard</div>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Highest distance {periodLabel} — monitor fatigue & overspeed risk</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(280px, 0.75fr)', gap: 14 }}>
+        <div className="bpl-card tk-roster">
+          <div className="tk-roster-head">
+            <div>
+              <div className="tk-roster-title">Tanker roster</div>
+              <div className="tk-roster-sub">
+                All bulk tankers · {periodLabel} · click a column to sort
+              </div>
+            </div>
+            <span className="tk-roster-count">
+              {distanceLoading ? <SkelValue /> : `${sorted.length} tankers`}
+            </span>
           </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <div className="tk-roster-scroll">
+            <table className="tk-roster-table">
               <thead>
-                <tr style={{ background: 'var(--cd-surface-2)' }}>
-                  {['Reg No', 'Corridor', 'Distance', 'Avg Speed', 'Status'].map(h => (
-                    <th key={h} style={{ padding: '9px 14px', textAlign: 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)' }}>{h}</th>
-                  ))}
+                <tr>
+                  {TANKER_COLS.map(col => {
+                    const active = sort.key === col.key;
+                    return (
+                      <th
+                        key={col.key}
+                        aria-sort={ariaSort(col.key)}
+                      >
+                        <button
+                          type="button"
+                          className={`tk-sort${active ? ' is-on' : ''}${col.numeric ? ' is-num' : ''}`}
+                          onClick={() => toggle(col.key)}
+                        >
+                          <span>{col.label}</span>
+                          {active
+                            ? (sort.dir === 'desc' ? <ArrowDown size={11} strokeWidth={2.5} /> : <ArrowUp size={11} strokeWidth={2.5} />)
+                            : <span className="tk-sort-idle" aria-hidden>⇅</span>}
+                        </button>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
                 {distanceLoading ? (
-                  <tr><td colSpan={5} style={{ padding: 12 }}><SkelTable rows={5} /></td></tr>
-                ) : longHaul.length === 0 ? (
-                  <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No distance data {periodLabel}</td></tr>
-                ) : longHaul.map((row, i) => {
-                  const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
+                  <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
+                ) : sorted.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="tk-roster-empty">No bulk tankers in this fleet</td>
+                  </tr>
+                ) : sorted.map((row, i) => {
+                  const color = STATUS_COLOR[row.status] ?? '#6B7A8D';
                   return (
-                    <tr key={row.assetId} style={{ borderTop: '1px solid var(--cd-border)', background: i % 2 ? 'var(--cd-surface-2)' : undefined }}>
-                      <td style={{ padding: '9px 14px', fontWeight: 700, fontFamily: 'var(--cd-font-display)' }}>{row.regNo}</td>
-                      <td style={{ padding: '9px 14px' }}>{tankerCorridor(row.vehicle?.zone)}</td>
-                      <td style={{ padding: '9px 14px', fontWeight: 700, color: '#0078D4' }}>{row.totalDistanceKm.toFixed(0)} km</td>
-                      <td style={{ padding: '9px 14px' }}>{row.avgSpeedKph != null ? `${Math.round(row.avgSpeedKph)} km/h` : '—'}</td>
-                      <td style={{ padding: '9px 14px' }}>
-                        <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 99, background: `${color}18`, color }}>
-                          {row.vehicle?.status ?? '—'}
+                    <tr key={row.assetId} className={i % 2 ? 'is-alt' : undefined}>
+                      <td>{row.corridor}</td>
+                      <td className="tk-reg">{row.regNo}</td>
+                      <td className="tk-driver" title={row.driver}>{row.driver}</td>
+                      <td className={`tk-num${sort.key === 'distanceKm' ? ' is-sorted' : ''}`}>
+                        {row.distanceKm > 0 ? `${Math.round(row.distanceKm).toLocaleString()} km` : '—'}
+                      </td>
+                      <td className="tk-num">
+                        {row.avgSpeedKph != null ? `${Math.round(row.avgSpeedKph)} km/h` : '—'}
+                      </td>
+                      <td>
+                        <span className="tk-status" style={{ background: `${color}18`, color }}>
+                          {row.status || '—'}
                         </span>
                       </td>
                     </tr>
@@ -268,6 +457,9 @@ export default function Tankers() {
                   {e.label}{displayDriverName(e.driverName) !== '—' ? ` — ${displayDriverName(e.driverName)}` : ''}
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{e.regNo} · {e.address || '—'}</div>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                {fmtEventTime(e.eventTime || e.timestamp)}
               </div>
             </div>
           ))}

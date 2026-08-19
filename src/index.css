@@ -1862,8 +1862,9 @@ body {
 .bpl-page {
   flex: 1;
   padding: 28px 28px;
-  max-width: 1400px;
   width: 100%;
+  max-width: none;
+  box-sizing: border-box;
 }
 
 /* Roles settings — split pane: access stays visible, roles scroll independently */
@@ -2766,5 +2767,320 @@ body {
   }
   .bpl-aria-drawer {
     width: 100vw;
+  }
+}
+
+/* ── HBM fuel signal panel (JMG-style stable chart) ─────────── */
+.hbm-fuel-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.hbm-fuel-chart-reg {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: var(--cd-font-display);
+}
+
+.hbm-fuel-chart-asset {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--cd-text-muted);
+}
+
+.hbm-fuel-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.hbm-fuel-summary > div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--cd-border);
+  background: var(--cd-surface-2);
+}
+
+.hbm-fuel-summary span {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--cd-text-muted);
+  margin-bottom: 4px;
+}
+
+.hbm-fuel-summary strong {
+  display: block;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--cd-text);
+  line-height: 1.1;
+}
+
+.hbm-fuel-summary small {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--cd-text-soft);
+  line-height: 1.3;
+}
+
+.hbm-fuel-signal-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cd-surface-2);
+  border: 1px solid var(--cd-border);
+  font-size: 11px;
+  color: var(--cd-text-muted);
+  line-height: 1.4;
+}
+
+.hbm-fuel-tooltip {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cd-surface);
+  border: 1px solid var(--cd-border);
+  box-shadow: var(--cd-soft-shadow);
+  font-size: 12px;
+  color: var(--cd-text);
+}
+
+.hbm-fuel-tooltip-date {
+  font-size: 11px;
+  color: var(--cd-text-muted);
+  margin-bottom: 4px;
+}
+
+.hbm-fuel-spark-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.hbm-fuel-spark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--cd-border);
+  border-radius: 8px;
+  background: var(--cd-surface);
+  color: #ca8a04;
+  cursor: pointer;
+}
+
+.hbm-fuel-spark.is-ignition {
+  color: #0d9488;
+}
+
+.hbm-fuel-spark.is-active {
+  border-color: #d97706;
+  background: rgba(217, 119, 6, 0.12);
+}
+
+.hbm-fuel-spark-tip {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  width: 220px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cd-surface);
+  border: 1px solid var(--cd-border);
+  box-shadow: var(--cd-soft-shadow);
+  text-align: left;
+  color: var(--cd-text);
+}
+
+.hbm-fuel-spark-tip strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.hbm-fuel-spark-tip em {
+  display: block;
+  margin: 2px 0 4px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--cd-text-muted);
+}
+
+.hbm-fuel-spark-tip span {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--cd-text-soft);
+}
+
+.hbm-fuel-spark:hover .hbm-fuel-spark-tip,
+.hbm-fuel-spark:focus .hbm-fuel-spark-tip {
+  display: block;
+}
+
+.hbm-fuel-refuel-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--cd-text-muted);
+}
+
+.hbm-fuel-refuel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #16a34a;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.35);
+}
+
+.hbm-fuel-refuel-dot-active {
+  background: #d97706;
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.35);
+}
+
+/* Consumption detail — table + refuel chart split */
+.hbm-fuel-detail-panel {
+  background: var(--cd-surface-2);
+  border-top: 1px solid var(--cd-border);
+}
+
+.hbm-fuel-detail-panel-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 36%);
+  align-items: stretch;
+}
+
+.hbm-fuel-detail-main {
+  padding: 12px 16px 16px 40px;
+  min-width: 0;
+}
+
+.hbm-fuel-detail-panel-split .hbm-fuel-detail-main {
+  border-right: 1px solid var(--cd-border);
+}
+
+.hbm-fuel-detail-chart {
+  padding: 12px 14px 16px;
+  background: var(--cd-surface);
+  min-width: 0;
+}
+
+.hbm-fuel-refuel-row {
+  cursor: pointer;
+  border-top: 1px solid var(--cd-border);
+  transition: background 0.12s ease;
+}
+
+.hbm-fuel-refuel-row:hover {
+  background: rgba(0, 120, 212, 0.06);
+}
+
+.hbm-fuel-refuel-row-selected {
+  cursor: pointer;
+  border-top: 1px solid var(--cd-border);
+  background: rgba(217, 119, 6, 0.1);
+  box-shadow: inset 3px 0 0 #d97706;
+}
+
+.hbm-fuel-refuel-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--cd-text-muted);
+  margin-bottom: 10px;
+}
+
+.hbm-fuel-refuel-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 200px;
+  font-size: 12px;
+  color: var(--cd-text-muted);
+  text-align: center;
+}
+
+.hbm-fuel-summary-compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.hbm-fuel-summary-compact > div {
+  padding: 8px 10px;
+}
+
+.hbm-fuel-summary-compact strong {
+  font-size: 15px;
+}
+
+.hbm-fuel-signal-note-compact {
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  font-size: 10px;
+}
+
+.hbm-fuel-discrepancy-note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(217, 119, 6, 0.1);
+  border: 1px solid rgba(217, 119, 6, 0.35);
+  font-size: 10px;
+  color: #92400e;
+  line-height: 1.45;
+}
+
+.hbm-fuel-refuel-step-line {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top: 3px solid #d97706;
+  vertical-align: middle;
+}
+
+.hbm-fuel-refuel-legend-warn {
+  color: #92400e;
+}
+
+.hbm-fuel-chart-plot {
+  border-radius: 10px;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.hbm-fuel-chart-plot-compact {
+  touch-action: auto;
+}
+
+@media (max-width: 1100px) {
+  .hbm-fuel-detail-panel-split {
+    grid-template-columns: 1fr;
+  }
+
+  .hbm-fuel-detail-panel-split .hbm-fuel-detail-main {
+    border-right: none;
+    border-bottom: 1px solid var(--cd-border);
   }
 }

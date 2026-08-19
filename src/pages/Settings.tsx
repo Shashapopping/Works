@@ -186,38 +186,66 @@ function ThresholdSettings() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div className="bpl-card" style={{ padding: 24 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
-          Leading fleets target (Nigeria-calibrated)
+          Fleet Safety Score
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
-          Your Fleet Safety Score is <strong style={{ color: 'var(--cd-text)' }}>how close you are to leading fleets in similar conditions</strong>.
-          Match this rate → score <strong style={{ color: 'var(--cd-text)' }}>85</strong>. Beat it to climb toward 100.
+          The score starts at <strong style={{ color: 'var(--cd-text)' }}>100</strong> (no harm).
+          Harm is counted per 100 km driven. Every 1 point of harm per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>5</strong> off the score.
         </div>
-        <div style={{ marginBottom: 16 }}>
-          <label style={labelStyle}>Leading fleets aim for (per 100 vehicles / 30 days)</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              type="number"
-              step={1}
-              min={0.1}
-              max={2000}
-              style={{ ...fieldStyle, width: 100 }}
-              value={form.leadingRatePer100}
-              onChange={e => setForm(p => ({ ...p, leadingRatePer100: Number(e.target.value) }))}
-            />
-            <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>weighted IVMS points</span>
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16,
+        }}>
+          <div>
+            <label style={labelStyle}>HOS slice length</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number"
+                step={1}
+                min={1}
+                max={60}
+                style={{ ...fieldStyle, width: 80 }}
+                value={form.hosSliceMinutes}
+                onChange={e => setForm(p => ({ ...p, hosSliceMinutes: Number(e.target.value) }))}
+              />
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>minutes held</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+              Default 10. Each full slice of a held HOS breach mints points.
+            </div>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 6, lineHeight: 1.45 }}>
-            Default <strong>220</strong> — leading aim for Nigerian quarry & heavy-haul. Matching 220 scores <strong>85</strong>
-            (industry-style leading band). Beating the aim raises the score toward 100; worse rates fall below 85.
+          <div>
+            <label style={labelStyle}>Points per HOS slice</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={20}
+                style={{ ...fieldStyle, width: 80 }}
+                value={form.hosPointsPer10Min}
+                onChange={e => setForm(p => ({ ...p, hosPointsPer10Min: Number(e.target.value) }))}
+              />
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>pts</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+              Default 1.5 (same band as overspeeding). 40 minutes over 4h continuous → 4 slices → 6 pts.
+            </div>
           </div>
         </div>
         <div style={{
-          fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.5,
+          fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55,
           background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 8, padding: '10px 12px',
         }}>
-          Example: aim <strong style={{ color: 'var(--cd-text)' }}>220</strong>, your rate <strong style={{ color: 'var(--cd-text)' }}>220</strong>
-          → score = 85 × 220 ÷ 220 = <strong style={{ color: 'var(--cd-text)' }}>85</strong>.
-          Rate <strong style={{ color: 'var(--cd-text)' }}>187</strong> → ~100; rate <strong style={{ color: 'var(--cd-text)' }}>400</strong> → ~47.
+          <strong>The −5:</strong> 1 harm point per 100 km → lose 5 score points.
+          <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
+            No harm → <strong style={{ color: 'var(--cd-text)' }}>100</strong>.
+            {' '}4 harm points per 100 km → 100 − 20 = <strong style={{ color: 'var(--cd-text)' }}>80</strong> (Good Standing).
+            {' '}8 per 100 km → <strong style={{ color: 'var(--cd-text)' }}>60</strong>.
+            The score cannot go above 100 or below 0.
+          </div>
+          <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
+            HOS: driving past 4 hours without a 30-minute rest adds harm points (same as events, then divided by kilometres).
+          </div>
         </div>
       </div>
 
@@ -226,7 +254,8 @@ function ThresholdSettings() {
           Fleet Safety Score — event weights
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.55 }}>
-          Each incident adds these points, then we convert the total to a rate per 100 vehicles and compare it to the leading target above.
+          Each incident adds these points. Those points, plus HOS, are divided by kilometres (per 100 km).
+          That number is the rate. Then: start at 100, minus 5 for every 1 on the rate.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           {[
@@ -254,42 +283,10 @@ function ThresholdSettings() {
 
       <div className="bpl-card" style={{ padding: 24 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
-          Extra fleet score options
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-          Optional knobs. Most sites only change the leading target and weights above.
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          {[
-            { label: 'Lowest score allowed', key: 'scoreFloor' as const, unit: '/100', desc: 'Gauge never drops below this (default 0)' },
-            { label: 'Home driver card penalty / event', key: 'driverPenaltyPerEvent' as const, unit: 'pts', desc: 'Home Driver Performance strip only (default 3)' },
-            { label: 'Fleet score warning', key: 'fleetScoreWarning' as const, unit: '/100', desc: 'Amber alert threshold (default 70)' },
-            { label: 'Fleet score critical', key: 'fleetScoreCritical' as const, unit: '/100', desc: 'Red alert threshold (default 50)' },
-          ].map(f => (
-            <div key={f.key}>
-              <label style={labelStyle}>{f.label}</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="number"
-                  step={f.key === 'driverPenaltyPerEvent' ? 0.5 : 1}
-                  style={{ ...fieldStyle, width: 80, flexShrink: 0 }}
-                  value={form[f.key]}
-                  onChange={e => setForm(p => ({ ...p, [f.key]: Number(e.target.value) }))}
-                />
-                <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{f.unit}</span>
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>{f.desc}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="bpl-card" style={{ padding: 24 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
           Fleet status bands
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-          Colour / label cutoffs for your % of the leading fleets target. Score at or above each value uses that band.
+          Colour / label cutoffs on the 0–100 score. Score at or above each value uses that band.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           {[
@@ -321,7 +318,7 @@ function ThresholdSettings() {
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
           This is <strong style={{ color: 'var(--cd-text)' }}>not</strong> the Fleet Safety Score on Home.
-          It grades each driver after IVMS violations (harsh brake, overspeed, etc.) and decides Green → Amber → Yellow → Red.
+          It grades each driver after IVMS violations (harsh brake, overspeed, etc.): On track → Needs coaching → Suspension review → Critical.
         </div>
         <div style={{
           fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55, marginBottom: 16,
@@ -330,7 +327,7 @@ function ThresholdSettings() {
           <strong>How it works:</strong> every scored event costs points. Those points are divided by how far the driver drove
           (per 100 km), so a driver with 1 event in 50 km looks worse than 1 event in 500 km.
           <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
-            Example with default 2: 34 events × −2 = −68 points. Drove 600 km → that’s 600÷100 = <strong>6</strong> blocks of 100 km → −68 ÷ 6 = <strong style={{ color: '#d97706' }}>−11.3 → Yellow</strong>.
+            Example with default 2: 34 events × −2 = −68 points. Drove 600 km → that’s 600÷100 = <strong>6</strong> blocks of 100 km → −68 ÷ 6 = <strong style={{ color: '#d97706' }}>−11.3 → Suspension review</strong>.
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -353,7 +350,7 @@ function ThresholdSettings() {
             </div>
           </div>
           <div>
-            <label style={{ ...labelStyle, color: '#f59e0b' }}>Warning band starts at</label>
+            <label style={{ ...labelStyle, color: '#f59e0b' }}>Needs coaching band starts at</label>
             <input
               type="number"
               step={0.1}
@@ -362,7 +359,7 @@ function ThresholdSettings() {
               onChange={e => setConsequenceForm(p => ({ ...p, amberStart: Number(e.target.value) }))}
             />
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4, lineHeight: 1.4 }}>
-              Driver score ≤ this → <strong style={{ color: '#f59e0b' }}>Amber</strong> (written warning / retraining).
+              Driver score ≤ this → <strong style={{ color: '#f59e0b' }}>Needs coaching</strong> (written warning / retraining).
               Above this (and still negative) stays Green-ish / mild. Default −2.
             </div>
           </div>
@@ -376,7 +373,7 @@ function ThresholdSettings() {
               onChange={e => setConsequenceForm(p => ({ ...p, yellowStart: Number(e.target.value) }))}
             />
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4, lineHeight: 1.4 }}>
-              Score ≤ this → <strong style={{ color: '#d97706' }}>Yellow</strong> (3-day → 1-week suspension). Default −6.
+              Score ≤ this → <strong style={{ color: '#d97706' }}>Suspension review</strong> (3-day → 1-week suspension). Default −6.
             </div>
           </div>
           <div>
@@ -389,7 +386,7 @@ function ThresholdSettings() {
               onChange={e => setConsequenceForm(p => ({ ...p, redStart: Number(e.target.value) }))}
             />
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4, lineHeight: 1.4 }}>
-              Score ≤ this → <strong style={{ color: '#CC0000' }}>Red</strong> (2-week suspension → termination). Default −12.
+              Score ≤ this → <strong style={{ color: '#CC0000' }}>Critical</strong> (2-week suspension → termination). Default −12.
             </div>
           </div>
         </div>

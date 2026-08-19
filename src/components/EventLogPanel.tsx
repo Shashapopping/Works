@@ -85,8 +85,30 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+const EVENT_PAGE_SIZE = 80;
+
+function isoLogRange(dateRange: DateRange, fromDate: string, toDate: string): { from: string; to: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  if (dateRange === 'today') {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return { from: start.toISOString(), to };
+  }
+  if (dateRange === '7days') return { from: new Date(now.getTime() - 7 * 86400000).toISOString(), to };
+  if (dateRange === '30days') return { from: new Date(now.getTime() - 30 * 86400000).toISOString(), to };
+  if (dateRange === 'custom' && fromDate && toDate) {
+    return {
+      from: new Date(fromDate).toISOString(),
+      to: new Date(new Date(toDate).getTime() + 86400000 - 1).toISOString(),
+    };
+  }
+  return { from: '2020-01-01T00:00:00.000Z', to };
+}
+
 export default function EventLogPanel({ open, onClose, authFetch, isMobile }: Props) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [censusTotal, setCensusTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
@@ -98,13 +120,24 @@ export default function EventLogPanel({ open, onClose, authFetch, isMobile }: Pr
 
   useEffect(() => {
     if (!open) return;
+    if (dateRange === 'custom' && (!fromDate || !toDate)) return;
     const load = async () => {
       setLoading(true);
       try {
-        const res = await authFetch('/api/events/log');
+        const { from, to } = isoLogRange(dateRange, fromDate, toDate);
+        const params = new URLSearchParams({
+          format: 'page',
+          limit: String(EVENT_PAGE_SIZE),
+          from,
+          to,
+        });
+        if (activeFilter !== 'All') params.set('types', activeFilter);
+        const res = await authFetch(`/api/events/log?${params.toString()}`);
         if (res.ok) {
           const data = await res.json();
-          setEntries(Array.isArray(data) ? data : []);
+          const rows = Array.isArray(data) ? data : data?.entries ?? [];
+          setEntries(rows);
+          setCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
         }
       } catch {
         // ignore
@@ -115,28 +148,20 @@ export default function EventLogPanel({ open, onClose, authFetch, isMobile }: Pr
     load();
     const interval = setInterval(load, 10_000);
     return () => clearInterval(interval);
-  }, [open]);
+  }, [open, dateRange, fromDate, toDate, activeFilter, authFetch]);
 
-  // ── Date filter helper ────────────────────────────────────────────────────
-  const getDateFilter = (entry: LogEntry): boolean => {
-    const ts = new Date(entry.timestamp).getTime();
-    const now = Date.now();
-    if (dateRange === 'today') {
-      const start = new Date();
-      start.setHours(0, 0, 0, 0);
-      return ts >= start.getTime();
-    }
-    if (dateRange === '7days') return ts >= now - 7 * 24 * 60 * 60 * 1000;
-    if (dateRange === '30days') return ts >= now - 30 * 24 * 60 * 60 * 1000;
-    if (dateRange === 'custom' && fromDate && toDate) {
-      const from = new Date(fromDate).getTime();
-      const to = new Date(toDate).getTime() + 86400000;
-      return ts >= from && ts <= to;
-    }
-    return true;
-  };
+  // ── Filtered entries (search only — date/type are server-side) ────────────
+  const filtered = useMemo(() => entries.filter(e => {
+    const label = e.label || 'Panic';
+    if (HIDDEN_LABELS.includes(label)) return false;
+    const matchesSearch = searchTerm === '' ||
+      (e.regNo && e.regNo !== 'N/A' && e.regNo.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (e.assetName && e.assetName.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (e.assetId && e.assetId.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (isKnownDriver(e.driverName) && e.driverName!.toLowerCase().includes(searchTerm.toLowerCase()));
+    return matchesSearch;
+  }), [entries, searchTerm]);
 
-  // ── Earliest entry date across all logs ──────────────────────────────────
   const earliestDate = useMemo(() => {
     if (entries.length === 0) return new Date();
     const sorted = [...entries].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -145,25 +170,12 @@ export default function EventLogPanel({ open, onClose, authFetch, isMobile }: Pr
     return d;
   }, [entries]);
 
-  // ── Filtered entries ──────────────────────────────────────────────────────
-  const filtered = useMemo(() => entries.filter(e => {
-    const label = e.label || 'Panic';
-    if (HIDDEN_LABELS.includes(label)) return false;
-    const matchesFilter = activeFilter === 'All' || label === activeFilter || (activeFilter === 'Panic' && e.type === 'panic');
-    const matchesSearch = searchTerm === '' ||
-      (e.regNo && e.regNo !== 'N/A' && e.regNo.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (e.assetName && e.assetName.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (e.assetId && e.assetId.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (isKnownDriver(e.driverName) && e.driverName!.toLowerCase().includes(searchTerm.toLowerCase()));
-    return matchesFilter && matchesSearch && getDateFilter(e);
-  }), [entries, activeFilter, searchTerm, dateRange, fromDate, toDate]);
-
-  // ── Trend data with zero-filled dates ────────────────────────────────────
+  // ── Trend data with zero-filled dates (shape of the loaded page, not census)
   const trendData = useMemo((): TrendDay[] => {
     const dateFiltered = entries.filter(e => {
       const label = e.label || 'Panic';
       if (HIDDEN_LABELS.includes(label)) return false;
-      return getDateFilter(e);
+      return true;
     });
 
     const byDate = new Map<string, TrendDay>();
@@ -528,8 +540,8 @@ export default function EventLogPanel({ open, onClose, authFetch, isMobile }: Pr
         {/* Footer */}
         <div style={{ padding: '10px 16px', borderTop: '1px solid var(--cd-border)', fontSize: '11px', color: 'var(--cd-text-muted)', textAlign: 'center', flexShrink: 0 }}>
           {viewMode === 'events'
-            ? `${filtered.length} event${filtered.length !== 1 ? 's' : ''} • auto-refreshes every 10s`
-            : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} of data • auto-refreshes every 10s`
+            ? `${filtered.length} shown of ${censusTotal.toLocaleString()} · newest ${EVENT_PAGE_SIZE} · auto-refreshes every 10s`
+            : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} · latest page of ${censusTotal.toLocaleString()} · auto-refreshes every 10s`
           }
         </div>
       </div>

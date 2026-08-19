@@ -22,6 +22,8 @@ import { displayDriverName } from '../lib/driverUtils';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
+import FuelRefuelChartPanel from '../components/FuelRefuelChartPanel';
+import { refuelRowKey } from '../lib/fuelSignal';
 
 const COL_COUNT = 10;
 
@@ -75,7 +77,7 @@ function KpiStrip({ summary, initialLoading, scopeLabel }: { summary: SummaryMet
     { label: 'L/km', value: fmtRatio(summary.litersPerKm), color: '#ea580c', icon: Gauge },
     { label: 'L/h', value: fmt(summary.litersPerHour), color: '#d97706', icon: Zap },
     { label: 'Trips', value: String(summary.trips), color: '#16a34a', icon: Truck },
-    { label: 'Refuel flags', value: String(summary.refuels), color: '#dc2626', icon: AlertTriangle },
+    { label: 'Refuels', value: String(summary.refuels), color: '#dc2626', icon: AlertTriangle },
   ];
 
   return (
@@ -103,91 +105,145 @@ function KpiStrip({ summary, initialLoading, scopeLabel }: { summary: SummaryMet
 }
 
 function AssetDetailPanel({
+  asset,
   trips,
   refuels,
+  period,
+  periodStart,
+  periodEnd,
+  selectedRefuelKey,
+  onSelectRefuel,
 }: {
+  asset: AssetRow;
   trips: TripRow[];
   refuels: RefuelRow[];
+  period: PeriodMode;
+  periodStart: string;
+  periodEnd: string;
+  selectedRefuelKey: string | null;
+  onSelectRefuel: (key: string) => void;
 }) {
-  return (
-    <div style={{
-      padding: '12px 16px 16px 40px',
-      background: 'var(--cd-surface-2)',
-      borderTop: '1px solid var(--cd-border)',
-    }}>
-      {refuels.length > 0 && (
-        <div style={{ marginBottom: refuels.length > 0 && trips.length > 0 ? 16 : 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <AlertTriangle size={13} color="#d97706" />
-            Refuel events ({refuels.length})
-          </div>
-          <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid var(--cd-border)', background: 'var(--cd-surface)' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead>
-                <tr>
-                  {['Start', 'End', 'Duration', 'Before', 'After', '+L'].map(h => (
-                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {refuels.map((r, i) => {
-                  const end = r.endTime || r.timestamp;
-                  const start = r.startTime || r.timestamp;
-                  return (
-                  <tr key={i} style={{ borderTop: '1px solid var(--cd-border)' }}>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(start)}</td>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(end)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmtDuration(r.durationMinutes)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(r.beforeLevel, 0)} L</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(r.afterLevel, 0)} L</td>
-                    <td style={{ padding: '6px 10px', color: '#16a34a', fontWeight: 600 }}>+{fmt(r.deltaLiters, 0)}</td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+  const [chartRefuels, setChartRefuels] = useState<RefuelRow[] | null>(null);
+  const displayRefuels = chartRefuels ?? refuels;
+  const selectedRefuel = displayRefuels.find(r => refuelRowKey(r) === selectedRefuelKey) ?? null;
+  const showChart = displayRefuels.length > 0 || refuels.length > 0;
 
-      <div>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Route size={13} />
-          Recent trips ({trips.length})
-        </div>
-        {trips.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', padding: '8px 0' }}>No trips in this period</div>
-        ) : (
-          <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid var(--cd-border)', background: 'var(--cd-surface)' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead>
-                <tr>
-                  {['Driver', 'Start', 'End', 'From', 'To', 'km', 'Duration', 'Fuel (est.)', 'L/km', 'L/h'].map(h => (
-                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {trips.map(t => (
-                  <tr key={t.tripId} style={{ borderTop: '1px solid var(--cd-border)' }}>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{displayDriverName(t.driverName)}</td>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(t.tripStart)}</td>
-                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(t.tripEnd)}</td>
-                    <td style={{ padding: '6px 10px', maxWidth: 180 }} title={t.startAddress || undefined}>{fmtAddress(t.startAddress)}</td>
-                    <td style={{ padding: '6px 10px', maxWidth: 180 }} title={t.endAddress || undefined}>{fmtAddress(t.endAddress)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(t.distanceKm, 1)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmtDriveHours(t.drivingHours, 2)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(t.fuelUsedLiters, 1)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmtRatio(t.litersPerKm)}</td>
-                    <td style={{ padding: '6px 10px' }}>{fmt(t.litersPerHour)}</td>
+  const handleChartRefuels = useCallback((next: RefuelRow[]) => {
+    setChartRefuels(next);
+    if (next.length === 0) return;
+    if (selectedRefuelKey && next.some(r => refuelRowKey(r) === selectedRefuelKey)) return;
+    onSelectRefuel(refuelRowKey(next[0]));
+  }, [onSelectRefuel, selectedRefuelKey]);
+
+  useEffect(() => {
+    setChartRefuels(null);
+  }, [asset.assetId, periodStart, periodEnd, period]);
+
+  return (
+    <div className={`hbm-fuel-detail-panel${showChart ? ' hbm-fuel-detail-panel-split' : ''}`}>
+      <div className="hbm-fuel-detail-main">
+        {displayRefuels.length > 0 && (
+          <div style={{ marginBottom: displayRefuels.length > 0 && trips.length > 0 ? 16 : 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <AlertTriangle size={13} color="#d97706" />
+              Refuel events ({displayRefuels.length})
+              <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--cd-text-muted)' }}>
+                — click a row to highlight on chart
+              </span>
+            </div>
+            <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid var(--cd-border)', background: 'var(--cd-surface)' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {['Start', 'End', 'Duration', 'Before', 'After', '+L'].map(h => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {displayRefuels.map(r => {
+                    const end = r.endTime || r.timestamp;
+                    const start = r.startTime || r.timestamp;
+                    const key = refuelRowKey(r);
+                    const isSelected = key === selectedRefuelKey;
+                    return (
+                      <tr
+                        key={key}
+                        className={isSelected ? 'hbm-fuel-refuel-row-selected' : 'hbm-fuel-refuel-row'}
+                        onClick={e => {
+                          e.stopPropagation();
+                          onSelectRefuel(key);
+                        }}
+                      >
+                        <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(start)}</td>
+                        <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(end)}</td>
+                        <td style={{ padding: '6px 10px' }}>{fmtDuration(r.durationMinutes)}</td>
+                        <td style={{ padding: '6px 10px' }}>{fmt(r.beforeLevel, 0)} L</td>
+                        <td style={{ padding: '6px 10px' }}>{fmt(r.afterLevel, 0)} L</td>
+                        <td style={{ padding: '6px 10px', color: '#16a34a', fontWeight: 600 }}>+{fmt(r.deltaLiters, 0)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
+
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Route size={13} />
+            Recent trips ({trips.length})
+          </div>
+          {trips.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', padding: '8px 0' }}>No trips in this period</div>
+          ) : (
+            <div style={{ overflowX: 'auto', borderRadius: 8, border: '1px solid var(--cd-border)', background: 'var(--cd-surface)' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {['Driver', 'Start', 'End', 'From', 'To', 'km', 'Duration', 'Fuel (est.)', 'L/km', 'L/h'].map(h => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {trips.map(t => (
+                    <tr key={t.tripId} style={{ borderTop: '1px solid var(--cd-border)' }}>
+                      <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{displayDriverName(t.driverName)}</td>
+                      <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(t.tripStart)}</td>
+                      <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{fmtDate(t.tripEnd)}</td>
+                      <td style={{ padding: '6px 10px', maxWidth: 180 }} title={t.startAddress || undefined}>{fmtAddress(t.startAddress)}</td>
+                      <td style={{ padding: '6px 10px', maxWidth: 180 }} title={t.endAddress || undefined}>{fmtAddress(t.endAddress)}</td>
+                      <td style={{ padding: '6px 10px' }}>{fmt(t.distanceKm, 1)}</td>
+                      <td style={{ padding: '6px 10px' }}>{fmtDriveHours(t.drivingHours, 2)}</td>
+                      <td style={{ padding: '6px 10px' }}>{fmt(t.fuelUsedLiters, 1)}</td>
+                      <td style={{ padding: '6px 10px' }}>{fmtRatio(t.litersPerKm)}</td>
+                      <td style={{ padding: '6px 10px' }}>{fmt(t.litersPerHour)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
+
+      {showChart && (
+        <div className="hbm-fuel-detail-chart">
+          <FuelRefuelChartPanel
+            assetId={asset.assetId}
+            regNo={asset.regNo}
+            assetName={asset.assetName}
+            zone={asset.zone}
+            periodStart={periodStart}
+            periodEnd={periodEnd}
+            highlightRefuel={selectedRefuel}
+            periodMode={period}
+            onChartRefuels={handleChartRefuels}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -211,6 +267,7 @@ export default function FuelConsumption() {
   const [data, setData] = useState<ConsumptionData | null>(() => peekFuelConsumption(initialUrl));
   const [loading, setLoading] = useState(() => !peekFuelConsumption(initialUrl));
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(linkedAssetId);
+  const [selectedRefuelKey, setSelectedRefuelKey] = useState<string | null>(null);
   const [search, setSearch] = useState(linkedAssetId ?? '');
   const linkedRowRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -296,8 +353,37 @@ export default function FuelConsumption() {
       if (!map.has(r.assetId)) map.set(r.assetId, []);
       map.get(r.assetId)!.push(r);
     });
+    map.forEach(list => list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
     return map;
   }, [data?.refuels]);
+
+  const periodBounds = useMemo(() => {
+    if (data?.period?.start && data?.period?.end) {
+      return { start: data.period.start, end: data.period.end };
+    }
+    const now = new Date();
+    const cutoffs: Record<PeriodMode, number> = { day: 1, week: 7, month: 30, custom: 7 };
+    const days = cutoffs[period] ?? 7;
+    const start = new Date(now);
+    start.setDate(start.getDate() - days);
+    return { start: start.toISOString(), end: now.toISOString() };
+  }, [data?.period, period]);
+
+  useEffect(() => {
+    if (!expandedAssetId) {
+      setSelectedRefuelKey(null);
+      return;
+    }
+    const refuels = refuelsByAsset.get(expandedAssetId) ?? [];
+    if (refuels.length === 0) {
+      setSelectedRefuelKey(null);
+      return;
+    }
+    setSelectedRefuelKey(prev => {
+      if (prev && refuels.some(r => refuelRowKey(r) === prev)) return prev;
+      return refuelRowKey(refuels[0]);
+    });
+  }, [expandedAssetId, refuelsByAsset]);
 
   const siteSummary = useMemo(() => aggregateMetrics(assets), [assets]);
 
@@ -363,7 +449,7 @@ export default function FuelConsumption() {
               {(['ALL', ...QUARRY_SITE_KEYS] as const).map(key => (
                 <button
                   key={key}
-                  onClick={() => { setSelectedSite(key); setSiteMenuOpen(false); setExpandedAssetId(null); }}
+                  onClick={() => { setSelectedSite(key); setSiteMenuOpen(false); setExpandedAssetId(null); setSelectedRefuelKey(null); }}
                   style={{
                     display: 'flex', justifyContent: 'space-between', width: '100%',
                     padding: '8px 14px', border: 'none', background: 'transparent',
@@ -425,7 +511,7 @@ export default function FuelConsumption() {
           <Truck size={15} color="#0078D4" />
           By asset
           <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 4 }}>
-            Click a row to expand trips and refuels
+            Click a row to expand — refuel events open the probe chart beside the detail
           </span>
         </div>
         <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--cd-border)' }}>
@@ -498,7 +584,16 @@ export default function FuelConsumption() {
                     {isExpanded && (
                       <tr>
                         <td colSpan={COL_COUNT} style={{ padding: 0 }}>
-                          <AssetDetailPanel trips={assetTrips} refuels={assetRefuels} />
+                          <AssetDetailPanel
+                            asset={a}
+                            trips={assetTrips}
+                            refuels={assetRefuels}
+                            period={period}
+                            periodStart={periodBounds.start}
+                            periodEnd={periodBounds.end}
+                            selectedRefuelKey={selectedRefuelKey}
+                            onSelectRefuel={setSelectedRefuelKey}
+                          />
                         </td>
                       </tr>
                     )}

@@ -504,7 +504,7 @@ export default function MixEventInsightsGrid({
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch('/api/driver-distance?range=currentMonth');
+        const res = await authFetch('/api/driver-distance?range=currentMonth&trips=0');
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!cancelled) {

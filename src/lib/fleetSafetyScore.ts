@@ -1,15 +1,16 @@
 /**
- * Shared Fleet Safety Score — used by Home, Safety, Sidebar, Tankers.
- * Editable via Settings → Safety Score (localStorage).
+ * Fleet Safety Score — rooted on distance, then HOS duration.
  *
- * Formula (attainment vs leading-fleet target rate):
- *   actualRate = weighted points / vehicles × 100  (last 30 days)
- *   score = min(100, SCORE_AT_AIM × leadingRate / actualRate)
- * Match the leading rate → SCORE_AT_AIM (85). Beat it → climb toward 100.
+ *   100 = zero weighted harm per 100 km (IVMS + HOS)
+ *   score = clamp(0, 100, 100 − 5 × rate)
+ *   5 is this fleet's working-day calibration (≈4.3 pt/100 km → Good Standing 80)
+ *
+ *   actualRate = (IVMS points + HOS points) ÷ (km ÷ 100)
+ *   Facts come from /api/safety/summary (SQL), not the live event list.
  */
 
-/** Score awarded when your weighted rate exactly equals the leading aim. */
-export const FLEET_SCORE_AT_AIM = 85;
+/** Score points lost per 1 weighted point per 100 km. */
+export const SCORE_DROP_PER_HARM_UNIT = 5;
 
 export const FLEET_SCORE_CONFIG_KEY = 'bpl_fleet_score_config';
 export const FLEET_SCORE_CONFIG_EVENT = 'bpl-fleet-score-config';
@@ -24,22 +25,42 @@ export interface FleetScoreWeights {
 export interface FleetScoreConfig {
   weights: FleetScoreWeights;
   /**
-   * Leading target for Nigeria / heavy industrial fleets: max weighted IVMS
-   * points per 100 vehicles in 30 days. Match the aim → score 85; beat it → up to 100.
-   * Default 220 aligns with current heavy-ops MiX rates.
+   * @deprecated Inverse-formula target. Score is now 100 − 5 × rate.
    */
-  leadingRatePer100: number;
-  /** Minimum score after calculation (default 0). */
+  aimRatePer100Km?: number;
+  /** Minutes a HOS breach must be held to mint one slice (default 10). */
+  hosSliceMinutes: number;
+  /** Points added per HOS slice (default 1.5, same band as overspeeding). */
+  hosPointsPer10Min: number;
+  /** @deprecated Linear slope; converted back to aimRatePer100Km as 15 / k. */
+  scoreDropPerHarmUnit?: number;
+  /** @deprecated Old per-100-vehicles aim. Migrated to aimRatePer100Km. */
+  leadingRatePer100?: number;
   scoreFloor: number;
-  /** Display band cutoffs (score ≥ value). */
   bandGood: number;
   bandAttention: number;
   bandBelow: number;
-  /** Home Driver Performance: points deducted per incident. */
   driverPenaltyPerEvent: number;
-  /** Alert thresholds (display / future alerts). */
   fleetScoreWarning: number;
   fleetScoreCritical: number;
+}
+
+export interface FleetSafetyExposure {
+  distanceKm: number;
+  hosHeldMinutes: number;
+  hosSlices?: number;
+  incidentTotal?: number;
+  scoringCount?: number;
+  byLabel?: Record<string, number>;
+  panicCount?: number;
+  assetCount?: number;
+  driverCount?: number;
+  breakdown?: {
+    continuous4hMinutes: number;
+    weeklyRestMinutes: number;
+  };
+  start?: string;
+  end?: string;
 }
 
 export const DEFAULT_FLEET_SCORE_CONFIG: FleetScoreConfig = {
@@ -49,7 +70,9 @@ export const DEFAULT_FLEET_SCORE_CONFIG: FleetScoreConfig = {
     overspeeding: 1.5,
     harshCornering: 1,
   },
-  leadingRatePer100: 220,
+  aimRatePer100Km: 1,
+  hosSliceMinutes: 10,
+  hosPointsPer10Min: 1.5,
   scoreFloor: 0,
   bandGood: 80,
   bandAttention: 60,
@@ -61,16 +84,39 @@ export const DEFAULT_FLEET_SCORE_CONFIG: FleetScoreConfig = {
 
 type ScoreEvent = { label?: string | null; type?: string; eventTime?: string; timestamp?: string };
 
+const OLD_VEHICLE_AIMS = new Set([8, 220, 240]);
+
 function clampNum(n: unknown, fallback: number, min = 0, max = 1000): number {
   const v = typeof n === 'number' ? n : Number(n);
   if (!Number.isFinite(v)) return fallback;
   return Math.min(max, Math.max(min, v));
 }
 
+function migrateAimRate(raw: Partial<FleetScoreConfig>): number {
+  const d = DEFAULT_FLEET_SCORE_CONFIG.aimRatePer100Km;
+  const explicit = clampNum(raw.aimRatePer100Km, NaN, 0.01, 50);
+  if (Number.isFinite(explicit)) return explicit;
+
+  const drop = Number(raw.scoreDropPerHarmUnit);
+  if (Number.isFinite(drop) && drop > 0) {
+    return clampNum((100 - 85) / drop, d, 0.01, 50);
+  }
+
+  const legacy = Number(raw.leadingRatePer100);
+  if (OLD_VEHICLE_AIMS.has(legacy) || (Number.isFinite(legacy) && legacy >= 20)) {
+    return d;
+  }
+  if (Number.isFinite(legacy) && legacy > 0) {
+    return clampNum(legacy, d, 0.01, 50);
+  }
+  return d;
+}
+
 export function normalizeFleetScoreConfig(raw: unknown): FleetScoreConfig {
   const d = DEFAULT_FLEET_SCORE_CONFIG;
   if (!raw || typeof raw !== 'object') return { ...d, weights: { ...d.weights } };
   const o = raw as Partial<FleetScoreConfig> & { weights?: Partial<FleetScoreWeights> };
+
   return {
     weights: {
       harshBraking: clampNum(o.weights?.harshBraking, d.weights.harshBraking, 0, 20),
@@ -78,7 +124,9 @@ export function normalizeFleetScoreConfig(raw: unknown): FleetScoreConfig {
       overspeeding: clampNum(o.weights?.overspeeding, d.weights.overspeeding, 0, 20),
       harshCornering: clampNum(o.weights?.harshCornering, d.weights.harshCornering, 0, 20),
     },
-    leadingRatePer100: clampNum(o.leadingRatePer100, d.leadingRatePer100, 0.1, 2000),
+    aimRatePer100Km: migrateAimRate(o),
+    hosSliceMinutes: clampNum(o.hosSliceMinutes, d.hosSliceMinutes, 1, 60),
+    hosPointsPer10Min: clampNum(o.hosPointsPer10Min, d.hosPointsPer10Min, 0, 20),
     scoreFloor: clampNum(o.scoreFloor, d.scoreFloor, 0, 100),
     bandGood: clampNum(o.bandGood, d.bandGood, 1, 100),
     bandAttention: clampNum(o.bandAttention, d.bandAttention, 1, 100),
@@ -93,17 +141,15 @@ export function loadFleetScoreConfig(): FleetScoreConfig {
   try {
     const raw = localStorage.getItem(FLEET_SCORE_CONFIG_KEY);
     if (!raw) return { ...DEFAULT_FLEET_SCORE_CONFIG, weights: { ...DEFAULT_FLEET_SCORE_CONFIG.weights } };
-    const parsed = JSON.parse(raw) as Partial<FleetScoreConfig> & { leadingRatePer100?: number };
-    // Migrate prior defaults (EU award 8, then NG 240) → current leading aim 220
-    if (parsed.leadingRatePer100 === 8 || parsed.leadingRatePer100 === 240) {
-      const migrated = normalizeFleetScoreConfig({
-        ...parsed,
-        leadingRatePer100: DEFAULT_FLEET_SCORE_CONFIG.leadingRatePer100,
-      });
-      localStorage.setItem(FLEET_SCORE_CONFIG_KEY, JSON.stringify(migrated));
-      return migrated;
+    const parsed = JSON.parse(raw) as Partial<FleetScoreConfig>;
+    const next = normalizeFleetScoreConfig(parsed);
+    const legacyAim = Number(parsed.leadingRatePer100);
+    const needsMigrate = parsed.aimRatePer100Km == null
+      && (OLD_VEHICLE_AIMS.has(legacyAim) || (Number.isFinite(legacyAim) && legacyAim >= 20));
+    if (needsMigrate || parsed.hosPointsPer10Min == null || parsed.scoreDropPerHarmUnit != null) {
+      localStorage.setItem(FLEET_SCORE_CONFIG_KEY, JSON.stringify(next));
     }
-    return normalizeFleetScoreConfig(parsed);
+    return next;
   } catch {
     return { ...DEFAULT_FLEET_SCORE_CONFIG, weights: { ...DEFAULT_FLEET_SCORE_CONFIG.weights } };
   }
@@ -131,7 +177,6 @@ export function eventWeight(label: string | null | undefined, config: FleetScore
   }
 }
 
-/** Sum of weighted points from scored safety events (panic ignored). */
 export function weightedIncidentPoints(
   events: ScoreEvent[],
   config: FleetScoreConfig = loadFleetScoreConfig(),
@@ -144,7 +189,102 @@ export function weightedIncidentPoints(
   return total;
 }
 
-/** Weighted IVMS points per 100 vehicles. */
+export function hosSlicesFromMinutes(
+  heldMinutes: number,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): number {
+  const slice = Math.max(1, config.hosSliceMinutes || 10);
+  return Math.floor(Math.max(0, heldMinutes) / slice);
+}
+
+export function hosPointsFromHeldMinutes(
+  heldMinutes: number,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): number {
+  return hosSlicesFromMinutes(heldMinutes, config) * (config.hosPointsPer10Min ?? 1.5);
+}
+
+/** Weighted harm (IVMS + HOS) per 100 km. */
+export function ratePer100Km(
+  points: number,
+  distanceKm: number,
+): number {
+  const blocks = Math.max(distanceKm / 100, 0.01);
+  return points / blocks;
+}
+
+export function totalSafetyPoints(
+  events: ScoreEvent[],
+  hosHeldMinutes: number,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): { ivms: number; hos: number; total: number } {
+  const ivms = weightedIncidentPoints(events, config);
+  const hos = hosPointsFromHeldMinutes(hosHeldMinutes, config);
+  return { ivms, hos, total: ivms + hos };
+}
+
+export function ivmsPointsFromByLabel(
+  byLabel: Record<string, number> | undefined,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): number {
+  let total = 0;
+  for (const [label, count] of Object.entries(byLabel || {})) {
+    total += eventWeight(label, config) * Number(count || 0);
+  }
+  return total;
+}
+
+export function totalSafetyPointsFromCensus(
+  exposure: FleetSafetyExposure,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): { ivms: number; hos: number; total: number } {
+  const ivms = ivmsPointsFromByLabel(exposure.byLabel, config);
+  const hos = hosPointsFromHeldMinutes(exposure.hosHeldMinutes ?? 0, config);
+  return { ivms, hos, total: ivms + hos };
+}
+
+export function scoreFromCensus(
+  exposure: FleetSafetyExposure,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): number {
+  const { total } = totalSafetyPointsFromCensus(exposure, config);
+  if (total <= 0) return 100;
+  if (!(exposure.distanceKm > 0)) return config.scoreFloor;
+  const pct = Math.round(100 - SCORE_DROP_PER_HARM_UNIT * ratePer100Km(total, exposure.distanceKm));
+  return Math.max(config.scoreFloor, Math.min(100, pct));
+}
+
+export function scoreFromInputs(
+  input: {
+    events?: ScoreEvent[];
+    byLabel?: Record<string, number>;
+    distanceKm: number;
+    hosHeldMinutes?: number;
+  },
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+): number {
+  const ivms = input.byLabel
+    ? ivmsPointsFromByLabel(input.byLabel, config)
+    : weightedIncidentPoints(input.events || [], config);
+  const hos = hosPointsFromHeldMinutes(input.hosHeldMinutes ?? 0, config);
+  const total = ivms + hos;
+  if (total <= 0) return 100;
+  if (!(input.distanceKm > 0)) return config.scoreFloor;
+  const pct = Math.round(100 - SCORE_DROP_PER_HARM_UNIT * ratePer100Km(total, input.distanceKm));
+  return Math.max(config.scoreFloor, Math.min(100, pct));
+}
+
+/** Second arg is distance km. Optional 4th arg is HOS held minutes. */
+export function scoreFromEvents(
+  events: ScoreEvent[],
+  distanceKm: number,
+  config: FleetScoreConfig = loadFleetScoreConfig(),
+  hosHeldMinutes = 0,
+): number {
+  return scoreFromInputs({ events, distanceKm, hosHeldMinutes }, config);
+}
+
+/** @deprecated Vehicle-based rate. Prefer ratePer100Km. */
 export function ratePer100Vehicles(
   events: ScoreEvent[],
   vehicleCount: number,
@@ -154,42 +294,14 @@ export function ratePer100Vehicles(
   return (weightedIncidentPoints(events, config) / fleet) * 100;
 }
 
-/**
- * Fleet Safety Score vs leading-fleet target.
- * Match leadingRatePer100 → 85; beat it → up to 100; worse rates scale down from 85.
- */
-export function scoreFromEvents(
-  events: ScoreEvent[],
-  vehicleCount: number,
-  config: FleetScoreConfig = loadFleetScoreConfig(),
-): number {
-  const actualRate = ratePer100Vehicles(events, vehicleCount, config);
-  const leading = Math.max(config.leadingRatePer100, 0.1);
-  if (actualRate <= 0) {
-    return 100;
-  }
-  const pct = Math.round((FLEET_SCORE_AT_AIM * leading) / actualRate);
-  return Math.max(config.scoreFloor, Math.min(100, pct));
-}
-
 export function computeFleetScore(
-  events: ScoreEvent[],
-  vehicleCount: number,
+  current: FleetSafetyExposure,
+  previous: FleetSafetyExposure | null = null,
   config: FleetScoreConfig = loadFleetScoreConfig(),
 ): { score: number; delta: number } {
-  const now = Date.now();
-  const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
-  const sixtyDaysAgo = now - 60 * 24 * 60 * 60 * 1000;
-
-  const recent = events.filter(e => new Date(e.eventTime || e.timestamp || 0).getTime() >= thirtyDaysAgo);
-  const prev = events.filter(e => {
-    const t = new Date(e.eventTime || e.timestamp || 0).getTime();
-    return t >= sixtyDaysAgo && t < thirtyDaysAgo;
-  });
-
-  const current = scoreFromEvents(recent, vehicleCount, config);
-  const previous = scoreFromEvents(prev, vehicleCount, config);
-  return { score: current, delta: current - previous };
+  const currentScore = scoreFromCensus(current, config);
+  const previousScore = previous ? scoreFromCensus(previous, config) : currentScore;
+  return { score: currentScore, delta: currentScore - previousScore };
 }
 
 export function scoreBandLabel(score: number, config: FleetScoreConfig = loadFleetScoreConfig()): string {

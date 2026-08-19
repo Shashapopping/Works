@@ -43,6 +43,13 @@ import {
 } from './report-automate.js';
 import { isReportExportAllowed, normalizeReportEmail } from './report-export-allowlist.js';
 import {
+  issueDriverWarning,
+  listActiveUsersForTagging,
+  listNotificationsForUser,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from './coaching-warnings.js';
+import {
   archiveDocument,
   listDocumentTree,
   listFolderContents,
@@ -203,6 +210,13 @@ export async function handleAuthRequest(req, res) {
       const body = await readBody(req);
       const roles = saveRoles(body.roles || body);
       sendJson(res, 200, { roles });
+      return true;
+    }
+
+    if (path === '/api/users/directory' && method === 'GET') {
+      const user = await requireUser(req, res, 'drivers');
+      if (!user) return true;
+      sendJson(res, 200, { users: listActiveUsersForTagging() });
       return true;
     }
 
@@ -431,6 +445,66 @@ export async function handleAuthRequest(req, res) {
       return true;
     }
 
+    const notifMatch = path.match(/^\/api\/notifications\/([^/]+)$/);
+    if (notifMatch && method === 'PATCH') {
+      const user = await requireUser(req, res, null);
+      if (!user) return true;
+      const body = await readBody(req);
+      if (body.read === true) {
+        const updated = markNotificationRead(user.id, decodeURIComponent(notifMatch[1]));
+        if (!updated) {
+          sendJson(res, 404, { error: 'Notification not found' });
+          return true;
+        }
+        sendJson(res, 200, { notification: updated });
+        return true;
+      }
+      sendJson(res, 400, { error: 'Unsupported update' });
+      return true;
+    }
+
+    if (path === '/api/notifications/read-all' && method === 'POST') {
+      const user = await requireUser(req, res, null);
+      if (!user) return true;
+      const readAt = markAllNotificationsRead(user.id);
+      sendJson(res, 200, { readAt });
+      return true;
+    }
+
+    if (path === '/api/notifications' && method === 'GET') {
+      const user = await requireUser(req, res, null);
+      if (!user) return true;
+      const notifications = listNotificationsForUser(user.id);
+      sendJson(res, 200, { notifications });
+      return true;
+    }
+
+    if (path === '/api/coaching/warnings' && method === 'POST') {
+      const user = await requireUser(req, res, 'drivers');
+      if (!user) return true;
+      const body = await readBody(req);
+      const driverKey = String(body.driverKey || '').trim();
+      const driverName = String(body.driverName || '').trim();
+      const comment = String(body.comment || '').trim();
+      if (!driverKey || !driverName || !comment) {
+        sendJson(res, 400, { error: 'driverKey, driverName, and comment are required' });
+        return true;
+      }
+      const taggedUserIds = Array.isArray(body.taggedUserIds)
+        ? body.taggedUserIds.map(String).filter(Boolean)
+        : [];
+      const warning = await issueDriverWarning({
+        driverKey,
+        driverName,
+        comment,
+        disciplineBand: body.disciplineBand ? String(body.disciplineBand) : null,
+        issuedBy: { id: user.id, name: user.name, email: user.email },
+        taggedUserIds,
+      });
+      sendJson(res, 201, { warning });
+      return true;
+    }
+
     const docDownload = path.match(/^\/api\/documents\/([^/]+)\/download$/);
     if (docDownload && method === 'GET') {
       const user = await requireUser(req, res, 'documents');
@@ -466,6 +540,8 @@ export function authExpressMiddleware() {
       path?.startsWith('/api/auth') ||
       path === '/api/roles' ||
       path?.startsWith('/api/users') ||
+      path?.startsWith('/api/notifications') ||
+      path?.startsWith('/api/coaching') ||
       path?.startsWith('/api/reports/automate') ||
       path === '/api/reports/email' ||
       path?.startsWith('/api/documents')
@@ -487,6 +563,8 @@ export function authViteMiddleware() {
       urlPath.startsWith('/api/auth') ||
       urlPath === '/api/roles' ||
       urlPath.startsWith('/api/users') ||
+      urlPath.startsWith('/api/notifications') ||
+      urlPath.startsWith('/api/coaching') ||
       urlPath.startsWith('/api/reports/automate') ||
       urlPath === '/api/reports/email' ||
       urlPath.startsWith('/api/documents')

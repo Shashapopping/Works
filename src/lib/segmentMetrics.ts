@@ -70,7 +70,7 @@ export function cementCorridor(zone?: string | null) {
   if (/WEST\s*INBOUND|\bWEST\b/.test(z)) return 'West';
   if (/\bMDD\b/.test(z)) return 'MDD Transporters';
   if (/\bDD\b/.test(z)) return 'DD Distribution';
-  if (/SPOT\s*HIRE/.test(z)) return 'Spot Hire';
+  if (/SPOT\s*HIRE/.test(z)) return 'East';
   if (/INBOUND/.test(z)) return 'Inbound';
   if (/DEPOT/.test(z)) return 'Depots';
   return 'Other';
@@ -102,16 +102,19 @@ export function readyMixPlant(v: Pick<Vehicle, 'site' | 'zone'> | string | null 
   return site.trim() || zone.trim() || 'Unassigned';
 }
 
-/** Prefer reverse-geocoded address; if MiX returns "Unknown", use site/zone then coordinates. */
+/** Prefer reverse-geocoded address; if MiX returns "Unknown"/Locating…, use site/zone then coordinates. */
 export function locationLabel(v: Pick<Vehicle, 'position' | 'zone' | 'site'>) {
   const addr = v.position?.address?.trim();
-  if (addr && addr !== 'Unknown' && addr.toLowerCase() !== 'n/a') return brandLabel(addr);
+  if (addr && addr !== 'Unknown' && addr !== 'Unknown location'
+    && !/^locating/i.test(addr) && addr.toLowerCase() !== 'n/a') {
+    return brandLabel(addr);
+  }
   const siteOrZone = (v.site || v.zone || '').trim();
-  if (siteOrZone) return brandLabel(siteOrZone);
+  if (siteOrZone && !/^unknown/i.test(siteOrZone)) return brandLabel(siteOrZone);
   const lat = v.position?.latitude;
   const lng = v.position?.longitude;
   if (lat != null && lng != null && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
-    return `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`;
+    return 'Locating…';
   }
   return '—';
 }

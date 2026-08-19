@@ -21,8 +21,7 @@ export const COACHING_SCORE_THRESHOLD = 70;
 export const COACHING_EVENT_COUNT = 8;
 export const COACHING_WINDOW_DAYS = 30;
 
-/** Training — same violation label repeated this many times within the lookback
- *  window after a coaching note was left qualifies a driver for training. */
+/** Training uses the same Driver Score bands as Drivers (Amber, 2nd occurrence). */
 export const TRAINING_SAME_LABEL_COUNT = 3;
 export const TRAINING_SAME_LABEL_DAYS = 14;
 export const TRAINING_NOTE_LOOKBACK_DAYS = 30;

@@ -24,8 +24,13 @@ export const CACHE_TTL = {
   fuelHistory: 45_000,
   /** Live continuous-driving clock — keep fairly fresh. */
   hos: 20_000,
+  safetyExposure: 45_000,
+  safetySummary: 45_000,
+  riskDrivers: 45_000,
   /** Page rollups — align with ~60s jittered polls. */
   pageRollup: 55_000,
+  /** Current + last month trip km for driver consequence scores. */
+  driverAssessment: 60_000,
 } as const;
 
 export const CACHE_KEYS = {
@@ -36,6 +41,10 @@ export const CACHE_KEYS = {
   fuelConsumption: (url: string) => `fuel:consumption:${url}`,
   fuelHistory: (url: string) => `fuel:history:${url}`,
   hos: (url: string) => `hos:${url}`,
+  safetyExposure: (range: string) => `safety-exposure:${range}`,
+  safetySummary: (range: string) => `safety-summary:${range}`,
+  riskDrivers: (range: string) => `risk-drivers:${range}`,
+  driverAssessment: 'driver:assessment-distance',
 } as const;
 
 function trimMemory() {
@@ -177,8 +186,8 @@ export async function authCachedJson<T>(
 
 /** Warm these shortly after login so Fuel / KPI / Vision open faster. */
 export const BOOT_PREFETCH_URLS = [
-  '/api/driver-distance?range=today',
-  '/api/driver-distance?range=7d',
-  '/api/fuel/consumption?period=week',
+  '/api/driver-distance?range=today&trips=0',
+  '/api/driver-distance?range=7d&trips=0',
+  '/api/fuel/consumption?period=week&trips=0',
   '/api/kpi?period=week&scope=quarry',
 ] as const;

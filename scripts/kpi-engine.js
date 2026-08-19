@@ -16,10 +16,17 @@ const MAX_LOADED_INTERVAL_MS = 2 * 60 * 60 * 1000;
 // Overspeed events without an explicit end are assumed to last this long
 const DEFAULT_OVERSPEED_SECONDS = 30;
 
-/** Avoid re-scanning multi‑MB logs on every page open (~20s+ cold). */
-const KPI_RESULT_TTL_MS = 120_000;
+/** Avoid re-scanning multi-MB logs on every page open (~20s+ cold). */
+// Stale-while-revalidate: serve instantly, refresh in background.
+const KPI_RESULT_FRESH_TTL_MS = 120_000;
+const KPI_RESULT_STALE_TTL_MS = 300_000;
 const KPI_RESULT_CACHE_MAX = 8;
 const kpiResultCache = new Map();
+const kpiInflightRefresh = new Set();
+
+// mtime-guarded cache for rarely-changing lookups.
+let vehiclesLookupCache = null;
+let vehiclesLookupMtimeMs = 0;
 
 function kpiCacheKey({ period, from, to, scope }) {
   return `${period || 'week'}|${from || ''}|${to || ''}|${scope || 'quarry'}`;
@@ -52,10 +59,13 @@ function classifyAsset(regNo = '', assetName = '') {
 }
 
 function loadVehicles(cwd) {
-  const map = new Map();
   const dataPath = path.join(cwd, 'public', 'data.json');
-  if (!fs.existsSync(dataPath)) return map;
   try {
+    if (!fs.existsSync(dataPath)) return new Map();
+    const mtimeMs = fs.statSync(dataPath).mtimeMs;
+    if (vehiclesLookupCache && mtimeMs === vehiclesLookupMtimeMs) return vehiclesLookupCache;
+
+    const map = new Map();
     JSON.parse(fs.readFileSync(dataPath, 'utf8')).forEach(v => {
       map.set(v.id?.toString(), {
         regNo: v.regNo || v.id,
@@ -64,8 +74,13 @@ function loadVehicles(cwd) {
         assetClass: classifyAsset(v.regNo, v.assetName),
       });
     });
-  } catch { }
-  return map;
+
+    vehiclesLookupCache = map;
+    vehiclesLookupMtimeMs = mtimeMs;
+    return map;
+  } catch {
+    return vehiclesLookupCache ?? new Map();
+  }
 }
 
 function eventMs(e) {
@@ -169,8 +184,31 @@ function overspeedSeconds(e) {
 export function computeKpi({ cwd = process.cwd(), period = 'week', from, to, scope = 'quarry' } = {}) {
   const cacheKey = kpiCacheKey({ period, from, to, scope });
   const cached = kpiResultCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < KPI_RESULT_TTL_MS) {
-    return cached.data;
+  if (cached) {
+    const ageMs = Date.now() - cached.at;
+    if (ageMs < KPI_RESULT_FRESH_TTL_MS) return cached.data;
+
+    if (ageMs < KPI_RESULT_STALE_TTL_MS) {
+      if (!kpiInflightRefresh.has(cacheKey)) {
+        kpiInflightRefresh.add(cacheKey);
+        setImmediate(() => {
+          try {
+            const result = computeKpiFresh({ cwd, period, from, to, scope });
+            kpiResultCache.set(cacheKey, { at: Date.now(), data: result });
+            while (kpiResultCache.size > KPI_RESULT_CACHE_MAX) {
+              const oldest = kpiResultCache.keys().next().value;
+              kpiResultCache.delete(oldest);
+            }
+          } catch {
+            // Keep stale value if refresh fails.
+          } finally {
+            kpiInflightRefresh.delete(cacheKey);
+          }
+        });
+      }
+      return cached.data;
+    }
+    // else expired beyond stale window → recompute synchronously
   }
 
   const result = computeKpiFresh({ cwd, period, from, to, scope });
@@ -187,9 +225,18 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
   const windowHours = (end - start) / 3600000;
 
   const vehicles = loadVehicles(cwd);
+  // Scope filter determines which trips we even load from SQLite.
+  const assetIds = new Set();
+  if (scope === 'quarry') {
+    vehicles.forEach((v, id) => { if (QUARRY_ZONES.has(v.zone)) assetIds.add(id); });
+  } else {
+    vehicles.forEach((_, id) => assetIds.add(id));
+  }
+
   const trips = getTripsInRange(
     new Date(start).toISOString(),
     new Date(end + 1).toISOString(),
+    assetIds.size ? [...assetIds] : null,
   );
   const kpiEvents = getKpiEvents({
     fromIso: new Date(start - MAX_LOADED_INTERVAL_MS).toISOString(),
@@ -217,7 +264,7 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
   getAllEvents({
     from: new Date(start).toISOString(),
     to: new Date(end).toISOString(),
-    limit: 8000,
+    limit: null,
   }).forEach(row => {
     const e = {
       eventId: row.event_id,
@@ -250,13 +297,6 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
   const loadedByAsset = computeLoadedDurations(kpiEvents, start, end);
   const runtimeByAsset = computeEngineRuntime(trips, start, end);
 
-  // Candidate assets: scope filter + anything with activity
-  const assetIds = new Set();
-  if (scope === 'quarry') {
-    vehicles.forEach((v, id) => { if (QUARRY_ZONES.has(v.zone)) assetIds.add(id); });
-  } else {
-    vehicles.forEach((_, id) => assetIds.add(id));
-  }
   const inScope = (id) => assetIds.has(id);
 
   const assetRows = new Map();

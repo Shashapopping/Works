@@ -1,4 +1,5 @@
 import type { FleetVehicle } from '../../context/FleetContext';
+import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../../lib/placeAddress';
 
 const GRID_COLS = 'minmax(72px,1fr) minmax(80px,1.2fr) minmax(90px,1.8fr) minmax(72px,1fr) minmax(90px,1.4fr) minmax(72px,1fr)';
 
@@ -30,13 +31,29 @@ function formatDate(dateStr: string) {
   }
 }
 
+function placeLabel(v: FleetVehicle) {
+  const raw = vehiclePlaceAddress(v as any) || (typeof v.address === 'string' ? v.address.trim() : '');
+  if (isUsablePlaceAddress(raw)) return raw;
+  if (v.position?.latitude != null && v.position?.longitude != null) return 'Locating…';
+  return raw || '—';
+}
+
 interface Props {
   vehicles: FleetVehicle[];
 }
 
 export default function FleetCompactTable({ vehicles }: Props) {
-  if (!vehicles.length) {
-    return <div className="bpl-fleet-table-empty">No vehicles match this filter.</div>;
+  const rows = [...vehicles]
+    .filter(v => vehicleHasResolvedPlace(v as any) || isUsablePlaceAddress(v.address))
+    .sort((a, b) => {
+      const aOk = vehicleHasResolvedPlace(a as any) || isUsablePlaceAddress(a.address);
+      const bOk = vehicleHasResolvedPlace(b as any) || isUsablePlaceAddress(b.address);
+      if (aOk !== bOk) return aOk ? -1 : 1;
+      return 0;
+    });
+
+  if (!rows.length) {
+    return <div className="bpl-fleet-table-empty">No vehicles with resolved location yet.</div>;
   }
 
   return (
@@ -50,10 +67,11 @@ export default function FleetCompactTable({ vehicles }: Props) {
         <div>Date</div>
       </div>
       <div className="bpl-fleet-table-body">
-        {vehicles.map(v => {
+        {rows.map(v => {
           const colors = getStatusColor(v.status);
           const isExcess = v.status === 'Excessive Idle';
           const rowBg = isExcess ? '#fefce8' : 'var(--cd-surface)';
+          const loc = placeLabel(v);
 
           return (
             <div
@@ -80,7 +98,7 @@ export default function FleetCompactTable({ vehicles }: Props) {
                   {v.status}
                 </span>
               </div>
-              <div className="bpl-fleet-cell-loc" title={v.address}>{v.address}</div>
+              <div className="bpl-fleet-cell-loc" title={loc}>{loc}</div>
               <div className="bpl-fleet-cell-date">{formatDate(v.date)}</div>
             </div>
           );

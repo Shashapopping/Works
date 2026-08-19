@@ -3,8 +3,9 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import * as dotenv from 'dotenv'
-import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords } from './scripts/mix-test.js'
-import { getAcknowledged, addAcknowledged, clearAcknowledged, getAllEvents, getFuelHistory } from './scripts/db.js'
+import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers } from './scripts/mix-test.js'
+import { getAcknowledged, addAcknowledged, clearAcknowledged, getFuelHistory } from './scripts/db.js'
+import { handleEventsLogQuery } from './scripts/events-log-api.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
@@ -142,68 +143,19 @@ app.get('/api/drivers', (req, res) => {
   }
 })
 
-// Events log — SQLite (capped); supports ?from=&to=&types=&limit=
+// Events log — paged `{ entries, total }` when format=page; no limit + from/to = full export
 app.get('/api/events/log', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    const { from, to, types, limit } = req.query
-    const filters = {
-      from: from || null,
-      to: to || null,
-      types: types ? types.split(',').map(t => t.trim()).filter(Boolean) : null,
-      limit: limit || 5000,
-    }
-
-    const vehicleLookup = new Map()
-    try {
-      const dataPath = path.join(process.cwd(), 'public', 'data.json')
-      if (fs.existsSync(dataPath)) {
-        const vehicles = JSON.parse(fs.readFileSync(dataPath, 'utf8'))
-        vehicles.forEach(v => {
-          vehicleLookup.set(v.id?.toString(), {
-            regNo: v.regNo || 'N/A',
-            assetName: v.assetName || 'Unknown Vehicle',
-            transporter: v.transporter || 'N/A',
-            position: v.position,
-          })
-        })
-      }
-    } catch { }
-
-    const entries = getAllEvents(filters).map(entry => {
-      const vehicle = vehicleLookup.get(entry.asset_id?.toString()) || {}
-      const enriched = {
-        timestamp: entry.timestamp,
-        assetId: entry.asset_id,
-        driverId: entry.driver_id,
-        driverName: entry.driver_name,
-        driverPhone: entry.driver_phone,
-        eventId: entry.event_id,
-        eventType: entry.event_type,
-        label: entry.label,
-        eventTime: entry.event_time,
-        receivedAt: entry.received_at,
-        latitude: entry.latitude,
-        longitude: entry.longitude,
-        address: entry.address || vehicle.position?.address || null,
-        speed: entry.speed ?? null,
-        speedLimit: entry.speed_limit ?? null,
-        type: entry.type,
-        regNo: vehicle.regNo || 'N/A',
-        assetName: vehicle.assetName || 'Unknown Vehicle',
-        transporter: vehicle.transporter || 'N/A',
-      }
-      if ((enriched.latitude == null || enriched.longitude == null) && vehicle.position) {
-        enriched.latitude = vehicle.position.latitude
-        enriched.longitude = vehicle.position.longitude
-      }
-      if (!enriched.address && vehicle.position?.address) {
-        enriched.address = vehicle.position.address
-      }
-      return enriched
-    })
-
-    res.json(entries)
+    res.json(handleEventsLogQuery({
+      from: req.query.from,
+      to: req.query.to,
+      types: req.query.types,
+      limit: req.query.limit,
+      offset: req.query.offset,
+      format: req.query.format,
+      driver: req.query.driver,
+    }))
   } catch (err) {
     console.error('events/log failed:', err?.message || err)
     res.status(500).end('Internal Server Error')
@@ -244,11 +196,14 @@ app.get('/api/trips/session', (req, res) => {
 // Driver distance summary — strips journeys from wire payload
 app.get('/api/driver-distance', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
+  const tripsParam = req.query.trips?.toString()
+  const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
   const summary = getDriverDistanceSummary({
     range: req.query.range?.toString() || '24h',
     month: req.query.month?.toString() || null,
     from: req.query.from?.toString() || null,
     to: req.query.to?.toString() || null,
+    includeTrips,
   })
   const includeJourneys = req.query.includeJourneys === '1' || req.query.includeJourneys === 'true'
   const slim = includeJourneys
@@ -265,6 +220,51 @@ app.get('/api/hos', (req, res) => {
   } catch (err) {
     console.error('hos records failed', err)
     res.status(500).json({ error: 'Failed to compute HOS records' })
+  }
+})
+
+// Distance + HOS held minutes for the fleet safety score (same calendar window)
+app.get('/api/safety-exposure', (req, res) => {
+  if (!isAuthorized(req)) return unauthorized(res)
+  try {
+    res.json(getFleetSafetyExposure({
+      range: req.query.range?.toString() || '30d',
+      from: req.query.from?.toString() || null,
+      to: req.query.to?.toString() || null,
+      assetIds: req.query.assetIds?.toString() || null,
+    }))
+  } catch (err) {
+    console.error('safety exposure failed', err)
+    res.status(500).json({ error: 'Failed to compute safety exposure' })
+  }
+})
+
+app.get('/api/safety/summary', (req, res) => {
+  if (!isAuthorized(req)) return unauthorized(res)
+  try {
+    res.json(getSafetySummary({
+      range: req.query.range?.toString() || '30d',
+      from: req.query.from?.toString() || null,
+      to: req.query.to?.toString() || null,
+      assetIds: req.query.assetIds?.toString() || null,
+    }))
+  } catch (err) {
+    console.error('safety summary failed', err)
+    res.status(500).json({ error: 'Failed to compute safety summary' })
+  }
+})
+
+app.get('/api/risk/drivers', (req, res) => {
+  if (!isAuthorized(req)) return unauthorized(res)
+  try {
+    res.json(getRiskDrivers({
+      range: req.query.range?.toString() || '30d',
+      from: req.query.from?.toString() || null,
+      to: req.query.to?.toString() || null,
+    }))
+  } catch (err) {
+    console.error('risk drivers failed', err)
+    res.status(500).json({ error: 'Failed to compute driver risk' })
   }
 })
 
@@ -301,10 +301,11 @@ app.get('/api/fuel/history', (req, res) => {
       cutoffStart = now - (cutoffs[period] || cutoffs.day)
     }
 
+    // All probe rows (5min / 1min / trip start-end). Restricting to 5min
+    // dropped assets that still have live fuel and a drawable series.
     const entries = getFuelHistory({
       fromIso: new Date(cutoffStart).toISOString(),
       toIso: new Date(cutoffEnd).toISOString(),
-      eventType: '5min_ticker',
     })
 
     // Build per-vehicle series, filtered to period
@@ -352,7 +353,9 @@ app.get('/api/fuel/consumption', (req, res) => {
     const from = req.query.from
     const to = req.query.to
     const site = req.query.site || null
-    const data = computeConsumption({ period, from, to, siteFilter: site })
+    const tripsParam = req.query.trips?.toString()
+    const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
+    const data = computeConsumption({ period, from, to, siteFilter: site, includeTrips })
     res.json(data)
   } catch {
     res.status(500).end('Internal Server Error')

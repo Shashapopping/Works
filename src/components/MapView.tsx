@@ -322,7 +322,13 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
           </div>
           <div style="font-size: 12px; color: #0f172a; margin-bottom: 4px;">${vehicle.assetName}</div>
           <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">${vehicle.transporter}</div>
-          <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">📍 ${vehicle.position.address || 'Unknown'}</div>
+          <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">📍 ${
+            vehicle.position.address
+            && vehicle.position.address !== 'Unknown'
+            && vehicle.position.address !== 'Unknown location'
+              ? vehicle.position.address
+              : 'Locating…'
+          }</div>
           <div style="font-size: 11px; color: #64748b; margin-bottom: ${hasWarning ? '8px' : '0'};">${speedText} • ${timeText}</div>
           ${hasWarning ? `<div style="font-size: 11px; color: #854F0B; background: #fef3c7; padding: 4px 8px; border-radius: 4px;">⚠ ${warningLines}</div>` : ''}
         </div>

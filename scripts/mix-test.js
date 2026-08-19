@@ -20,10 +20,15 @@ import {
   upsertTrips,
   getTripsInRange,
   countTrips,
+  countTripsInRange,
+  loadTripRollupsByAsset,
+  loadTripRollupsByDriver,
+  loadLastDriverIdByAsset,
   insertFuelReadings,
   insertKpiEvents,
   pruneFleetHistory,
 } from "./db.js";
+import { querySafetyEventAggregates, queryRiskAggregates } from "./event-aggregates.js";
 import { fuelEventTypeFromId } from "./fuel-constants.js";
 
 const IDENTITY_URL = "https://identity.za.mixtelematics.com/core/connect/token";
@@ -76,6 +81,11 @@ let lastDbPrune = 0;
 
 // Trips state — history lives in fleet.db (not RAM)
 const TRIPS_SESSION_FILE = path.join(process.cwd(), 'public', 'trips-session.json');
+const ADDRESS_CACHE_FILE = path.join(process.cwd(), 'public', 'address-cache.json');
+/** Nominatim usage policy: max 1 req/sec. Enrich a few unknowns each poll. */
+const GEOCODE_MAX_PER_POLL = Number(process.env.GEOCODE_MAX_PER_POLL) || 8;
+const GEOCODE_GAP_MS = Number(process.env.GEOCODE_GAP_MS) || 1100;
+const STICKY_ADDRESS_METERS = Number(process.env.GEOCODE_STICKY_METERS) || 900;
 const TRIP_MERGE_GAP_MS  = 5 * 60 * 1000;
 /** MiX rejects sinceTokens older than ~7 days — validity ceiling only. */
 const TRIPS_MAX_LOOKBACK_DAYS = 6;
@@ -83,19 +93,9 @@ const TRIPS_MAX_LOOKBACK_DAYS = 6;
 /** Unknown EventTypeIds already sampled this process — avoid unbounded unknown-events.log growth. */
 const unknownEventTypesLogged = new Set();
 
-/** Keep fields needed for KPI / distance / fuel / drive-idle split. */
+/** Keep fields needed for KPI / distance / HOS. */
 function slimTrip(trip) {
   if (!trip || typeof trip !== 'object') return trip;
-  const fuel = trip.FuelUsedLitres ?? trip.FuelUsedLiters ?? trip.fuelUsedLitres ?? null;
-  const subs = Array.isArray(trip.SubTrips) ? trip.SubTrips.map(s => ({
-    FuelUsedLitres: s.FuelUsedLitres ?? s.FuelUsedLiters ?? null,
-    DrivingTime: s.DrivingTime ?? null,
-    StandingTime: s.StandingTime ?? null,
-    EngineSeconds: s.EngineSeconds ?? null,
-    StartEngineSeconds: s.StartEngineSeconds ?? null,
-    EndEngineSeconds: s.EndEngineSeconds ?? null,
-    Duration: s.Duration ?? null,
-  })) : undefined;
   return {
     TripId: trip.TripId ?? trip.TripID ?? trip.Id ?? trip.tripId ?? null,
     AssetId: (trip.AssetId ?? trip.AssetID ?? trip.assetId)?.toString?.() ?? trip.AssetId ?? null,
@@ -104,14 +104,8 @@ function slimTrip(trip) {
     TripEnd: trip.TripEnd || trip.tripEnd || trip.EndDateTime || null,
     DistanceKilometers: Number(trip.DistanceKilometers ?? trip.distanceKm ?? 0),
     DrivingTime: trip.DrivingTime ?? trip.drivingTimeSeconds ?? null,
-    StandingTime: trip.StandingTime ?? null,
     Duration: trip.Duration ?? trip.durationSeconds ?? null,
     MaxSpeedKilometersPerHour: trip.MaxSpeedKilometersPerHour ?? trip.maxSpeedKph ?? null,
-    FuelUsedLitres: fuel != null && Number.isFinite(Number(fuel)) ? Math.abs(Number(fuel)) : null,
-    EngineSeconds: trip.EngineSeconds ?? null,
-    StartEngineSeconds: trip.StartEngineSeconds ?? null,
-    EndEngineSeconds: trip.EndEngineSeconds ?? null,
-    ...(subs?.length ? { SubTrips: subs } : {}),
   };
 }
 
@@ -491,7 +485,7 @@ async function reverseGeocode(lat, lon) {
   try {
     const res = await fetch(
       `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
-      { headers: { 'User-Agent': 'BPL-CNL-FleetDashboard/1.0', 'Accept-Language': 'en' } }
+      { headers: { 'User-Agent': 'BPL-HBM-FleetDashboard/1.0 (fleet-ops)', 'Accept-Language': 'en' } }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -501,14 +495,290 @@ async function reverseGeocode(lat, lon) {
   }
 }
 
+function addressCacheKey(lat, lon) {
+  return `${Number(lat).toFixed(2)},${Number(lon).toFixed(2)}`;
+}
+
+function addressCacheKeyFine(lat, lon) {
+  return `${Number(lat).toFixed(3)},${Number(lon).toFixed(3)}`;
+}
+
+function loadAddressCaches() {
+  const grids = new Map();
+  const assets = new Map();
+  try {
+    if (!fs.existsSync(ADDRESS_CACHE_FILE)) return { grids, assets };
+    const raw = JSON.parse(fs.readFileSync(ADDRESS_CACHE_FILE, 'utf8'));
+    if (raw && (raw.grids || raw.assets)) {
+      Object.entries(raw.grids || {}).forEach(([k, v]) => {
+        if (typeof v === 'string') grids.set(k, v);
+      });
+      Object.entries(raw.assets || {}).forEach(([id, v]) => {
+        if (v && typeof v.address === 'string') assets.set(id, v);
+      });
+    } else if (raw && typeof raw === 'object') {
+      Object.entries(raw).forEach(([k, v]) => {
+        if (typeof v === 'string') grids.set(k, v);
+      });
+    }
+  } catch {
+    // ignore
+  }
+  return { grids, assets };
+}
+
+function saveAddressCache() {
+  try {
+    fs.writeFileSync(ADDRESS_CACHE_FILE, JSON.stringify({
+      grids: Object.fromEntries(addressCache),
+      assets: Object.fromEntries(assetAddressCache),
+    }));
+  } catch {
+    // ignore
+  }
+}
+
+const { grids: addressCache, assets: assetAddressCache } = loadAddressCaches();
+const geocodeQueue = new Map();
+let geocodeInFlight = false;
+let addressCacheDirty = false;
+
+function isCoordAddress(address) {
+  return /^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(String(address || '').trim());
+}
+
+function isUsableAddress(address) {
+  if (!address) return false;
+  const a = String(address).trim();
+  if (!a) return false;
+  if (a === '—' || a === '-') return false;
+  if (isCoordAddress(a)) return false;
+  const lower = a.toLowerCase();
+  return lower !== 'unknown'
+    && lower !== 'unknown location'
+    && lower !== 'locating…'
+    && lower !== 'locating...'
+    && lower !== 'null'
+    && lower !== 'n/a';
+}
+
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(a));
+}
+
+function rememberAssetAddress(assetId, address, lat, lon) {
+  if (!assetId || !isUsableAddress(address) || lat == null || lon == null) return;
+  const prev = assetAddressCache.get(assetId);
+  if (
+    prev
+    && prev.address === address
+    && Math.abs(prev.lat - Number(lat)) < 0.00001
+    && Math.abs(prev.lon - Number(lon)) < 0.00001
+  ) {
+    return;
+  }
+  assetAddressCache.set(assetId, {
+    address,
+    lat: Number(lat),
+    lon: Number(lon),
+    updatedAt: new Date().toISOString(),
+  });
+  addressCacheDirty = true;
+}
+
+function saveAddressCacheIfDirty() {
+  if (!addressCacheDirty) return;
+  saveAddressCache();
+  addressCacheDirty = false;
+}
+
+function seedAssetAddressesFromFleet() {
+  try {
+    const dataPath = path.join(process.cwd(), 'public', 'data.json');
+    if (!fs.existsSync(dataPath)) return 0;
+    const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    if (!Array.isArray(data)) return 0;
+    let seeded = 0;
+    data.forEach(vehicle => {
+      const assetId = vehicle.id?.toString();
+      const pos = vehicle.position;
+      if (!assetId || !pos) return;
+      let address = pos.address;
+      if (!isUsableAddress(address) && pos.latitude != null && pos.longitude != null) {
+        address = lookupCachedAddress(pos.latitude, pos.longitude);
+      }
+      if (!isUsableAddress(address)) return;
+      if (!assetAddressCache.has(assetId)) seeded++;
+      rememberAssetAddress(assetId, address, pos.latitude, pos.longitude);
+      if (pos.latitude != null && pos.longitude != null) {
+        addressCache.set(addressCacheKey(pos.latitude, pos.longitude), address);
+      }
+    });
+    saveAddressCacheIfDirty();
+    if (seeded > 0) console.log(`📍 Seeded ${seeded} sticky address(es) from data.json`);
+    return seeded;
+  } catch {
+    return 0;
+  }
+}
+
+function lookupCachedAddress(lat, lon) {
+  if (lat == null || lon == null) return null;
+
+  const coarse = addressCache.get(addressCacheKey(lat, lon));
+  if (isUsableAddress(coarse)) return coarse;
+
+  const fine = addressCache.get(addressCacheKeyFine(lat, lon));
+  if (isUsableAddress(fine)) return fine;
+
+  const baseLat = Number(Number(lat).toFixed(2));
+  const baseLon = Number(Number(lon).toFixed(2));
+  for (const span of [1, 2]) {
+    for (let i = -span; i <= span; i++) {
+      for (let j = -span; j <= span; j++) {
+        if (i === 0 && j === 0) continue;
+        const nearby = addressCache.get(`${(baseLat + i * 0.01).toFixed(2)},${(baseLon + j * 0.01).toFixed(2)}`);
+        if (isUsableAddress(nearby)) return nearby;
+      }
+    }
+  }
+
+  const fineLat = Number(Number(lat).toFixed(3));
+  const fineLon = Number(Number(lon).toFixed(3));
+  for (const dLat of [-0.001, 0, 0.001]) {
+    for (const dLon of [-0.001, 0, 0.001]) {
+      if (dLat === 0 && dLon === 0) continue;
+      const nearby = addressCache.get(`${(fineLat + dLat).toFixed(3)},${(fineLon + dLon).toFixed(3)}`);
+      if (isUsableAddress(nearby)) return nearby;
+    }
+  }
+  return null;
+}
+
+function queueGeocode(lat, lon, assetId) {
+  const key = addressCacheKey(lat, lon);
+  const existing = geocodeQueue.get(key);
+  if (existing) {
+    if (assetId) existing.assetIds.add(assetId);
+    return;
+  }
+  geocodeQueue.set(key, {
+    lat,
+    lon,
+    assetIds: new Set(assetId ? [assetId] : []),
+  });
+}
+
+function resolvePositionAddress(lat, lon, mixAddress, assetId) {
+  if (isUsableAddress(mixAddress)) {
+    if (lat != null && lon != null) {
+      addressCache.set(addressCacheKey(lat, lon), mixAddress);
+      rememberAssetAddress(assetId, mixAddress, lat, lon);
+    }
+    return mixAddress;
+  }
+
+  if (lat == null || lon == null) {
+    const stickyOnly = assetId ? assetAddressCache.get(assetId) : null;
+    return stickyOnly && isUsableAddress(stickyOnly.address)
+      ? stickyOnly.address
+      : 'Unknown location';
+  }
+
+  const cached = lookupCachedAddress(lat, lon);
+  if (cached) {
+    rememberAssetAddress(assetId, cached, lat, lon);
+    return cached;
+  }
+
+  const sticky = assetId ? assetAddressCache.get(assetId) : null;
+  if (sticky && isUsableAddress(sticky.address)) {
+    const moved = distanceMeters(sticky.lat, sticky.lon, lat, lon);
+    if (moved > STICKY_ADDRESS_METERS * 0.4) queueGeocode(lat, lon, assetId);
+    return sticky.address;
+  }
+
+  queueGeocode(lat, lon, assetId);
+  return 'Locating…';
+}
+
+function applyCachedAddresses(vehicles) {
+  let updated = 0;
+  const next = vehicles.map(v => {
+    if (!v.position) return v;
+    const { latitude: lat, longitude: lon, address } = v.position;
+    if (isUsableAddress(address)) {
+      rememberAssetAddress(v.id, address, lat, lon);
+      return v;
+    }
+    const resolved = resolvePositionAddress(lat, lon, null, v.id);
+    if (!isUsableAddress(resolved) || resolved === address) return v;
+    updated++;
+    return { ...v, position: { ...v.position, address: resolved } };
+  });
+  saveAddressCacheIfDirty();
+  return { vehicles: next, updated };
+}
+
+async function processGeocodeQueue(limit = GEOCODE_MAX_PER_POLL) {
+  if (geocodeInFlight || geocodeQueue.size === 0) return 0;
+  geocodeInFlight = true;
+  let filled = 0;
+  try {
+    const batch = [...geocodeQueue.entries()].slice(0, limit);
+    for (let i = 0; i < batch.length; i++) {
+      const [key, { lat, lon, assetIds }] = batch[i];
+      geocodeQueue.delete(key);
+      if (isUsableAddress(addressCache.get(key))) {
+        const existing = addressCache.get(key);
+        for (const id of assetIds || []) rememberAssetAddress(id, existing, lat, lon);
+        continue;
+      }
+      const address = await reverseGeocode(lat, lon);
+      if (isUsableAddress(address)) {
+        addressCache.set(key, address);
+        addressCache.set(addressCacheKeyFine(lat, lon), address);
+        for (const id of assetIds || []) rememberAssetAddress(id, address, lat, lon);
+        filled++;
+        console.log(`📍 Geocoded ${key} → ${address.slice(0, 80)}`);
+      }
+      if (i < batch.length - 1) await new Promise(r => setTimeout(r, GEOCODE_GAP_MS));
+    }
+    if (filled > 0) {
+      addressCacheDirty = true;
+      saveAddressCacheIfDirty();
+    }
+  } finally {
+    geocodeInFlight = false;
+  }
+  return filled;
+}
+
 async function enrichEntryWithAddress(_logPath, eventId, lat, lon) {
   try {
-    const address = await reverseGeocode(lat, lon);
-    if (address) updateEventAddress(eventId, address);
+    const key = addressCacheKey(lat, lon);
+    let address = addressCache.get(key);
+    if (!isUsableAddress(address)) {
+      address = await reverseGeocode(lat, lon);
+      if (isUsableAddress(address)) {
+        addressCache.set(key, address);
+        addressCache.set(addressCacheKeyFine(lat, lon), address);
+        addressCacheDirty = true;
+        saveAddressCacheIfDirty();
+      }
+    }
+    if (isUsableAddress(address)) updateEventAddress(eventId, address);
   } catch {
     // silent fail
   }
 }
+
+seedAssetAddressesFromFleet();
 
 function cleanStaleWarnings() {
   const cutoff = Date.now() - 60_000;
@@ -939,7 +1209,7 @@ function mergeData(positions) {
     return {
       id: assetId || 'unknown',
       regNo: vehicle.RegistrationNumber || 'N/A',
-      transporter: vehicle.SiteName || 'HBM',
+      transporter: siteInfo?.name || vehicle.SiteName || 'Unknown',
       site: siteInfo?.name || 'Unknown Site',
       zone: siteInfo?.zoneName || 'Unknown Zone',
       siteId: vehicle.SiteId?.toString() || null,
@@ -956,7 +1226,7 @@ function mergeData(positions) {
         longitude: pos.Longitude,
         speed: pos.SpeedKilometresPerHour,
         heading: pos.Heading,
-        address: pos.FormattedAddress || 'Unknown'
+        address: resolvePositionAddress(pos.Latitude, pos.Longitude, pos.FormattedAddress, assetId),
       } : null,
       activeEvents: vehicleEvents.length,
     };
@@ -1126,6 +1396,14 @@ function getDistanceRangeBounds(range = '24h', monthValue = null, fromIso = null
     start.setDate(start.getDate() - 29);
     return { start, end: now };
   }
+  if (r === 'prev30d' || r === 'prev30days') {
+    const end = new Date(now);
+    end.setHours(0, 0, 0, 0);
+    end.setDate(end.getDate() - 29);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 30);
+    return { start, end };
+  }
   if (range === 'currentMonth') {
     const m = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
     return getMonthBounds(m);
@@ -1141,10 +1419,91 @@ function getDistanceRangeBounds(range = '24h', monthValue = null, fromIso = null
   return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end: now };
 }
 
-export function getDriverDistanceSummary({ range = '24h', month = null, from = null, to = null } = {}) {
-  const { start, end } = getDistanceRangeBounds(range, month, from, to);
+export function getDriverDistanceSummary({ range = '24h', month = null, from = null, to = null, includeTrips = true } = {}) {
+  if (driverLookup.size === 0) loadDriverLookup();
+  if (vehicleLookup.size === 0) loadVehicleLookup();
 
-  const allTrips = getTripsInRange(start.toISOString(), end.toISOString())
+  const { start, end } = getDistanceRangeBounds(range, month, from, to);
+  const fromIso = start.toISOString();
+  const toIso = end.toISOString();
+
+  // Fast path: SQL rollups — no per-trip JS merge when summary-only.
+  if (!includeTrips) {
+    const assetRows = loadTripRollupsByAsset(fromIso, toIso);
+    const driverRows = loadTripRollupsByDriver(fromIso, toIso);
+    const lastDrivers = loadLastDriverIdByAsset(fromIso, toIso);
+    const lastDriverByAsset = new Map(
+      lastDrivers.map(r => [String(r.assetId), r.driverId != null ? String(r.driverId) : '']),
+    );
+    const tripCount = countTripsInRange(fromIso, toIso);
+
+    const assets = assetRows
+      .map(row => {
+        const assetId = row.assetId != null ? String(row.assetId) : null;
+        const vehicle = vehicleLookup.get(assetId);
+        const totalDistanceKm = Number(row.totalDistanceKm) || 0;
+        const totalDrivingTimeSeconds = Math.round((Number(row.totalDrivingHours) || 0) * 3600);
+        const rawTripCount = Number(row.tripCount) || 0;
+        const lastDriverId = assetId ? lastDriverByAsset.get(assetId) : '';
+        const lastDriver = lastDriverId ? driverLookup.get(lastDriverId) : null;
+        const driverName = lastDriver?.name && lastDriver.name !== 'N/A' ? lastDriver.name : null;
+        return {
+          assetId,
+          regNo: vehicle?.RegistrationNumber || 'N/A',
+          assetName: vehicle?.Description || 'N/A',
+          totalDistanceKm: Number(totalDistanceKm.toFixed(2)),
+          rawTripCount,
+          journeyCount: rawTripCount,
+          totalDrivingTimeSeconds,
+          avgSpeedKph: totalDrivingTimeSeconds > 0
+            ? Number((totalDistanceKm / (totalDrivingTimeSeconds / 3600)).toFixed(1))
+            : null,
+          longestJourneyKm: 0,
+          drivers: driverName ? [driverName] : [],
+        };
+      })
+      .filter(a => a.totalDistanceKm >= 0.5)
+      .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm);
+
+    const drivers = driverRows
+      .map(row => {
+        const driverId = row.driverId != null ? String(row.driverId) : null;
+        const driver = driverLookup.get(driverId);
+        const totalDrivingTimeSeconds = Math.round((Number(row.totalDrivingHours) || 0) * 3600);
+        const journeyCount = Number(row.tripCount) || 0;
+        return {
+          driverId,
+          driverName: driver?.name || 'N/A',
+          driverPhone: driver?.phone || 'N/A',
+          totalDistanceKm: Number((Number(row.totalDistanceKm) || 0).toFixed(2)),
+          journeyCount,
+          totalDrivingTimeSeconds,
+          vehicles: [],
+        };
+      })
+      .filter(d => d.totalDistanceKm > 0)
+      .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm);
+
+    const totalDistanceKm = Number(assets.reduce((s, a) => s + a.totalDistanceKm, 0).toFixed(2));
+
+    return {
+      generatedAt: new Date().toISOString(),
+      range,
+      month,
+      start: fromIso,
+      end: toIso,
+      totalDistanceKm,
+      rawTripCount: tripCount,
+      journeyCount: tripCount,
+      driverCount: drivers.length,
+      assetCount: assets.length,
+      cachedTripCount: countTrips(),
+      assets,
+      drivers,
+    };
+  }
+
+  const allTrips = getTripsInRange(fromIso, toIso)
     .map(normalizeTripForDistance)
     .filter(trip => {
       if (!(trip.distanceKm >= 0.5)) return false;
@@ -1646,6 +2005,148 @@ export function getHosRecords(dayStr) {
   };
 }
 
+const HOS_DRIVE_LIMIT_MIN = 240;
+const HOS_REST_GAP_MIN = 30;
+const HOS_SLICE_MIN = 10;
+
+let safetyExposureCache = new Map();
+const SAFETY_EXPOSURE_TTL_MS = 45_000;
+
+function readSafetyExposureCache(key) {
+  const hit = safetyExposureCache.get(key);
+  if (hit && Date.now() - hit.at < SAFETY_EXPOSURE_TTL_MS) return hit.value;
+  return null;
+}
+
+function writeSafetyExposureCache(key, value) {
+  safetyExposureCache.set(key, { at: Date.now(), value });
+  if (safetyExposureCache.size > 6) {
+    const first = safetyExposureCache.keys().next().value;
+    safetyExposureCache.delete(first);
+  }
+}
+
+/**
+ * Minutes a 4h-continuous HOS breach was actually held in [fromIso, toIso]:
+ * drive minutes past the 4h limit (a ≥30 min rest resets the block).
+ * Every 10 of these minutes becomes a score slice on the client.
+ */
+function parseAssetIdList(raw) {
+  if (raw == null || raw === '') return null;
+  const ids = [...new Set(
+    (Array.isArray(raw) ? raw : String(raw).split(','))
+      .map(id => String(id || '').trim())
+      .filter(Boolean),
+  )];
+  return ids;
+}
+
+function assetScopeCacheKey(ids) {
+  if (!ids) return '*';
+  const s = ids.slice().sort().join(',');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return `${ids.length}:${(h >>> 0).toString(16)}`;
+}
+
+export function getHosHeldMinutesInRange(fromIso, toIso, assetIds = null) {
+  const start = new Date(fromIso).getTime();
+  const end = new Date(toIso).getTime();
+  const empty = {
+    hosHeldMinutes: 0,
+    hosSlices: 0,
+    breakdown: { continuous4hMinutes: 0, weeklyRestMinutes: 0 },
+  };
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return empty;
+  const ids = parseAssetIdList(assetIds);
+  if (ids && ids.length === 0) return empty;
+
+  const byDriver = new Map();
+  for (const raw of getTripsInRange(new Date(start).toISOString(), new Date(end).toISOString(), ids)) {
+    pushNormalizedTrip(byDriver, raw, start, end);
+  }
+
+  const nowMs = Date.now();
+  const isLive = end >= nowMs - 120_000;
+  let continuous4hMinutes = 0;
+
+  for (const allTrips of byDriver.values()) {
+    allTrips.sort((a, b) => a.startMs - b.startMs);
+    const windowTrips = clipTripsToWindow(allTrips, start, end);
+    if (!windowTrips.length) continue;
+    const analysis = analyzeDriverTripBlocks(windowTrips, {
+      isToday: isLive,
+      nowMs: isLive ? nowMs : end,
+      driveLimitMin: HOS_DRIVE_LIMIT_MIN,
+      restGapMin: HOS_REST_GAP_MIN,
+    });
+    continuous4hMinutes += analysis.violationDriveMinutes || 0;
+  }
+
+  return {
+    hosHeldMinutes: continuous4hMinutes,
+    hosSlices: Math.floor(continuous4hMinutes / HOS_SLICE_MIN),
+    breakdown: { continuous4hMinutes, weeklyRestMinutes: 0 },
+  };
+}
+
+/** Distance + HOS held minutes for the fleet safety score (same window). */
+export function getFleetSafetyExposure({ range = '30d', from = null, to = null, assetIds = null } = {}) {
+  const ids = parseAssetIdList(assetIds);
+  const { start, end } = getDistanceRangeBounds(range, null, from, to);
+  const key = `${start.toISOString()}|${end.toISOString()}|${assetScopeCacheKey(ids)}`;
+  const cached = readSafetyExposureCache(key);
+  if (cached) return cached;
+
+  const dist = getDriverDistanceSummary({
+    range,
+    from: start.toISOString(),
+    to: end.toISOString(),
+    includeTrips: false,
+  });
+  let distanceKm = dist.totalDistanceKm;
+  if (ids) {
+    const set = new Set(ids);
+    distanceKm = dist.assets
+      .filter(a => a.assetId && set.has(String(a.assetId)))
+      .reduce((s, a) => s + (a.totalDistanceKm || 0), 0);
+  }
+  const hos = getHosHeldMinutesInRange(dist.start, dist.end, ids);
+  const value = {
+    generatedAt: new Date().toISOString(),
+    range,
+    start: dist.start,
+    end: dist.end,
+    distanceKm,
+    scopeAssetCount: ids ? ids.length : null,
+    ...hos,
+  };
+  writeSafetyExposureCache(key, value);
+  return value;
+}
+
+export function getSafetySummary({ range = '30d', from = null, to = null, assetIds = null } = {}) {
+  const ids = parseAssetIdList(assetIds);
+  const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
+  const agg = querySafetyEventAggregates({ from: exposure.start, to: exposure.end, assetIds: ids });
+  return { ...exposure, ...agg };
+}
+
+export function getRiskDrivers({ range = '30d', from = null, to = null } = {}) {
+  const exposure = getFleetSafetyExposure({ range, from, to });
+  const drivers = queryRiskAggregates({
+    from: exposure.start,
+    to: exposure.end,
+    groupBy: 'driver',
+  });
+  return {
+    range: exposure.range,
+    start: exposure.start,
+    end: exposure.end,
+    drivers,
+  };
+}
+
 export async function pollOnce() {
   if (inFlight) return inFlight;
 
@@ -1743,6 +2244,17 @@ export async function pollOnce() {
         ...stats
       };
       fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+
+      // Fill Unknown/coord locations from Nominatim (cached; rate-limited)
+      const geocoded = await processGeocodeQueue();
+      const applied = applyCachedAddresses(merged);
+      if (geocoded > 0 || applied.updated > 0) {
+        fs.writeFileSync(dataPath, JSON.stringify(applied.vehicles));
+        if (applied.updated > 0) {
+          console.log(`📍 Applied ${applied.updated} cached place name(s) to fleet positions`);
+        }
+      }
+      saveAddressCacheIfDirty();
 
       console.log(`📊 Panic: ${stats.panic} | Warnings: ${stats.warnings} | Moving: ${stats.moving} | Idle: ${stats.idle} | Excessive Idle: ${stats.excessiveIdle} | Stationary: ${stats.stationary} | Parked: ${stats.parked} | Inactive: ${stats.inactive} | Offline: ${stats.offline}`);
       console.log("💾 Saved to data.json");

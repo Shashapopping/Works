@@ -1,13 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Menu, Bell, Search, UserCircle, ShieldAlert } from 'lucide-react';
+import { Menu, Bell, Search, UserCircle, ShieldAlert, GraduationCap } from 'lucide-react';
 import Sidebar from './Sidebar';
 import SiteSelector from './SiteSelector';
 import PageTransition from './PageTransition';
 import SafetyToast from '../SafetyToast';
 import SafetyIncidentModal from '../SafetyIncidentModal';
 import { useFleet } from '../../context/FleetContext';
+import { useAuth } from '../../context/AuthContext';
 import type { SafetyNotification } from '../../hooks/useSafeIQ';
+import { useUserNotifications } from '../../hooks/useUserNotifications';
+import type { UserNotification } from '../../lib/coachingWarningsApi';
 import EnvironmentBadge from '../EnvironmentBadge';
 import { isKnownDriver, displayDriverName } from '../../lib/driverUtils';
 import { SAFEIQ_ENABLED } from '../../config/safeIq';
@@ -20,6 +23,8 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/trips/dispatch': { title: 'Journey Management', sub: '— dispatch & journey planning' },
     '/aria': { title: 'AI Insights', sub: '— SafeIQ analyses' },
     '/drivers': { title: 'Driver Management', sub: '— profiles and safety scores' },
+    '/drivers/coaching': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
+    '/drivers/training': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
     '/trends': { title: 'Trends', sub: '— visual event insights & history' },
     '/incidents/response': { title: 'Incident Intelligence', sub: '— response tracking' },
@@ -60,7 +65,22 @@ function timeAgo(ts: string) {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-function NotifPanel({ notifications, onOpen, onDismiss, onClearAll, onClose, onViewAll }: {
+function NotifPanel({
+  teamNotifications,
+  onTeamOpen,
+  onTeamDismiss,
+  onTeamClearAll,
+  notifications,
+  onOpen,
+  onDismiss,
+  onClearAll,
+  onClose,
+  onViewAll,
+}: {
+  teamNotifications: UserNotification[];
+  onTeamOpen: (n: UserNotification) => void;
+  onTeamDismiss: (id: string) => void;
+  onTeamClearAll: () => void;
   notifications: SafetyNotification[];
   onOpen: (n: SafetyNotification) => void;
   onDismiss: (id: string) => void;
@@ -69,6 +89,7 @@ function NotifPanel({ notifications, onOpen, onDismiss, onClearAll, onClose, onV
   onViewAll: () => void;
 }) {
   const visible = notifications.filter(n => isKnownDriver(n.driver.name));
+  const teamVisible = teamNotifications.filter(n => !n.readAt);
 
   return (
     <div style={{
@@ -79,37 +100,58 @@ function NotifPanel({ notifications, onOpen, onDismiss, onClearAll, onClose, onV
     }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>SafeIQ Notifications</span>
-          {visible.length > 0 && (
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>Notifications</span>
+          {(teamVisible.length + visible.length) > 0 && (
             <span style={{
               fontSize: 10, fontWeight: 700, background: 'rgba(255,255,255,0.1)',
               color: 'rgba(255,255,255,0.5)', borderRadius: 99, padding: '1px 6px',
-            }}>{visible.length}</span>
+            }}>{teamVisible.length + visible.length}</span>
           )}
         </div>
-        {visible.length > 0 && (
+        {(teamVisible.length + visible.length) > 0 && (
           <button
-            onClick={() => { onClearAll(); onClose(); }}
+            onClick={() => { onTeamClearAll(); onClearAll(); onClose(); }}
             style={{
               fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.4)',
               background: 'rgba(255,255,255,0.07)', border: '0.5px solid rgba(255,255,255,0.12)',
               borderRadius: 6, padding: '3px 10px', cursor: 'pointer',
-              transition: 'background 0.15s, color 0.15s',
             }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(204,0,0,0.2)'; (e.currentTarget as HTMLElement).style.color = '#ff6b6b'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.07)'; (e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.4)'; }}
           >
             Clear all
           </button>
         )}
       </div>
 
-      {visible.length === 0 ? (
+      {teamVisible.length === 0 && visible.length === 0 ? (
         <div style={{ padding: '32px 16px', textAlign: 'center', color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>
           No notifications yet
         </div>
       ) : (
         <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+          {teamVisible.map((n, i) => (
+            <div
+              key={n.id}
+              onClick={() => { onTeamOpen(n); onClose(); }}
+              style={{
+                padding: '12px 16px',
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+                cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'flex-start',
+              }}
+            >
+              <GraduationCap size={14} style={{ color: '#f59e0b', flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{n.title}</div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>{n.body}</div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 3 }}>{timeAgo(n.createdAt)}</div>
+              </div>
+              <button
+                onClick={e => { e.stopPropagation(); onTeamDismiss(n.id); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.25)', padding: 2, flexShrink: 0 }}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 1L11 11M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              </button>
+            </div>
+          ))}
           {visible.map((n, i) => {
             const severity = n.analysis?.severity ?? 'GREEN';
             const accent = severityColor(severity);
@@ -153,7 +195,7 @@ function NotifPanel({ notifications, onOpen, onDismiss, onClearAll, onClose, onV
         </div>
       )}
 
-      {visible.length > 0 && (
+      {SAFEIQ_ENABLED && visible.length > 0 && (
         <div style={{ padding: '10px 16px', borderTop: '1px solid rgba(255,255,255,0.08)', textAlign: 'center' }}>
           <button
             type="button"
@@ -178,11 +220,18 @@ export default function AppShell() {
   const notifRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const {
     notifications, dismissNotification, clearAllNotifications, selectedNotification,
     openNotification, closeNotification,
     isMobile, redAlertCount,
   } = useFleet();
+  const {
+    notifications: teamNotifications,
+    unreadCount: teamUnread,
+    dismiss: dismissTeamNotification,
+    clearAll: clearAllTeamNotifications,
+  } = useUserNotifications();
 
   // Close panel on outside click
   useEffect(() => {
@@ -196,6 +245,13 @@ export default function AppShell() {
 
   const { title, sub } = getPageTitle(location.pathname);
   const visibleNotifications = notifications.filter(n => isKnownDriver(n.driver.name));
+  const bellCount = teamUnread + (SAFEIQ_ENABLED ? visibleNotifications.length : 0);
+
+  const openTeamNotification = (n: UserNotification) => {
+    dismissTeamNotification(n.id);
+    if (n.link) navigate(n.link.replace(/^\/#\//, '/').replace(/^#/, ''));
+    else navigate('/drivers/coaching');
+  };
 
   return (
     <div className="bpl-app">
@@ -255,7 +311,7 @@ export default function AppShell() {
             >
               <Search size={14} />
             </button>
-            {SAFEIQ_ENABLED && (
+            {user && (
             <div style={{ position: 'relative' }} ref={notifRef}>
               <button
                 onClick={() => setNotifOpen(o => !o)}
@@ -270,7 +326,7 @@ export default function AppShell() {
                 title="Notifications"
               >
                 <Bell size={14} />
-                {visibleNotifications.length > 0 && (
+                {bellCount > 0 && (
                   <span style={{
                     position: 'absolute', top: 4, right: 4,
                     minWidth: 7, height: 7,
@@ -281,6 +337,10 @@ export default function AppShell() {
               </button>
               {notifOpen && (
                 <NotifPanel
+                  teamNotifications={teamNotifications}
+                  onTeamOpen={openTeamNotification}
+                  onTeamDismiss={dismissTeamNotification}
+                  onTeamClearAll={clearAllTeamNotifications}
                   notifications={notifications}
                   onOpen={openNotification}
                   onDismiss={dismissNotification}

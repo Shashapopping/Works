@@ -70,9 +70,9 @@ export default function Quarry() {
   );
   const fuelSummary = useMemo(() => aggregateMetrics(quarryFuelRows), [quarryFuelRows]);
   const fuelByZone = useMemo(() => {
-    const out: Record<QuarrySiteKey, { liters: number; distance: number; refuels: number }> = {
-      'QUARRY EWEKORO': { liters: 0, distance: 0, refuels: 0 },
-      'QUARRY MFAMOSING': { liters: 0, distance: 0, refuels: 0 },
+    const out: Record<QuarrySiteKey, { liters: number; distance: number; refuels: number; refillL: number }> = {
+      'QUARRY EWEKORO': { liters: 0, distance: 0, refuels: 0, refillL: 0 },
+      'QUARRY MFAMOSING': { liters: 0, distance: 0, refuels: 0, refillL: 0 },
     };
     for (const a of quarryFuelRows) {
       const z = (a.zone || '').toUpperCase() as QuarrySiteKey;
@@ -80,9 +80,18 @@ export default function Quarry() {
       out[z].liters += a.totalFuelLiters;
       out[z].distance += a.totalDistanceKm;
       out[z].refuels += a.refuelCount;
+      out[z].refillL += a.refuelLiters;
     }
     return out;
   }, [quarryFuelRows]);
+  const refueledAssets = useMemo(
+    () => quarryFuelRows
+      .filter(a => a.refuelCount > 0)
+      .sort((a, b) => b.refuelLiters - a.refuelLiters || b.refuelCount - a.refuelCount),
+    [quarryFuelRows],
+  );
+  const totalRefillL = refueledAssets.reduce((s, a) => s + a.refuelLiters, 0);
+  const fuelPeriodParam = period === 'week' ? 'week' : 'day';
 
   const probeLive = useMemo(() => {
     return fleet
@@ -213,7 +222,7 @@ export default function Quarry() {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 18px', marginTop: 14, fontSize: 12, color: 'var(--cd-text-muted)' }}>
                 <span><strong style={{ color: 'var(--cd-text)' }}>{list.length}</strong> assets</span>
                 <span><strong style={{ color: '#16a34a' }}>{siteMoving}</strong> hauling</span>
-                <span><strong style={{ color }}>{fuelLoading ? <SkelValue /> : Math.round(fuel.liters).toLocaleString()}</strong> L fuel</span>
+                <span><strong style={{ color }}>{fuelLoading ? <SkelValue /> : Math.round(fuel.liters).toLocaleString()}</strong> L used on trips</span>
                 <span><strong style={{ color: 'var(--cd-text)' }}>{probes}</strong> probes live</span>
               </div>
             </div>
@@ -286,7 +295,7 @@ export default function Quarry() {
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 3 }}>
-                Same probe estimate as Fuel Monitoring
+                Trip burn vs tank fills — Ewekoro & Mfamosing
               </div>
             </div>
             <Link
@@ -302,69 +311,159 @@ export default function Quarry() {
 
           <div style={{ padding: 18, flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)' }}>
-              Trip fuel (est.)
+              Fuel used on trips
             </div>
             <div style={{ fontSize: 32, fontWeight: 700, color: '#0d9488', fontFamily: 'var(--cd-font-display)', lineHeight: 1.1, marginTop: 4 }}>
               {fuelLoading && fuelSummary.fuel <= 0 ? <SkelValue wide /> : fmtL(fuelSummary.fuel)}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 6 }}>
+            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginTop: 6, lineHeight: 1.45 }}>
+              Estimated from probe level at trip start vs end — not tank fill, not live level.
               {fuelSummary.distance > 0
-                ? `${Math.round(fuelSummary.distance).toLocaleString()} km · ${fmtRatio(fuelSummary.litersPerKm)} L/km`
-                : `No trip-fuel rows ${periodLabel}`}
+                ? ` ${Math.round(fuelSummary.distance).toLocaleString()} km hauled · ${fmtRatio(fuelSummary.litersPerKm)} L/km.`
+                : ` No trip-fuel rows ${periodLabel}.`}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 16 }}>
-              {[
-                { label: 'L / hour', value: fmtRatio(fuelSummary.litersPerHour), icon: Activity, color: '#0891b2' },
-                { label: 'Refuels', value: String(fuelSummary.refuels), icon: Droplets, color: '#d97706' },
-                { label: 'Probes live', value: String(probeLive.length), icon: Gauge, color: '#0d9488' },
-              ].map(m => (
-                <div key={m.label} style={{
-                  padding: '10px 12px', borderRadius: 10,
-                  background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                    <m.icon size={12} color={m.color} />
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)' }}>{m.label}</span>
-                  </div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: m.color, fontFamily: 'var(--cd-font-display)' }}>{m.value}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginTop: 16 }}>
+              <div
+                style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)' }}
+                title="Total trip fuel ÷ driving hours across quarry assets this period."
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <Activity size={12} color="#0891b2" />
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)' }}>L / hour</span>
                 </div>
-              ))}
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: '#0891b2', fontFamily: 'var(--cd-font-display)' }}>
+                    {fmtRatio(fuelSummary.litersPerHour)}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--cd-text-muted)' }}>avg L/h</span>
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 3 }}>While driving</div>
+              </div>
+              <div
+                style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)' }}
+                title="Probe-confirmed tank fills this period."
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <Droplets size={12} color="#d97706" />
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)' }}>Refuels</span>
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#d97706', fontFamily: 'var(--cd-font-display)' }}>
+                  {fuelSummary.refuels}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 3 }}>
+                  {refueledAssets.length === 0
+                    ? 'No fills yet'
+                    : `${refueledAssets.length} asset${refueledAssets.length === 1 ? '' : 's'} · ${fmtL(totalRefillL)} in`}
+                </div>
+              </div>
+              <div
+                style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)' }}
+                title="Assets currently reporting a fuel-probe reading."
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <Gauge size={12} color="#0d9488" />
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--cd-text-muted)' }}>Probes live</span>
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#0d9488', fontFamily: 'var(--cd-font-display)' }}>
+                  {probeLive.length}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 3 }}>Tanks reporting now</div>
+              </div>
             </div>
 
             <div style={{ marginTop: 18 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)', marginBottom: 10 }}>
-                By quarry
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)' }}>
+                Fuel used by quarry
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', margin: '4px 0 10px', lineHeight: 1.4 }}>
+                Same figure as the {fmtL(fuelSummary.fuel)} total above, split by site. Bar length is relative share — not how full the tanks are.
               </div>
               {QUARRY_SITE_KEYS.map(zone => {
                 const row = fuelByZone[zone];
                 const color = fuelZoneColor(zone);
-                const pct = Math.round((row.liters / maxZoneFuel) * 100);
+                const sharePct = fuelSummary.fuel > 0 ? Math.round((row.liters / fuelSummary.fuel) * 100) : 0;
+                const barPct = Math.round((row.liters / maxZoneFuel) * 100);
                 return (
                   <div key={zone} style={{ marginBottom: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 5 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, fontSize: 12, marginBottom: 5 }}>
                       <span style={{ fontWeight: 600, color: 'var(--cd-text)' }}>{QUARRY_SITE_LABELS[zone]}</span>
-                      <span style={{ color: 'var(--cd-text-muted)' }}>
-                        {fuelLoading && row.liters <= 0 ? <SkelValue /> : `${Math.round(row.liters).toLocaleString()} L`}
+                      <span style={{ color: 'var(--cd-text-muted)', textAlign: 'right' }}>
+                        {fuelLoading && row.liters <= 0 ? <SkelValue /> : (
+                          <>
+                            <strong style={{ color: 'var(--cd-text)' }}>{Math.round(row.liters).toLocaleString()} L used</strong>
+                            {fuelSummary.fuel > 0 && (
+                              <span style={{ marginLeft: 6 }}>{sharePct}% of total</span>
+                            )}
+                          </>
+                        )}
                       </span>
                     </div>
                     <div style={{ height: 7, background: 'var(--cd-border)', borderRadius: 99, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 99 }} />
+                      <div style={{ height: '100%', width: `${barPct}%`, background: color, borderRadius: 99 }} />
                     </div>
+                    {(row.refuels > 0 || row.distance > 0) && (
+                      <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+                        {row.distance > 0 ? `${Math.round(row.distance).toLocaleString()} km` : 'No haul km'}
+                        {row.refuels > 0 ? ` · ${row.refuels} refill${row.refuels === 1 ? '' : 's'} (${fmtL(row.refillL)} put in)` : ''}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
 
+            <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid var(--cd-border)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)', marginBottom: 4 }}>
+                Refueled in quarry
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 8, lineHeight: 1.4 }}>
+                Assets with a probe-confirmed tank fill {periodLabel}. Litres are fuel put in, not fuel used.
+              </div>
+              {fuelLoading && refueledAssets.length === 0 ? (
+                <SkelTable rows={3} />
+              ) : refueledAssets.length === 0 ? (
+                <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>No quarry assets refueled in this period.</div>
+              ) : (
+                refueledAssets.map(a => (
+                  <Link
+                    key={a.assetId}
+                    to={`/fuel/consumption?period=${fuelPeriodParam}&asset=${encodeURIComponent(a.assetId)}&site=${encodeURIComponent(a.zone)}`}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8,
+                      fontSize: 12, marginBottom: 7, textDecoration: 'none', color: 'inherit',
+                    }}
+                    title="Open fuel consumption for this asset"
+                  >
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--cd-text)' }}>{a.regNo}</span>
+                      <span style={{ color: 'var(--cd-text-muted)', marginLeft: 6 }}>
+                        {QUARRY_SITE_LABELS[a.zone as QuarrySiteKey] || a.zone}
+                      </span>
+                    </span>
+                    <span style={{ color: '#d97706', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      +{Math.round(a.refuelLiters).toLocaleString()} L
+                      <span style={{ fontWeight: 500, color: 'var(--cd-text-muted)', marginLeft: 6 }}>
+                        {a.refuelCount} fill{a.refuelCount === 1 ? '' : 's'}
+                      </span>
+                    </span>
+                  </Link>
+                ))
+              )}
+            </div>
+
             {lowFuel.length > 0 && (
               <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid var(--cd-border)' }}>
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#CC0000', marginBottom: 8 }}>
-                  Low probe level
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#CC0000', marginBottom: 4 }}>
+                  Low fuel in tank now
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 8 }}>
+                  Live probe reading — not trip burn, not a refill.
                 </div>
                 {lowFuel.map(p => (
                   <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
                     <span style={{ fontWeight: 600, color: 'var(--cd-text)' }}>{p.regNo}</span>
-                    <span style={{ color: '#CC0000', fontWeight: 700 }}>{Math.round(p.level)} L</span>
+                    <span style={{ color: '#CC0000', fontWeight: 700 }}>{Math.round(p.level)} L in tank</span>
                   </div>
                 ))}
               </div>

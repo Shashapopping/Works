@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords } from './scripts/mix-test.js'
+import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers } from './scripts/mix-test.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
-import { getFuelHistory, getAllEvents } from './scripts/db.js'
+import { getFuelHistory } from './scripts/db.js'
+import { handleEventsLogQuery } from './scripts/events-log-api.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
 import { authViteMiddleware } from './scripts/auth-http.js'
 import { startReportAutomateScheduler } from './scripts/report-automate.js'
@@ -148,64 +149,17 @@ export default defineConfig({
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
-            const typesRaw = params.get('types')
-            const filters = {
-              from: params.get('from') || null,
-              to: params.get('to') || null,
-              types: typesRaw ? typesRaw.split(',').map(t => t.trim()).filter(Boolean) : null,
-              limit: params.get('limit') || 5000,
-            }
-
-            const vehicleLookup = new Map<string, any>()
-            try {
-              const dataPath = path.join(process.cwd(), 'public', 'data.json')
-              if (fs.existsSync(dataPath)) {
-                JSON.parse(fs.readFileSync(dataPath, 'utf8')).forEach((v: any) => {
-                  vehicleLookup.set(v.id?.toString(), {
-                    regNo: v.regNo || 'N/A',
-                    assetName: v.assetName || 'Unknown Vehicle',
-                    transporter: v.transporter || 'N/A',
-                    position: v.position,
-                  })
-                })
-              }
-            } catch { }
-
-            const entries = getAllEvents(filters).map((entry: any) => {
-              const vehicle = vehicleLookup.get(entry.asset_id?.toString()) || {}
-              const enriched = {
-                timestamp: entry.timestamp,
-                assetId: entry.asset_id,
-                driverId: entry.driver_id,
-                driverName: entry.driver_name,
-                driverPhone: entry.driver_phone,
-                eventId: entry.event_id,
-                eventType: entry.event_type,
-                label: entry.label,
-                eventTime: entry.event_time,
-                receivedAt: entry.received_at,
-                latitude: entry.latitude,
-                longitude: entry.longitude,
-                address: entry.address || vehicle.position?.address || null,
-                speed: entry.speed ?? null,
-                speedLimit: entry.speed_limit ?? null,
-                type: entry.type,
-                regNo: vehicle.regNo || 'N/A',
-                assetName: vehicle.assetName || 'Unknown Vehicle',
-                transporter: vehicle.transporter || 'N/A',
-              }
-              if ((enriched.latitude == null || enriched.longitude == null) && vehicle.position) {
-                enriched.latitude = vehicle.position.latitude
-                enriched.longitude = vehicle.position.longitude
-              }
-              if (!enriched.address && vehicle.position?.address) {
-                enriched.address = vehicle.position.address
-              }
-              return enriched
+            const body = handleEventsLogQuery({
+              from: params.get('from'),
+              to: params.get('to'),
+              types: params.get('types'),
+              limit: params.get('limit'),
+              offset: params.get('offset'),
+              format: params.get('format'),
+              driver: params.get('driver'),
             })
-
             res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify(entries))
+            res.end(JSON.stringify(body))
           } catch (err) {
             console.error('events/log failed:', (err as Error)?.message || err)
             res.statusCode = 500
@@ -243,10 +197,11 @@ export default defineConfig({
               cutoffStart = now - (cutoffs[period] || cutoffs.day)
             }
 
+            // All probe rows (5min / 1min / trip start-end). Restricting to 5min
+            // dropped assets that still have live fuel and a drawable series.
             const entries = getFuelHistory({
               fromIso: new Date(cutoffStart).toISOString(),
               toIso: new Date(cutoffEnd).toISOString(),
-              eventType: '5min_ticker',
             })
 
             const seriesMap = new Map<string, { time: string; level: number }[]>()
@@ -294,7 +249,9 @@ export default defineConfig({
             const from = params.get('from')
             const to = params.get('to')
             const site = params.get('site')
-            const data = computeConsumption({ period, from, to, siteFilter: site })
+            const tripsParam = params.get('trips')
+            const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
+            const data = computeConsumption({ period, from, to, siteFilter: site, includeTrips })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))
           } catch { res.statusCode = 500; res.end('Internal Server Error') }
@@ -370,11 +327,14 @@ export default defineConfig({
           const params = new URLSearchParams(qs)
           // Strip journeys arrays — kept in-memory for per-asset detail route
           if ((req.originalUrl || req.url || '').includes('/journeys/')) { res.statusCode = 404; res.end('Not Found'); return }
+          const tripsParam = params.get('trips')
+          const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
           const summary = getDriverDistanceSummary({
             range: params.get('range') || '24h',
             month: params.get('month') || null,
             from: params.get('from') || null,
             to: params.get('to') || null,
+            includeTrips,
           })
           const includeJourneys = params.get('includeJourneys') === '1' || params.get('includeJourneys') === 'true'
           const slim = includeJourneys
@@ -392,6 +352,57 @@ export default defineConfig({
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
             const data = getHosRecords(params.get('date') || undefined)
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(data))
+          } catch { res.statusCode = 500; res.end('Internal Server Error') }
+        })
+
+        // GET /api/safety-exposure?range=30d|prev30d — km + HOS held minutes
+        server.middlewares.use('/api/safety-exposure', async (req, res) => {
+          if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+          try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const data = getFleetSafetyExposure({
+              range: params.get('range') || '30d',
+              from: params.get('from') || null,
+              to: params.get('to') || null,
+              assetIds: params.get('assetIds') || null,
+            })
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(data))
+          } catch { res.statusCode = 500; res.end('Internal Server Error') }
+        })
+
+        server.middlewares.use('/api/safety/summary', async (req, res) => {
+          if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+          try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const data = getSafetySummary({
+              range: params.get('range') || '30d',
+              from: params.get('from') || null,
+              to: params.get('to') || null,
+              assetIds: params.get('assetIds') || null,
+            })
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(data))
+          } catch { res.statusCode = 500; res.end('Internal Server Error') }
+        })
+
+        server.middlewares.use('/api/risk/drivers', async (req, res) => {
+          if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+          try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const data = getRiskDrivers({
+              range: params.get('range') || '30d',
+              from: params.get('from') || null,
+              to: params.get('to') || null,
+            })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))
           } catch { res.statusCode = 500; res.end('Internal Server Error') }

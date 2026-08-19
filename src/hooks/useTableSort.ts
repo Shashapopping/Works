@@ -7,14 +7,25 @@ export interface SortState<K extends string = string> {
   dir: SortDir;
 }
 
+export type TableSortOptions<K extends string> = {
+  initial?: SortState<K>;
+  /** Flip asc/desc on the active column instead of clearing (Windows-style). */
+  persist?: boolean;
+  defaultDirForKey?: (key: K) => SortDir;
+};
+
 /**
  * Click cycle: none → asc → desc → none (back to original order).
+ * With persist: click a new column to sort it, click again to reverse.
  */
 export function useTableSort<T, K extends string>(
   rows: T[],
   getValue: (row: T, key: K) => string | number | null | undefined,
+  options?: TableSortOptions<K>,
 ) {
-  const [sort, setSort] = useState<SortState<K>>({ key: null, dir: 'asc' });
+  const [sort, setSort] = useState<SortState<K>>(
+    () => options?.initial ?? { key: null, dir: 'asc' },
+  );
 
   const sorted = useMemo(() => {
     if (!sort.key) return rows;
@@ -38,7 +49,8 @@ export function useTableSort<T, K extends string>(
 
   const toggle = (key: K) => {
     setSort(prev => {
-      if (prev.key !== key) return { key, dir: 'asc' };
+      if (prev.key !== key) return { key, dir: options?.defaultDirForKey?.(key) ?? 'asc' };
+      if (options?.persist) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
       if (prev.dir === 'asc') return { key, dir: 'desc' };
       return { key: null, dir: 'asc' };
     });

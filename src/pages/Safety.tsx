@@ -1,41 +1,38 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, Minus,
   ShieldCheck, ShieldAlert, Shield, ArrowRight,
-  Users, Activity, Zap, Target,
+  Activity, Zap, Target,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   RadarChart, PolarGrid, PolarAngleAxis, Radar,
 } from 'recharts';
-import { useFleet } from '../context/FleetContext';
-import type { LogEntry } from '../context/FleetContext';
+import { useFleet, authFetch } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { clientName } from '../lib/branding';
 import MockNamesBadge from '../components/MockNamesBadge';
 import ConsequenceExplainerModal from '../components/ConsequenceExplainerModal';
 import {
-  scoreFromEvents,
   scoreBandColor,
   scoreBandLabel,
-  eventWeight,
-  ratePer100Vehicles,
+  ratePer100Km,
+  totalSafetyPointsFromCensus,
+  hosSlicesFromMinutes,
+  SCORE_DROP_PER_HARM_UNIT,
   type FleetScoreConfig,
 } from '../lib/fleetSafetyScore';
 import { SkelValue } from '../components/data/DataBusy';
-
-const HIDDEN = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
-
-const isSafetyEvent = (e: LogEntry) => e.type !== 'panic' && !HIDDEN.includes(e.label || '');
 
 const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, config);
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
-function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config, busy }: {
+function ScoreGauge({ score, delta, totalIncidents, weightedRate, hosSlices, onOpenExplainer, config, busy }: {
   score: number; delta: number; totalIncidents: number;
   weightedRate: number;
+  hosSlices: number;
   onOpenExplainer: () => void;
   config: FleetScoreConfig;
   busy?: boolean;
@@ -43,12 +40,12 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
   const color = scoreColor(score, config);
   const label = scoreLabel(score, config);
   const sublabel = score >= config.bandGood
-    ? 'At or near leading fleets on weighted incidents per 100 vehicles'
+    ? 'Close to zero harm per 100 km'
     : score >= config.bandAttention
-    ? 'Above leading-fleet rate — coaching recommended'
+    ? 'Elevated harm per 100 km — coaching recommended'
     : score >= config.bandBelow
-    ? 'Well above leading fleets — priority driver review'
-    : 'Far from leading standard — immediate intervention advised';
+    ? 'High harm per 100 km — priority driver and HOS review'
+    : 'Far from zero harm per 100 km — immediate intervention advised';
 
   const circumference = 2 * Math.PI * 48;
 
@@ -57,7 +54,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
       type="button"
       className="bpl-card"
       onClick={onOpenExplainer}
-      title="How scoring works — Fleet vs Driver Consequence"
+      title="How scoring works — two scores, two jobs"
       style={{
         padding: '24px', display: 'flex', flexDirection: 'column', gap: 20,
         cursor: 'pointer', textAlign: 'left', width: '100%',
@@ -116,8 +113,9 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
             {[
               { value: totalIncidents, label: 'incidents / 30d' },
-              { value: weightedRate.toFixed(1), label: 'weighted /100 veh' },
-              { value: `≤${config.leadingRatePer100}`, label: 'leading aim' },
+              { value: weightedRate.toFixed(2), label: 'pts / 100 km' },
+              { value: hosSlices, label: 'HOS slices' },
+              { value: SCORE_DROP_PER_HARM_UNIT, label: 'pts lost / unit' },
             ].map(m => (
               <div key={m.label}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
@@ -136,25 +134,26 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
           Fleet score weights
         </div>
         <div style={{
-          display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8,
+          display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8,
         }}>
           {[
             { label: 'Harsh Braking', weight: config.weights.harshBraking, color: '#e05c2a' },
             { label: 'Overspeeding', weight: config.weights.overspeeding, color: '#d97706' },
             { label: 'Harsh Accel.', weight: config.weights.harshAcceleration, color: '#f59e0b' },
             { label: 'Cornering', weight: config.weights.harshCornering, color: '#8b5cf6' },
+            { label: `HOS / ${config.hosSliceMinutes}m`, weight: config.hosPointsPer10Min, color: '#0d9488' },
           ].map(w => (
             <div key={w.label} style={{
               background: `${w.color}12`, border: `1px solid ${w.color}30`,
               borderRadius: 6, padding: '6px 8px', textAlign: 'center',
             }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: w.color, fontFamily: 'var(--cd-font-display)' }}>−{w.weight}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: w.color, fontFamily: 'var(--cd-font-display)' }}>+{w.weight}</div>
               <div style={{ fontSize: 9, color: 'var(--cd-text-muted)', marginTop: 2, lineHeight: 1.3 }}>{w.label}</div>
             </div>
           ))}
         </div>
         <div style={{ fontSize: 10, color: '#0078D4', marginTop: 10, fontWeight: 600 }}>
-          Click to see Fleet vs Driver Consequence scoring
+          Click for a 10-second explainer
         </div>
       </div>
     </button>
@@ -162,23 +161,22 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
 }
 
 // ─── IncidentBreakdown (bar chart) ───────────────────────────────────────────
-function IncidentBreakdown({ events }: { events: LogEntry[] }) {
+function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
   const { scoreConfig } = useFleet();
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo && isSafetyEvent(e));
   const w = scoreConfig.weights;
+  const counts = byLabel || {};
 
   const data = [
-    { name: 'Harsh Braking', count: recent.filter(e => e.label === 'Harsh Braking').length, color: '#e05c2a', weight: w.harshBraking },
-    { name: 'Overspeeding', count: recent.filter(e => e.label === 'Overspeeding').length, color: '#d97706', weight: w.overspeeding },
+    { name: 'Harsh Braking', count: counts['Harsh Braking'] || 0, color: '#e05c2a', weight: w.harshBraking },
+    { name: 'Overspeeding', count: counts['Overspeeding'] || 0, color: '#d97706', weight: w.overspeeding },
     {
       name: 'Tiered / Road Spd',
-      count: recent.filter(e => e.label === 'Overspeed Tiered' || e.label === 'Road Speed Overspeeding').length,
+      count: (counts['Overspeed Tiered'] || 0) + (counts['Road Speed Overspeeding'] || 0),
       color: '#a855f7',
       weight: w.overspeeding,
     },
-    { name: 'Harsh Accel.', count: recent.filter(e => e.label === 'Harsh Acceleration').length, color: '#f59e0b', weight: w.harshAcceleration },
-    { name: 'Cornering', count: recent.filter(e => e.label === 'Harsh Cornering').length, color: '#8b5cf6', weight: w.harshCornering },
+    { name: 'Harsh Accel.', count: counts['Harsh Acceleration'] || 0, color: '#f59e0b', weight: w.harshAcceleration },
+    { name: 'Cornering', count: counts['Harsh Cornering'] || 0, color: '#8b5cf6', weight: w.harshCornering },
   ].sort((a, b) => b.count - a.count);
 
   const totalDeduction = data.reduce((acc, d) => acc + d.count * d.weight, 0);
@@ -210,36 +208,54 @@ function IncidentBreakdown({ events }: { events: LogEntry[] }) {
 }
 
 // ─── WorstPerformers ─────────────────────────────────────────────────────────
-function WorstPerformers({ events, vehicleCount }: { events: LogEntry[]; vehicleCount: number }) {
+function WorstPerformers() {
   const { scoreConfig } = useFleet();
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const [rows, setRows] = useState<{
+    name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string;
+  }[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const driverMap = useMemo(() => {
-    const map: Record<string, {
-      name: string; incidents: number; riskScore: number;
-      types: Record<string, number>; lastEvent: string;
-    }> = {};
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await authFetch('/api/risk/drivers?range=30d');
+        if (!res.ok) { if (!cancelled) setLoading(false); return; }
+        const data = await res.json();
+        const drivers = (data.drivers || [])
+          .filter((d: { driverName?: string }) => isKnownDriver(d.driverName))
+          .map((d: {
+            driverName: string;
+            total: number;
+            harshBraking: number;
+            harshAcceleration: number;
+            overspeeding: number;
+            overspeedTiered: number;
+            harshCornering: number;
+          }) => {
+            const types: Record<string, number> = {};
+            if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
+            if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
+            if (d.overspeeding) types.Overspeeding = d.overspeeding;
+            if (d.overspeedTiered) types['Overspeed Tiered'] = d.overspeedTiered;
+            if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
+            const riskScore =
+              d.harshBraking * scoreConfig.weights.harshBraking
+              + d.harshAcceleration * scoreConfig.weights.harshAcceleration
+              + (d.overspeeding + d.overspeedTiered) * scoreConfig.weights.overspeeding
+              + d.harshCornering * scoreConfig.weights.harshCornering;
+            return { name: d.driverName, incidents: d.total, riskScore, types, lastEvent: '' };
+          })
+          .sort((a: { riskScore: number }, b: { riskScore: number }) => b.riskScore - a.riskScore)
+          .slice(0, 10);
+        if (!cancelled) { setRows(drivers); setLoading(false); }
+      } catch { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [scoreConfig]);
 
-    events.forEach(e => {
-      const name = e.driverName;
-      if (!isKnownDriver(name)) return;
-      if (!isSafetyEvent(e)) return;
-      const ts = new Date(e.eventTime || e.timestamp).getTime();
-      if (ts < thirtyDaysAgo) return;
-
-      if (!map[name]) map[name] = { name, incidents: 0, riskScore: 0, types: {}, lastEvent: '' };
-      map[name].incidents++;
-      map[name].riskScore += eventWeight(e.label, scoreConfig);
-      const lbl = e.label || 'Unknown';
-      map[name].types[lbl] = (map[name].types[lbl] || 0) + 1;
-      const t = e.eventTime || e.timestamp;
-      if (!map[name].lastEvent || t > map[name].lastEvent) map[name].lastEvent = t;
-    });
-
-    return Object.values(map)
-      .sort((a, b) => b.riskScore - a.riskScore)
-      .slice(0, 10);
-  }, [events, scoreConfig]);
+  const driverMap = rows;
 
   const maxRisk = Math.max(...driverMap.map(d => d.riskScore), 1);
 
@@ -258,7 +274,40 @@ function WorstPerformers({ events, vehicleCount }: { events: LogEntry[]; vehicle
         <span style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Ranked by weighted risk · last 30 days</span>
       </div>
 
-      {driverMap.length === 0 ? (
+      {loading ? (
+        <div style={{ padding: '32px 20px' }}>
+          {/* Skeleton header row */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '28px 1fr 100px 80px 120px 110px',
+            padding: '7px 0', marginBottom: 8,
+            borderBottom: '1px solid var(--cd-border)',
+          }}>
+            {['#', 'Driver', 'Risk Score', 'Incidents', 'Top Offence', 'Last Event'].map(h => (
+              <span key={h} style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--cd-text-muted)' }}>{h}</span>
+            ))}
+          </div>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} style={{
+              display: 'grid', gridTemplateColumns: '28px 1fr 100px 80px 120px 110px',
+              padding: '13px 0', borderBottom: i < 4 ? '1px solid var(--cd-border)' : 'none',
+              alignItems: 'center', gap: 0,
+            }}>
+              <div style={{ width: 14, height: 10, background: 'var(--cd-border)', borderRadius: 3, opacity: 0.5 }} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ width: `${55 + (i % 3) * 15}%`, height: 11, background: 'var(--cd-border)', borderRadius: 3 }} />
+                <div style={{ width: '70%', height: 8, background: 'var(--cd-border)', borderRadius: 3, opacity: 0.4 }} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ height: 4, background: 'var(--cd-border)', borderRadius: 99, width: '80%' }} />
+                <div style={{ width: 28, height: 8, background: 'var(--cd-border)', borderRadius: 3, opacity: 0.4 }} />
+              </div>
+              <div style={{ width: 24, height: 13, background: 'var(--cd-border)', borderRadius: 3 }} />
+              <div style={{ width: '70%', height: 20, background: 'var(--cd-border)', borderRadius: 4, opacity: 0.5 }} />
+              <div style={{ width: '75%', height: 10, background: 'var(--cd-border)', borderRadius: 3, opacity: 0.4 }} />
+            </div>
+          ))}
+        </div>
+      ) : driverMap.length === 0 ? (
         <div style={{ padding: '32px', textAlign: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
           No driver incident data for this period
         </div>
@@ -343,20 +392,20 @@ function WorstPerformers({ events, vehicleCount }: { events: LogEntry[]; vehicle
 }
 
 // ─── RadarCard ───────────────────────────────────────────────────────────────
-function SafetyRadar({ events }: { events: LogEntry[] }) {
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo && isSafetyEvent(e));
-  const total = Math.max(recent.length, 1);
-
-  const isTieredSpeed = (label?: string | null) =>
-    label === 'Overspeed Tiered' || label === 'Road Speed Overspeeding';
+function SafetyRadar({ byLabel }: { byLabel?: Record<string, number> }) {
+  const braking = byLabel?.['Harsh Braking'] ?? 0;
+  const speed = byLabel?.['Overspeeding'] ?? 0;
+  const tiered = (byLabel?.['Overspeed Tiered'] ?? 0) + (byLabel?.['Road Speed Overspeeding'] ?? 0);
+  const accel = byLabel?.['Harsh Acceleration'] ?? 0;
+  const corner = byLabel?.['Harsh Cornering'] ?? 0;
+  const total = Math.max(braking + speed + tiered + accel + corner, 1);
 
   const data = [
-    { subject: 'Braking', value: Math.round((recent.filter(e => e.label === 'Harsh Braking').length / total) * 100) },
-    { subject: 'Speed', value: Math.round((recent.filter(e => e.label === 'Overspeeding').length / total) * 100) },
-    { subject: 'Tiered Spd', value: Math.round((recent.filter(e => isTieredSpeed(e.label)).length / total) * 100) },
-    { subject: 'Accel.', value: Math.round((recent.filter(e => e.label === 'Harsh Acceleration').length / total) * 100) },
-    { subject: 'Cornering', value: Math.round((recent.filter(e => e.label === 'Harsh Cornering').length / total) * 100) },
+    { subject: 'Braking', value: Math.round((braking / total) * 100) },
+    { subject: 'Speed', value: Math.round((speed / total) * 100) },
+    { subject: 'Tiered Spd', value: Math.round((tiered / total) * 100) },
+    { subject: 'Accel.', value: Math.round((accel / total) * 100) },
+    { subject: 'Cornering', value: Math.round((corner / total) * 100) },
   ];
 
   return (
@@ -379,12 +428,11 @@ function SafetyRadar({ events }: { events: LogEntry[] }) {
 }
 
 // ─── Priority Actions ────────────────────────────────────────────────────────
-function PriorityActions({ events, score, vehicleCount }: { events: LogEntry[]; score: number; vehicleCount: number }) {
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const recent = events.filter(e =>
-    new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo && isSafetyEvent(e)
-  );
-
+function PriorityActions({ byLabel, score, vehicleCount }: {
+  byLabel?: Record<string, number>;
+  score: number;
+  vehicleCount: number;
+}) {
   const actions = useMemo(() => {
     const list: {
       priority: 'critical' | 'high' | 'medium';
@@ -394,63 +442,36 @@ function PriorityActions({ events, score, vehicleCount }: { events: LogEntry[]; 
       to?: string;
     }[] = [];
 
-    const brakingCount = recent.filter(e => e.label === 'Harsh Braking').length;
+    const brakingCount = byLabel?.['Harsh Braking'] ?? 0;
     if (brakingCount > 10) {
-      const topBraker = Object.entries(
-        recent.filter(e => e.label === 'Harsh Braking').reduce((acc, e) => {
-          if (!isKnownDriver(e.driverName)) return acc;
-          const n = e.driverName!;
-          acc[n] = (acc[n] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>)
-      ).sort(([, a], [, b]) => b - a)[0];
       list.push({
         priority: 'high',
-        title: `${brakingCount} harsh braking events — highest-weight offence`,
-        detail: topBraker ? `Worst offender: ${topBraker[0]} (${topBraker[1]} events). Schedule following-distance and anticipation coaching.` : 'Schedule fleet-wide defensive driving refresher.',
+        title: `${brakingCount.toLocaleString()} harsh braking events — highest-weight offence`,
+        detail: 'Schedule following-distance and anticipation coaching. See worst performers for named drivers.',
         icon: ShieldAlert,
         to: '/incidents',
       });
     }
 
-    const speedCount = recent.filter(e => e.label === 'Overspeeding' || e.label === 'Overspeed Tiered').length;
+    const speedCount = (byLabel?.['Overspeeding'] ?? 0) + (byLabel?.['Overspeed Tiered'] ?? 0) + (byLabel?.['Road Speed Overspeeding'] ?? 0);
     if (speedCount > 5) {
       list.push({
         priority: 'high',
-        title: `${speedCount} speeding events recorded`,
+        title: `${speedCount.toLocaleString()} speeding events recorded`,
         detail: 'Review vehicle speed limiter configuration and enforce zero-tolerance speed policy per FRSC guidelines.',
         icon: Zap,
         to: '/incidents?filter=Overspeeding',
       });
     }
 
-    const accelCount = recent.filter(e => e.label === 'Harsh Acceleration').length;
+    const accelCount = byLabel?.['Harsh Acceleration'] ?? 0;
     if (accelCount > 8) {
       list.push({
         priority: 'medium',
-        title: `${accelCount} harsh acceleration events`,
+        title: `${accelCount.toLocaleString()} harsh acceleration events`,
         detail: 'Often indicates schedule pressure. Review route timing and delivery windows to reduce driver urgency.',
         icon: Activity,
         to: '/incidents?filter=Harsh+Acceleration',
-      });
-    }
-
-    const repeatDrivers = Object.entries(
-      recent.reduce((acc, e) => {
-        const n = e.driverName;
-        if (!isKnownDriver(n)) return acc;
-        acc[n] = (acc[n] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>)
-    ).filter(([, c]) => c >= 5);
-
-    if (repeatDrivers.length > 0) {
-      list.push({
-        priority: 'medium',
-        title: `${repeatDrivers.length} repeat offenders (5+ incidents each)`,
-        detail: `${repeatDrivers.slice(0, 3).map(([n, c]) => `${n} (${c})`).join(', ')} — enrol in targeted behaviour coaching programme.`,
-        icon: Users,
-        to: '/incidents/response',
       });
     }
 
@@ -464,7 +485,7 @@ function PriorityActions({ events, score, vehicleCount }: { events: LogEntry[]; 
     }
 
     return list.slice(0, 6);
-  }, [recent, score, vehicleCount]);
+  }, [byLabel, score, vehicleCount]);
 
   const priorityStyle = (p: string) => {
     if (p === 'high') return { bg: 'rgba(224,92,42,0.06)', border: 'rgba(224,92,42,0.25)', dot: '#e05c2a', label: 'High' };
@@ -534,18 +555,14 @@ function PriorityActions({ events, score, vehicleCount }: { events: LogEntry[]; 
 }
 
 // ─── KPI strip ───────────────────────────────────────────────────────────────
-function KpiStrip({ events, vehicleCount, busy }: { events: LogEntry[]; vehicleCount: number; busy?: boolean }) {
-  const now = Date.now();
-  const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
-  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
-
-  const recent30 = events.filter(e => isSafetyEvent(e) && new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-  const recent7 = events.filter(e => isSafetyEvent(e) && new Date(e.eventTime || e.timestamp).getTime() >= sevenDaysAgo);
-  const affectedVehicles = new Set(recent30.map(e => e.assetId)).size;
+function KpiStrip({ vehicleCount, busy }: { vehicleCount: number; busy?: boolean }) {
+  const { safetyExposure } = useFleet();
+  const incidents = safetyExposure?.incidentTotal ?? 0;
+  const affectedVehicles = safetyExposure?.assetCount ?? 0;
   const cleanVehicles = vehicleCount - affectedVehicles;
 
   const kpis = [
-    { label: 'Incidents (30d)', value: recent30.length, sub: `${recent7.length} this week`, color: '#0078D4', icon: Activity },
+    { label: 'Incidents (30d)', value: incidents, sub: 'Full census', color: '#0078D4', icon: Activity },
     { label: 'Vehicles with Incidents', value: affectedVehicles, sub: `${vehicleCount > 0 ? Math.round((affectedVehicles / vehicleCount) * 100) : 0}% of fleet`, color: '#e05c2a', icon: Shield },
     { label: 'Clean Vehicles', value: cleanVehicles >= 0 ? cleanVehicles : '—', sub: 'Zero incidents (30d)', color: '#16a34a', icon: ShieldCheck },
   ];
@@ -573,61 +590,61 @@ function KpiStrip({ events, vehicleCount, busy }: { events: LogEntry[]; vehicleC
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 export default function Safety() {
-  const { events, vehicles, scoreConfig, eventsLoading } = useFleet();
+  const { vehicles, scoreConfig, eventsLoading, safetyScore, safetyDelta, safetyExposure, safetyExposureLoading } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
 
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-  const recentIncidents = events.filter(e => isSafetyEvent(e) && new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-  const previousIncidents = events.filter(e => {
-    const t = new Date(e.eventTime || e.timestamp).getTime();
-    return isSafetyEvent(e) && t >= sixtyDaysAgo && t < thirtyDaysAgo;
-  });
-  const fleetSafetyScore = scoreFromEvents(recentIncidents, vehicles.length, scoreConfig);
-  const fleetScoreDelta = fleetSafetyScore - scoreFromEvents(previousIncidents, vehicles.length, scoreConfig);
-  const totalIncidents = recentIncidents.length;
-  const weightedRate = ratePer100Vehicles(recentIncidents, vehicles.length, scoreConfig);
+  const totalIncidents = safetyExposure?.incidentTotal ?? 0;
+  const distanceKm = safetyExposure?.distanceKm ?? 0;
+  const hosHeldMinutes = safetyExposure?.hosHeldMinutes ?? 0;
+  const hosSlices = hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
+  const points = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
+  const weightedRate = ratePer100Km(points.total, distanceKm);
+  const busy = eventsLoading || safetyExposureLoading;
 
   return (
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Safety <MockNamesBadge /></h1>
-        <p className="bpl-page-subtitle">Fleet score vs leading fleets + driver consequence tiers · {clientName()}</p>
+        <p className="bpl-page-subtitle">Fleet health from harm per 100 km · driver discipline is a separate score · {clientName()}</p>
       </div>
 
       {/* KPI strip */}
-      <KpiStrip events={events} vehicleCount={vehicles.length} busy={eventsLoading} />
+      <KpiStrip vehicleCount={vehicles.length} busy={busy} />
 
       {/* Score + Breakdown + Radar */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 260px', gap: 14, marginBottom: 20 }}>
         <ScoreGauge
-          score={fleetSafetyScore}
-          delta={fleetScoreDelta}
+          score={safetyScore}
+          delta={safetyDelta}
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
+          hosSlices={hosSlices}
           config={scoreConfig}
-          busy={eventsLoading}
+          busy={busy}
           onOpenExplainer={() => setExplainerOpen(true)}
         />
-        <IncidentBreakdown events={events} />
-        <SafetyRadar events={events} />
+        <IncidentBreakdown byLabel={safetyExposure?.byLabel} />
+        <SafetyRadar byLabel={safetyExposure?.byLabel} />
       </div>
 
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
-        <WorstPerformers events={events} vehicleCount={vehicles.length} />
+        <WorstPerformers />
       </div>
 
       {/* Priority actions */}
-      <PriorityActions events={events} score={fleetSafetyScore} vehicleCount={vehicles.length} />
+      <PriorityActions byLabel={safetyExposure?.byLabel} score={safetyScore} vehicleCount={vehicles.length} />
 
       {explainerOpen && (
         <ConsequenceExplainerModal
-          fleetScore={fleetSafetyScore}
-          fleetDelta={fleetScoreDelta}
+          fleetScore={safetyScore}
+          fleetDelta={safetyDelta}
           totalIncidents={totalIncidents}
           vehicleCount={vehicles.length}
           actualWeightedRate={weightedRate}
+          distanceKm={distanceKm}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

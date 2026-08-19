@@ -38,7 +38,7 @@ async function fetchDistanceSummary(fromIso: string | null, toIso: string | null
     params.set('range', '24h');
   }
   if (includeJourneys) params.set('includeJourneys', '1');
-  const res = await authFetch(`/api/driver-distance?${params}`);
+  const res = await authFetch(`/api/driver-distance?${params}&trips=0`);
   if (!res.ok) return { drivers: [] as DistanceDriverRow[], assets: [] as any[] };
   return res.json();
 }

@@ -114,6 +114,31 @@ export const CATEGORY_COLORS: Record<ConsequenceCategory, string> = {
   Red: '#CC0000',
 };
 
+/** Plain-language band labels — avoid colour names in the UI. */
+export const CATEGORY_PLAIN_LABEL: Record<ConsequenceCategory, string> = {
+  Green: 'On track',
+  Amber: 'Needs coaching',
+  Yellow: 'Suspension review',
+  Red: 'Critical',
+};
+
+export function categoryPlainLabel(category: ConsequenceCategory): string {
+  return CATEGORY_PLAIN_LABEL[category] ?? category;
+}
+
+export function categoryPlainDescription(category: ConsequenceCategory): string {
+  switch (category) {
+    case 'Green':
+      return 'Safe driving rate for distance covered — eligible for rewards.';
+    case 'Amber':
+      return 'First formal step: written warning. Repeat in this band → mandatory retraining.';
+    case 'Yellow':
+      return 'Escalated risk — suspension review (3 days, then 1 week if repeated).';
+    case 'Red':
+      return 'Severe rate — two-week suspension, then termination if repeated.';
+  }
+}
+
 export function isScoredViolationLabel(label?: string | null): boolean {
   return !!label && SCORED_LABELS.has(label);
 }
@@ -148,7 +173,9 @@ export function countPenaltyEvents(
 }
 
 export function normalizeDriverScore(penaltyPoints: number, distanceKm: number): number {
-  const blocks = Math.max(distanceKm / 100, 0.01);
+  // Spec: penalty ÷ (km / 100). Never use less than one 100 km block —
+  // a 0.01-block floor turned one event (−2) into −200 (display score 0).
+  const blocks = Math.max(distanceKm / 100, 1);
   return penaltyPoints / blocks;
 }
 
@@ -228,7 +255,7 @@ export function buildDriverConsequenceCard(input: {
     driverScore: Number(driverScore.toFixed(2)),
     category,
     displayScore,
-    categoryLabel: category.toUpperCase(),
+    categoryLabel: categoryPlainLabel(category),
     categoryColor: CATEGORY_COLORS[category],
     recommendedConsequence: recommendedConsequence(category, occurrenceIndex),
     occurrenceIndex,

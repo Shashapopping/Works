@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import PeriodSelect, { type PeriodValue } from './PeriodSelect';
@@ -7,14 +7,17 @@ import {
   QUARRY_SITE_KEYS,
   QUARRY_SITE_LABELS,
   fuelZoneColor,
+  findFuelSeries,
   type FuelSeries,
   type QuarrySiteKey,
 } from '../FuelChart';
-import type { RefuelRow } from '../../lib/fuelConsumption';
 import {
-  fetchFuelConsumptionCached,
+  analyzeFuelSignal,
+  buildStableFuelSeries,
+  periodBucketMinutes,
+} from '../../lib/fuelSignal';
+import {
   fetchFuelHistoryCached,
-  peekFuelConsumption,
   peekFuelHistory,
 } from '../../hooks/useFuelConsumption';
 import { DataRegion } from '../data/DataBusy';
@@ -62,68 +65,70 @@ function seriesLatestLevel(s: FuelSeries): number {
   return Math.max(0, sorted[sorted.length - 1].level);
 }
 
-/** Prefer quarry assets with real fuel (>0), live probe if possible, then most recent history. */
+function scoreFuelSeries(
+  s: FuelSeries,
+  liveLevels: Map<string, number>,
+  period: FuelPeriod,
+) {
+  const live = liveLevels.get(String(s.assetId));
+  const hist = seriesLatestLevel(s);
+  const level = live != null && live > 0 ? live : hist;
+  const points = bucketSeries(s, period).length;
+  const hasLiveFuel = live != null && live > 0;
+  return {
+    series: s,
+    level,
+    points,
+    hasLiveFuel,
+    lastTs: seriesLastTs(s),
+  };
+}
+
+/** Prefer quarry assets that can actually draw a fuel line (not an empty / 1-point series). */
 function pickActiveQuarrySeries(
   all: FuelSeries[],
-  liveIds: Set<string>,
   liveLevels: Map<string, number>,
+  period: FuelPeriod,
+  pinnedAssetId?: string | null,
 ): FuelSeries | null {
-  const quarry = all.filter(s => isQuarryZone(s.zone) && s.data.length > 0);
-  if (!quarry.length) return null;
+  const withData = all.filter(s => s.data.length > 0);
+  if (!withData.length) return null;
 
-  const scored = quarry.map(s => {
-    const live = liveLevels.get(s.assetId);
-    const hist = seriesLatestLevel(s);
-    const level = live != null && live > 0 ? live : hist;
-    return {
-      series: s,
-      level,
-      hasLive: liveIds.has(s.assetId) && (live == null || live > 0),
-      lastTs: seriesLastTs(s),
-    };
-  });
+  const quarryTagged = withData.filter(s => isQuarryZone(s.zone));
+  const pool = quarryTagged.length ? quarryTagged : withData;
 
-  const withFuel = scored.filter(s => s.level > 0);
-  const pool = withFuel.length ? withFuel : scored;
-  const livePool = pool.filter(s => s.hasLive);
-  const final = livePool.length ? livePool : pool;
+  const scored = pool.map(s => scoreFuelSeries(s, liveLevels, period));
+  const drawable = scored.filter(s => s.points >= 2);
+  const withPoints = scored.filter(s => s.points >= 1);
+  const ranked = (drawable.length ? drawable : withPoints.length ? withPoints : scored)
+    .sort((a, b) => (
+      b.points - a.points
+      || Number(b.hasLiveFuel) - Number(a.hasLiveFuel)
+      || b.lastTs - a.lastTs
+      || b.level - a.level
+      || String(a.series.assetId).localeCompare(String(b.series.assetId))
+    ));
 
-  return [...final]
-    .sort((a, b) => b.level - a.level || b.lastTs - a.lastTs)[0]?.series ?? null;
+  if (pinnedAssetId) {
+    const pinned = ranked.find(s => String(s.series.assetId) === String(pinnedAssetId));
+    if (pinned && pinned.points >= 1) return pinned.series;
+  }
+
+  return ranked[0]?.series ?? null;
 }
 
 function bucketSeries(series: FuelSeries, period: FuelPeriod): ChartPoint[] {
-  const points = [...series.data].sort(
-    (a, b) => new Date(a.time).getTime() - new Date(b.time).getTime(),
-  );
-  if (!points.length) return [];
-
-  const bucketMs =
-    period === 'day' ? 30 * 60_000
-      : period === 'month' ? 6 * 60 * 60_000
-        : 2 * 60 * 60_000;
-
-  const buckets = new Map<number, { ts: number; level: number }>();
-  points.forEach(pt => {
-    const ts = new Date(pt.time).getTime();
-    const b = Math.floor(ts / bucketMs) * bucketMs;
-    const existing = buckets.get(b);
-    if (!existing || ts >= existing.ts) {
-      buckets.set(b, { ts, level: Math.max(0, pt.level) });
-    }
+  const bucketMin = periodBucketMinutes(period === 'custom' ? 'week' : period);
+  const stable = buildStableFuelSeries(series.data, bucketMin);
+  return stable.map(pt => {
+    const d = new Date(pt.timestamp);
+    const label = period === 'day'
+      ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })
+      : period === 'month'
+        ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Africa/Lagos' })
+        : d.toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', timeZone: 'Africa/Lagos' });
+    return { label, level: pt.levelL, time: d.toISOString() };
   });
-
-  return [...buckets.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([, pt]) => {
-      const d = new Date(pt.ts);
-      const label = period === 'day'
-        ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })
-        : period === 'month'
-          ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Africa/Lagos' })
-          : d.toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', timeZone: 'Africa/Lagos' });
-      return { label, level: Math.round(pt.level * 10) / 10, time: d.toISOString() };
-    });
 }
 
 function fmtRefillWhen(iso: string) {
@@ -135,41 +140,27 @@ function fmtRefillWhen(iso: string) {
   });
 }
 
-function lastRefillForAsset(refuels: RefuelRow[] | undefined, assetId: string): RefuelRow | null {
-  if (!refuels?.length) return null;
-  const forAsset = refuels
-    .filter(r => r.assetId === assetId)
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  return forAsset[0] ?? null;
+function lastRefillFromSeries(series: FuelSeries, period: FuelPeriod) {
+  const bucketMin = periodBucketMinutes(period === 'custom' ? 'week' : period);
+  const stable = buildStableFuelSeries(series.data, bucketMin);
+  const { refuels } = analyzeFuelSignal(stable, bucketMin);
+  if (!refuels.length) return null;
+  return refuels[refuels.length - 1];
 }
 
 export default function FuelChartWidget() {
   const { vehicles } = useFleet();
   const [period, setPeriod] = useState<FuelPeriod>('week');
   const [customRange, setCustomRange] = useState(defaultCustomRange);
-  const consPeriod = period === 'custom' ? 'week' : period === 'day' || period === 'month' ? period : 'week';
-  const consUrl = `/api/fuel/consumption?period=${consPeriod}`;
   const histUrl = historyUrl(period, customRange);
   const [allSeries, setAllSeries] = useState<FuelSeries[]>(
     () => peekFuelHistory<FuelSeries[]>(histUrl) ?? [],
-  );
-  const [refuels, setRefuels] = useState<RefuelRow[]>(
-    () => peekFuelConsumption(consUrl)?.refuels ?? [],
   );
   const [loading, setLoading] = useState(
     () => !peekFuelHistory(histUrl),
   );
 
-  const liveQuarryIds = useMemo(() => {
-    const ids = new Set<string>();
-    vehicles.forEach(v => {
-      const zone = (v.zone || '').toUpperCase();
-      if (!isQuarryZone(zone)) return;
-      const level = (v as { fuelLevel?: { level: number } | null }).fuelLevel;
-      if (level != null) ids.add(v.id);
-    });
-    return ids;
-  }, [vehicles]);
+  const pinnedAssetRef = useRef<string | null>(null);
 
   const liveLevels = useMemo(() => {
     const map = new Map<string, number>();
@@ -177,24 +168,28 @@ export default function FuelChartWidget() {
       const zone = (v.zone || '').toUpperCase();
       if (!isQuarryZone(zone)) return;
       const level = (v as { fuelLevel?: { level: number } | null }).fuelLevel?.level;
-      if (level != null && Number.isFinite(level)) map.set(v.id, Math.max(0, level));
+      if (level != null && Number.isFinite(level)) map.set(String(v.id), Math.max(0, level));
     });
     return map;
   }, [vehicles]);
 
   // History drives the card; consumption (refills) is optional and must not block display.
   useEffect(() => {
+    pinnedAssetRef.current = null;
+  }, [period, customRange.from, customRange.to]);
+
+  useEffect(() => {
     let cancelled = false;
     const url = historyUrl(period, customRange);
-    setLoading(true);
     const cached = peekFuelHistory<FuelSeries[]>(url);
-    if (cached) {
+    const hasCached = Boolean(cached?.length);
+    if (hasCached) setLoading(false);
+    else setLoading(true);
+    if (cached?.length) {
       setAllSeries(cached.map(s => ({
         ...s,
         data: s.data.map(pt => ({ ...pt, level: Math.max(0, pt.level) })),
       })));
-    } else {
-      setAllSeries([]);
     }
 
     const pull = async (silent = false) => {
@@ -212,34 +207,22 @@ export default function FuelChartWidget() {
       }
     };
 
-    void pull(false);
+    void pull(!hasCached);
     const id = setInterval(() => void pull(true), 60_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [period, customRange.from, customRange.to]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const nextConsPeriod = period === 'custom' ? 'week' : period === 'day' || period === 'month' ? period : 'week';
-    const url = `/api/fuel/consumption?period=${nextConsPeriod}`;
-    const cached = peekFuelConsumption(url);
-    if (cached) setRefuels(cached.refuels ?? []);
-
-    const pull = async (silent = false) => {
-      try {
-        const cons = await fetchFuelConsumptionCached(url, { force: silent });
-        if (!cancelled && cons) setRefuels(cons.refuels ?? []);
-      } catch { /* keep prior */ }
-    };
-
-    void pull(false);
-    const id = setInterval(() => void pull(true), 60_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [period]);
-
-  const active = useMemo(
-    () => pickActiveQuarrySeries(allSeries, liveQuarryIds, liveLevels),
-    [allSeries, liveQuarryIds, liveLevels],
-  );
+  const active = useMemo(() => {
+    const picked = pickActiveQuarrySeries(
+      allSeries,
+      liveLevels,
+      period,
+      pinnedAssetRef.current,
+    );
+    if (picked) pinnedAssetRef.current = String(picked.assetId);
+    else pinnedAssetRef.current = null;
+    return picked;
+  }, [allSeries, liveLevels, period]);
 
   // Live probe fallback: show a real non-zero quarry reading even before history arrives
   const liveFallback = useMemo(() => {
@@ -251,18 +234,24 @@ export default function FuelChartWidget() {
       const level = (v as { fuelLevel?: { level: number } | null }).fuelLevel?.level;
       if (level == null || !(level > 0)) return;
       if (!best || level > best.level) {
-        best = { id: v.id, regNo: v.regNo, zone, level };
+        best = { id: String(v.id), regNo: v.regNo, zone, level };
       }
     });
     return best;
   }, [active, vehicles]);
 
+  const displaySeries = useMemo(() => {
+    if (active) return active;
+    if (!liveFallback) return null;
+    return findFuelSeries(allSeries, { assetId: liveFallback.id, regNo: liveFallback.regNo }) ?? null;
+  }, [active, liveFallback, allSeries]);
+
   const chartData = useMemo(
-    () => (active ? bucketSeries(active, period) : []),
-    [active, period],
+    () => (displaySeries ? bucketSeries(displaySeries, period) : []),
+    [displaySeries, period],
   );
 
-  const liveLevel = active ? liveLevels.get(active.assetId) : liveFallback?.level;
+  const liveLevel = displaySeries ? liveLevels.get(String(displaySeries.assetId)) : liveFallback?.level;
   const chartLevel = chartData.length ? chartData[chartData.length - 1].level : null;
   const currentLevel = liveLevel != null && liveLevel > 0
     ? liveLevel
@@ -270,12 +259,12 @@ export default function FuelChartWidget() {
       ? chartLevel
       : liveFallback?.level ?? liveLevel ?? chartLevel;
 
-  const lastRefill = active ? lastRefillForAsset(refuels, active.assetId) : null;
-  const zone = ((active?.zone || liveFallback?.zone) || '').toUpperCase() as QuarrySiteKey;
+  const lastRefill = displaySeries ? lastRefillFromSeries(displaySeries, period) : null;
+  const zone = ((displaySeries?.zone || liveFallback?.zone) || '').toUpperCase() as QuarrySiteKey;
   const color = fuelZoneColor(zone);
   const siteLabel = isQuarryZone(zone) ? QUARRY_SITE_LABELS[zone] : 'Quarry';
-  const displayReg = (active?.regNo || liveFallback?.regNo || '').trim();
-  const detailAssetId = active?.assetId || liveFallback?.id;
+  const displayReg = (displaySeries?.regNo || liveFallback?.regNo || '').trim();
+  const detailAssetId = displaySeries?.assetId || liveFallback?.id;
 
   const detailHref = detailAssetId
     ? `/fuel/monitoring?site=${encodeURIComponent(zone)}&asset=${encodeURIComponent(detailAssetId)}`
@@ -326,11 +315,11 @@ export default function FuelChartWidget() {
         </div>
 
         <div className="bpl-fuel-chart-area">
-          <DataRegion busy={loading} variant="chart" tall label="Loading fuel data">
+          <DataRegion busy={loading && chartData.length === 0} variant="chart" tall label="Loading fuel data">
             {chartData.length === 0 ? (
               <div className="bpl-fuel-chart-empty">No quarry probe readings in this period</div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height={160}>
                 <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="fuelGrad" x1="0" y1="0" x2="0" y2="1">
@@ -360,7 +349,16 @@ export default function FuelChartWidget() {
                     formatter={(value: number) => [`${Math.round(value).toLocaleString()} L`, 'Fuel level']}
                     labelFormatter={label => String(label)}
                   />
-                  <Area type="monotone" dataKey="level" stroke={color} fill="url(#fuelGrad)" strokeWidth={2} />
+                  <Area
+                    type="stepAfter"
+                    dataKey="level"
+                    stroke={color}
+                    fill="url(#fuelGrad)"
+                    strokeWidth={2.5}
+                    dot={false}
+                    activeDot={{ r: 4, fill: color, stroke: '#fff', strokeWidth: 2 }}
+                    isAnimationActive={false}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             )}

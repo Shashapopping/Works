@@ -16,7 +16,6 @@ const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const DriverManagement = lazy(() => import('./pages/DriverManagement'));
 const CoachingPage = lazy(() => import('./pages/driver/CoachingPage'));
-const TrainingPage = lazy(() => import('./pages/driver/TrainingPage'));
 const CertificatesPage = lazy(() => import('./pages/driver/CertificatesPage'));
 const FatigueManagementPage = lazy(() => import('./pages/driver/FatigueManagementPage'));
 const VisionPage = lazy(() => import('./pages/driver/VisionPage'));
@@ -48,7 +47,7 @@ export default function App() {
 
                 <Route path="/drivers" element={<DriverManagement />} />
                 <Route path="/drivers/coaching" element={<CoachingPage />} />
-                <Route path="/drivers/training" element={<TrainingPage />} />
+                <Route path="/drivers/training" element={<CoachingPage />} />
                 <Route path="/drivers/certifications" element={<CertificatesPage />} />
                 <Route path="/drivers/fatigue" element={<FatigueManagementPage />} />
                 <Route path="/drivers/vision" element={<VisionPage />} />

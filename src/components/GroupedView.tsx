@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, ChevronDown, ChevronUp, WifiOff, MapPin } from 'lucide-react';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelValue, SkelTable } from './data/DataBusy';
+import { isUsablePlaceAddress, vehicleHasResolvedPlace } from '../lib/placeAddress';
 
 interface Warning { eventId: string; label: string; timestamp: string; eventTime: string; }
 
@@ -108,7 +109,7 @@ function StatusChips({ vehicles }: { vehicles: Vehicle[] }) {
 function VehicleCard({ vehicle }: { vehicle: Vehicle }) {
   const s = STATUS[vehicle.status] ?? STATUS['Offline'];
   const uniqueWarnings = [...new Set((vehicle.warnings ?? []).map(w => w.label))];
-  const address = vehicle.position?.address && vehicle.position.address !== 'Unknown'
+  const address = vehicle.position?.address && isUsablePlaceAddress(vehicle.position.address)
     ? vehicle.position.address : null;
 
   return (
@@ -381,6 +382,9 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
   const sortSites = (entries: [string, Vehicle[]][]): [string, Vehicle[]][] => {
     entries.forEach(([, vs], i) => {
       entries[i][1] = [...vs].sort((a, b) => {
+        const aResolved = vehicleHasResolvedPlace(a);
+        const bResolved = vehicleHasResolvedPlace(b);
+        if (aResolved !== bResolved) return aResolved ? -1 : 1;
         const aw = a.warnings?.length ?? 0, bw = b.warnings?.length ?? 0;
         if (aw !== bw) return bw - aw;
         return STATUS_PRIORITY[b.status] - STATUS_PRIORITY[a.status];
@@ -397,12 +401,14 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
   // When All: grouped by major group → site
   const { flatGroups, treeGroups } = useMemo(() => {
     const q = search.toLowerCase().trim();
+    const hasSearch = q.length > 0;
 
     const filtered = vehicles.filter(v => {
       if (statusFilter !== 'All' && v.status !== statusFilter
         && !(statusFilter === 'Inactive' && v.status === 'Offline')) return false;
       if (selectedGroup !== 'All' && getGroup(v.zone) !== selectedGroup) return false;
-      if (!q) return true;
+      if (!hasSearch && !vehicleHasResolvedPlace(v)) return false;
+      if (!hasSearch) return true;
       return (
         v.regNo.toLowerCase().includes(q) ||
         v.assetName.toLowerCase().includes(q) ||

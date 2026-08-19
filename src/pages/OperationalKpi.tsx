@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Gauge, AlertTriangle, Search, Truck, Activity, Clock, Package } from 'lucide-react';
+import { Gauge, Search, Truck, Activity, Clock } from 'lucide-react';
 import { authFetch } from '../context/FleetContext';
 import {
   type KpiPeriodMode,
@@ -125,8 +125,6 @@ export default function OperationalKpi() {
     return sorted;
   }, [data?.assets, search, sortKey, sortDesc]);
 
-  const hasLoadData = (data?.assets ?? []).some(a => a.loadCount > 0);
-
   const toggleSort = (key: keyof KpiAssetRow) => {
     if (sortKey === key) setSortDesc(d => !d);
     else { setSortKey(key); setSortDesc(true); }
@@ -136,15 +134,12 @@ export default function OperationalKpi() {
     { label: 'Utilization (avg)', value: fmtPct(summary?.avgUtilizationPct), hint: 'Working while in use', tip: KPI_DEFINITIONS.utilization, color: '#0078D4', icon: Gauge },
     { label: 'Availability (avg)', value: fmtPct(summary?.avgAvailabilityPct), hint: 'Engine runtime / period hours', tip: KPI_DEFINITIONS.availability, color: '#0d9488', icon: Activity },
     { label: 'Engine runtime', value: fmtHours(summary?.totalEngineHours ?? 0), hint: `${summary?.assetCount ?? 0} assets`, tip: KPI_DEFINITIONS.engineRuntime, color: '#7c3aed', icon: Clock },
-    { label: 'Loaded duration', value: fmtHours(summary?.totalLoadedHours ?? 0), hint: 'From loaded-truck events', tip: KPI_DEFINITIONS.loadedDuration, color: '#ea580c', icon: Package },
   ];
 
   const columns: { key: keyof KpiAssetRow; label: string; tip?: string; dot?: string }[] = [
     { key: 'regNo', label: 'Reg' },
     { key: 'assetClass', label: 'Class' },
     { key: 'engineHours', label: 'Engine h', tip: KPI_DEFINITIONS.engineRuntime, dot: '#7c3aed' },
-    { key: 'loadedHours', label: 'Loaded h', tip: KPI_DEFINITIONS.loadedDuration, dot: '#ea580c' },
-    { key: 'loadCount', label: 'Loads' },
     { key: 'utilizationPct', label: 'Utilization', tip: KPI_DEFINITIONS.utilization, dot: '#0078D4' },
     { key: 'availabilityPct', label: 'Availability', tip: KPI_DEFINITIONS.availability, dot: '#0d9488' },
   ];
@@ -256,19 +251,6 @@ export default function OperationalKpi() {
         ))}
       </div>
 
-      {!hasLoadData && !initialLoading && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '10px 14px', borderRadius: 8, marginBottom: 20,
-          background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.3)',
-          fontSize: 12, color: 'var(--cd-text)',
-        }}>
-          <AlertTriangle size={14} color="#d97706" />
-          Loaded-truck payload events are sparse in this period — “Loaded h” may show “—”. Utilization (info) means working while in use;
-          engine runtime and availability are live from trips.
-        </div>
-      )}
-
       {/* Asset table */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--cd-text)', display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -314,8 +296,6 @@ export default function OperationalKpi() {
                   <td style={{ padding: '8px 12px', fontWeight: 600, whiteSpace: 'nowrap' }} title={a.assetName}>{a.regNo}</td>
                   <td style={{ padding: '8px 12px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{ASSET_CLASS_LABELS[a.assetClass]}</td>
                   <td style={{ padding: '8px 12px' }}>{fmt(a.engineHours)}</td>
-                  <td style={{ padding: '8px 12px' }}>{a.loadCount > 0 ? fmt(a.loadedHours) : '—'}</td>
-                  <td style={{ padding: '8px 12px' }}>{a.loadCount || '—'}</td>
                   <td style={{ padding: '8px 12px' }}><PctBar pct={a.utilizationPct} /></td>
                   <td style={{ padding: '8px 12px' }}><PctBar pct={a.availabilityPct} /></td>
                 </tr>

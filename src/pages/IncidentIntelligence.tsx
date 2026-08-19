@@ -1,28 +1,25 @@
-import { useState, useMemo, useEffect, useCallback, useDeferredValue, Fragment } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { Search, ClipboardCheck, ChevronDown, ChevronRight, X, ExternalLink } from 'lucide-react';
+import { useState, useMemo, useEffect, useDeferredValue, useRef, Fragment } from 'react';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
-import { useAuth } from '../context/AuthContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
 import { sanitizeTripDriver } from '../lib/demoSanitize';
 import {
   buildDriverConsequenceCard,
   loadConsequenceOccurrences,
-  logConsequenceResponse,
   nextOccurrenceIndex,
   getOccurrenceCount,
   getResponseLogForDriver,
-  addResponseLogEntry,
   type OccurrenceStore,
   type ConsequenceCategory,
 } from '../lib/consequenceScore';
 import { brandLabel, eventLocationLabel } from '../lib/branding';
 import MockNamesBadge from '../components/MockNamesBadge';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
-import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useTableSort } from '../hooks/useTableSort';
+import { isOverspeedLabel } from '../lib/overspeedFilter';
 
 type Tab = 'events' | 'by-driver' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -39,8 +36,45 @@ const EVENT_COLORS: Record<string, string> = {
   'Harsh Cornering': '#d97706',
 };
 
+const EVENT_PAGE_SIZE = 100;
+
 function getLabel(e: LogEntry) {
   return e.label || 'Unknown';
+}
+
+function isoIncidentRange(range: DateRange): { from: string; to: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  if (range === 'today') {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return { from: start.toISOString(), to };
+  }
+  if (range === '7days') return { from: new Date(now.getTime() - 7 * 86400000).toISOString(), to };
+  if (range === '30days') return { from: new Date(now.getTime() - 30 * 86400000).toISOString(), to };
+  return { from: '2020-01-01T00:00:00.000Z', to };
+}
+
+function mapLogEntry(e: Record<string, unknown>): LogEntry {
+  return {
+    eventId: String(e.eventId ?? e.id ?? `${e.regNo}-${e.eventTime}`),
+    label: e.label != null ? String(e.label) : undefined,
+    type: e.type === 'panic' ? 'panic' : 'warning',
+    timestamp: String(e.timestamp ?? e.eventTime ?? new Date().toISOString()),
+    eventTime: String(e.eventTime ?? e.timestamp ?? new Date().toISOString()),
+    assetId: String(e.assetId ?? e.regNo ?? 'unknown'),
+    driverId: e.driverId != null ? String(e.driverId) : undefined,
+    regNo: e.regNo != null ? String(e.regNo) : undefined,
+    assetName: e.assetName != null ? String(e.assetName) : undefined,
+    transporter: e.transporter != null ? String(e.transporter) : undefined,
+    driverName: e.driverName != null ? String(e.driverName) : undefined,
+    driverPhone: e.driverPhone != null ? String(e.driverPhone) : undefined,
+    address: e.address != null ? String(e.address) : undefined,
+    latitude: e.latitude != null ? Number(e.latitude) : null,
+    longitude: e.longitude != null ? Number(e.longitude) : null,
+    speed: e.speed != null && e.speed !== '' ? Number(e.speed) : null,
+    speedLimit: e.speedLimit != null ? Number(e.speedLimit) : null,
+  };
 }
 
 function getDateFilter(e: LogEntry, range: DateRange) {
@@ -65,23 +99,74 @@ function formatTime(iso: string) {
   } catch { return iso; }
 }
 
-function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
+function EventsTab({ dateRange, highlightEventId }: { dateRange: DateRange; highlightEventId: string | null }) {
   const [searchParams] = useSearchParams();
   const filterParam = searchParams.get('filter');
   const initialFilter: EventFilter =
-    filterParam && (EVENT_FILTERS as string[]).includes(filterParam)
+    !highlightEventId && filterParam && (EVENT_FILTERS as string[]).includes(filterParam)
       ? (filterParam as EventFilter)
       : 'All';
   const [search, setSearch] = useState('');
   const [eventFilter, setEventFilter] = useState<EventFilter>(initialFilter);
+  const [page, setPage] = useState(0);
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [censusTotal, setCensusTotal] = useState(0);
+  const [busy, setBusy] = useState(true);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
 
-  const filtered = events.filter(e => {
+  useEffect(() => {
+    if (!highlightEventId) return;
+    setEventFilter('All');
+    setSearch('');
+    setPage(0);
+  }, [highlightEventId]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [dateRange, eventFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setBusy(true);
+      try {
+        const { from, to } = isoIncidentRange(dateRange);
+        const params = new URLSearchParams({
+          format: 'page',
+          limit: String(EVENT_PAGE_SIZE),
+          offset: String(page * EVENT_PAGE_SIZE),
+          from,
+          to,
+        });
+        if (eventFilter === 'All') params.set('types', EVENT_FILTERS.filter(f => f !== 'All').join(','));
+        else params.set('types', eventFilter);
+        const res = await authFetch(`/api/events/log?${params}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const rows = Array.isArray(data) ? data : data?.entries ?? [];
+        if (cancelled) return;
+        setEntries(rows.map((e: Record<string, unknown>) => mapLogEntry(e)));
+        setCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
+      } catch {
+        if (!cancelled) {
+          setEntries([]);
+          setCensusTotal(0);
+        }
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [dateRange, eventFilter, page]);
+
+  const filtered = entries.filter(e => {
     if (e.type === 'panic') return false;
     const label = getLabel(e);
     if (HIDDEN_LABELS.includes(label)) return false;
-    if (eventFilter !== 'All' && label !== eventFilter) return false;
+    if (highlightEventId && e.eventId === highlightEventId) return true;
     if (deferredSearch) {
       const s = deferredSearch.toLowerCase();
       return (
@@ -94,7 +179,16 @@ function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
     return true;
   });
 
-  const pagination = useClientPagination(filtered, 100, `${deferredSearch}|${eventFilter}`);
+  const pageCount = Math.max(1, Math.ceil(censusTotal / EVENT_PAGE_SIZE) || 1);
+  const from = censusTotal === 0 ? 0 : page * EVENT_PAGE_SIZE + 1;
+  const to = Math.min(censusTotal, (page + 1) * EVENT_PAGE_SIZE);
+  const hasPrev = page > 0;
+  const hasNext = page < pageCount - 1;
+
+  useEffect(() => {
+    if (!highlightEventId) return;
+    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [highlightEventId, filtered]);
 
   return (
     <div className="bpl-card" style={{ display: 'flex', flexDirection: 'column', minHeight: 520, padding: 0 }}>
@@ -136,41 +230,49 @@ function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
         })}
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="bpl-incident-list" style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
         {busy ? (
           <div style={{ padding: 8 }}><SkelTable rows={8} /></div>
         ) : filtered.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: 13 }}>
             No events match your filters
           </div>
-        ) : pagination.pageRows.map((e, i) => {
+        ) : filtered.map((e, i) => {
           const label = getLabel(e);
-          const color = EVENT_COLORS[label] || 'var(--cd-text-muted)';
+          const color = EVENT_COLORS[label] || 'var(--bpl-blue)';
           const location = eventLocationLabel(e);
           const hasDriver = isKnownDriver(e.driverName);
+          const isHighlighted = !!highlightEventId && e.eventId === highlightEventId;
+          const speed = isOverspeedLabel(label) && e.speed != null && Number.isFinite(Number(e.speed))
+            ? Math.round(Number(e.speed))
+            : null;
+          const meta = [
+            hasDriver ? displayDriverName(e.driverName) : null,
+            e.assetName && e.assetName !== 'N/A' ? e.assetName : null,
+            e.transporter && e.transporter !== 'N/A' ? brandLabel(e.transporter) : null,
+            location && location !== '—' ? location : null,
+          ].filter(Boolean).join(' · ');
           return (
-            <div key={i} style={{
-              padding: '10px 12px', borderRadius: 8,
-              border: `0.5px solid ${color}40`,
-              backgroundColor: `${color}0d`,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color }}>{label}</span>
-                <span style={{ fontSize: 10, color: 'var(--cd-text-soft, var(--cd-text-muted))' }}>{formatTime(e.eventTime || e.timestamp)}</span>
+            <div
+              key={e.eventId || i}
+              ref={isHighlighted ? highlightRef : undefined}
+              className={`bpl-incident-card${isHighlighted ? ' bpl-incident-highlight' : ''}`}
+              style={{ '--incident-accent': color } as React.CSSProperties}
+            >
+              <div className="bpl-incident-card-body">
+                <div className="bpl-incident-card-top">
+                  <span className="bpl-incident-type">{label}</span>
+                  <span className="bpl-incident-time">{formatTime(e.eventTime || e.timestamp)}</span>
+                </div>
+                <div className="bpl-incident-title">{e.regNo || e.assetId}</div>
+                {meta && <div className="bpl-incident-meta">{meta}</div>}
               </div>
-              <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--cd-text)', marginBottom: 2 }}>{e.regNo || e.assetId}</div>
-              {e.assetName && e.assetName !== 'N/A' && (
-                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 2 }}>{e.assetName}</div>
-              )}
-              {e.transporter && e.transporter !== 'N/A' && (
-                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 2 }}>{brandLabel(e.transporter)}</div>
-              )}
-              {hasDriver && (
-                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: location ? 2 : 0 }}>
-                  {displayDriverName(e.driverName)}
+              {speed != null && (
+                <div className="bpl-incident-speed">
+                  <span className="bpl-incident-speed-value">{speed}</span>
+                  <span className="bpl-incident-speed-unit">km/h</span>
                 </div>
               )}
-              {location && <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{location}</div>}
             </div>
           );
         })}
@@ -178,30 +280,30 @@ function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
 
       <div style={{ padding: '10px 16px', borderTop: '1px solid var(--cd-border)', fontSize: 11, color: 'var(--cd-text-muted)', textAlign: 'center', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span>{pagination.total === 0 ? 'No events' : `Showing ${pagination.from}–${pagination.to} of ${pagination.total}`}</span>
-          {pagination.pageCount > 1 && (
+          <span>{censusTotal === 0 ? 'No events' : `Showing ${from}–${to} of ${censusTotal.toLocaleString()}`}</span>
+          {pageCount > 1 && (
             <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
               <button
                 type="button"
-                disabled={!pagination.hasPrev}
-                onClick={pagination.prev}
+                disabled={!hasPrev}
+                onClick={() => setPage(p => Math.max(0, p - 1))}
                 style={{
-                  padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: pagination.hasPrev ? 'pointer' : 'default',
+                  padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: hasPrev ? 'pointer' : 'default',
                   border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
-                  color: pagination.hasPrev ? 'var(--cd-text)' : 'var(--cd-text-soft, var(--cd-text-muted))',
+                  color: hasPrev ? 'var(--cd-text)' : 'var(--cd-text-soft, var(--cd-text-muted))',
                 }}
               >
                 Prev
               </button>
-              <span>Page {pagination.page + 1} / {pagination.pageCount}</span>
+              <span>Page {page + 1} / {pageCount}</span>
               <button
                 type="button"
-                disabled={!pagination.hasNext}
-                onClick={pagination.next}
+                disabled={!hasNext}
+                onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}
                 style={{
-                  padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: pagination.hasNext ? 'pointer' : 'default',
+                  padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: hasNext ? 'pointer' : 'default',
                   border: '1px solid var(--cd-border)', background: 'var(--cd-surface-2)',
-                  color: pagination.hasNext ? 'var(--cd-text)' : 'var(--cd-text-soft, var(--cd-text-muted))',
+                  color: hasNext ? 'var(--cd-text)' : 'var(--cd-text-soft, var(--cd-text-muted))',
                 }}
               >
                 Next
@@ -214,22 +316,59 @@ function EventsTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
   );
 }
 
-function ByDriverTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
-  const driverMap = useMemo(() => {
-    const m = new Map<string, { name: string; counts: Record<string, number>; total: number }>();
-    events.forEach(e => {
-      if (e.type === 'panic') return;
-      const label = getLabel(e);
-      if (HIDDEN_LABELS.includes(label)) return;
-      if (!isKnownDriver(e.driverName)) return;
-      const key = e.driverName!;
-      if (!m.has(key)) m.set(key, { name: key, counts: {}, total: 0 });
-      const d = m.get(key)!;
-      d.counts[label] = (d.counts[label] || 0) + 1;
-      d.total++;
-    });
-    return Array.from(m.values()).sort((a, b) => b.total - a.total);
-  }, [events]);
+function ByDriverTab({ dateRange }: { dateRange: DateRange }) {
+  const [rows, setRows] = useState<{
+    name: string;
+    harshBraking: number;
+    overspeeding: number;
+    harshAcceleration: number;
+    harshCornering: number;
+    total: number;
+  }[]>([]);
+  const [busy, setBusy] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setBusy(true);
+      try {
+        const { from, to } = isoIncidentRange(dateRange);
+        const res = await authFetch(`/api/risk/drivers?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
+        if (cancelled) return;
+        setRows(
+          drivers
+            .filter((d: { driverName?: string }) => isKnownDriver(d.driverName))
+            .map((d: {
+              driverName?: string;
+              harshBraking?: number;
+              overspeeding?: number;
+              overspeedTiered?: number;
+              harshAcceleration?: number;
+              harshCornering?: number;
+              total?: number;
+            }) => ({
+              name: d.driverName || 'N/A',
+              harshBraking: d.harshBraking || 0,
+              overspeeding: (d.overspeeding || 0) + (d.overspeedTiered || 0),
+              harshAcceleration: d.harshAcceleration || 0,
+              harshCornering: d.harshCornering || 0,
+              total: d.total || 0,
+            }))
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 30),
+        );
+      } catch {
+        if (!cancelled) setRows([]);
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [dateRange]);
 
   return (
     <div className="bpl-card" style={{ overflow: 'hidden' }}>
@@ -249,20 +388,20 @@ function ByDriverTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
         <tbody>
           {busy ? (
             <tr><td colSpan={8} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
-          ) : driverMap.slice(0, 30).map((d, i) => {
+          ) : rows.map((d, i) => {
             const risk = d.total > 10 ? 'HIGH' : d.total > 5 ? 'MEDIUM' : 'LOW';
             const riskColor = risk === 'HIGH' ? '#CC0000' : risk === 'MEDIUM' ? '#d97706' : '#16a34a';
             return (
               <tr key={d.name}>
                 <td style={{ fontWeight: 700, color: 'var(--cd-text-muted)' }}>#{i + 1}</td>
-                <td style={{ fontWeight: 600 }}>{d.name}</td>
-                <td style={{ fontWeight: 600, color: (d.counts['Harsh Braking'] || 0) > 3 ? '#CC0000' : 'var(--cd-text)' }}>
-                  {d.counts['Harsh Braking'] || 0}
+                <td style={{ fontWeight: 600 }}>{displayDriverName(d.name)}</td>
+                <td style={{ fontWeight: 600, color: d.harshBraking > 3 ? '#CC0000' : 'var(--cd-text)' }}>
+                  {d.harshBraking}
                 </td>
-                <td>{(d.counts['Overspeeding'] || 0) + (d.counts['Overspeed Tiered'] || 0)}</td>
-                <td>{d.counts['Harsh Acceleration'] || 0}</td>
-                <td>{d.counts['Harsh Cornering'] || 0}</td>
-                <td style={{ fontWeight: 700 }}>{d.total}</td>
+                <td>{d.overspeeding}</td>
+                <td>{d.harshAcceleration}</td>
+                <td>{d.harshCornering}</td>
+                <td style={{ fontWeight: 700 }}>{d.total.toLocaleString()}</td>
                 <td>
                   <span style={{
                     padding: '2px 8px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
@@ -283,16 +422,12 @@ function ByDriverTab({ events, busy }: { events: LogEntry[]; busy: boolean }) {
 type TrackingSortKey = 'driver' | 'vehicle' | 'score';
 
 function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: boolean }) {
-  const { user } = useAuth();
-  const loggedInAs = user?.name || user?.email || 'You';
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
   const [tripLoading, setTripLoading] = useState(true);
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [pendingLogKey, setPendingLogKey] = useState<string | null>(null);
-  const [responseNote, setResponseNote] = useState('');
-  const [, setLogRefreshTick] = useState(0);
+  const navigateTo = useNavigate();
   const busy = eventsBusy || tripLoading;
 
   useEffect(() => {
@@ -301,8 +436,8 @@ function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: b
     (async () => {
       try {
         const [cur, last] = await Promise.all([
-          authFetch('/api/driver-distance?range=currentMonth'),
-          authFetch('/api/driver-distance?range=lastMonth'),
+          authFetch('/api/driver-distance?range=currentMonth&trips=0'),
+          authFetch('/api/driver-distance?range=lastMonth&trips=0'),
         ]);
         const map = new Map<string, TripDriver>();
         for (const res of [cur, last]) {
@@ -376,30 +511,9 @@ function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: b
       .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore);
   }, [events, tripDrivers, distanceByKey, occurrences]);
 
-  const openLogForm = (driverKey: string) => {
-    setPendingLogKey(driverKey);
-    setResponseNote('');
+  const goToCoaching = (driverKey: string) => {
+    navigateTo(`/drivers/coaching?q=${encodeURIComponent(driverKey)}&open=${encodeURIComponent(driverKey)}`);
   };
-
-  const cancelLogForm = () => {
-    setPendingLogKey(null);
-    setResponseNote('');
-  };
-
-  const confirmLogResponse = useCallback((
-    driverKey: string,
-    driverName: string,
-    category: ConsequenceCategory,
-    occurrenceIndex: number,
-  ) => {
-    const note = responseNote.trim();
-    if (!note) return;
-    setOccurrences(prev => logConsequenceResponse(prev, driverKey, category));
-    addResponseLogEntry(driverKey, driverName, category, occurrenceIndex, note, loggedInAs);
-    setPendingLogKey(null);
-    setResponseNote('');
-    setLogRefreshTick(t => t + 1);
-  }, [responseNote, loggedInAs]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -525,71 +639,16 @@ function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: b
                       {consequence.occurrenceIndex === 1 ? '1st' : '2nd+'} occurrence: {consequence.recommendedConsequence}
                     </td>
                     <td>
-                      {pendingLogKey === row.key ? (
-                        <button
-                          type="button"
-                          className="bpl-btn-secondary"
-                          onClick={e => { e.stopPropagation(); cancelLogForm(); }}
-                          style={{ fontSize: 11, padding: '4px 8px' }}
-                        >
-                          Cancel
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="bpl-btn-secondary"
-                          onClick={e => { e.stopPropagation(); openLogForm(row.key); }}
-                          style={{ fontSize: 11, padding: '4px 8px' }}
-                        >
-                          Log response
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="bpl-btn-secondary"
+                        onClick={e => { e.stopPropagation(); goToCoaching(row.key); }}
+                        style={{ fontSize: 11, padding: '4px 8px' }}
+                      >
+                        Make comment
+                      </button>
                     </td>
                   </tr>
-                  {pendingLogKey === row.key && (
-                    <tr>
-                      <td colSpan={7} style={{ padding: '10px 16px 12px 48px', background: 'var(--cd-bg, var(--cd-surface))' }}>
-                        <div
-                          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', maxWidth: 720 }}
-                          onClick={e => e.stopPropagation()}
-                        >
-                          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text-muted)' }}>
-                            What response was taken for {displayDriverName(row.name)}?
-                          </span>
-                          <input
-                            type="text"
-                            value={responseNote}
-                            onChange={e => setResponseNote(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') confirmLogResponse(row.key, row.name, consequence.category, consequence.occurrenceIndex); }}
-                            placeholder="e.g. Verbal warning given, driver acknowledged"
-                            autoFocus
-                            style={{
-                              flex: '1 1 260px', padding: '7px 10px', borderRadius: 8,
-                              border: '1px solid var(--cd-border)', background: 'var(--cd-surface)',
-                              color: 'var(--cd-text)', fontSize: 13,
-                            }}
-                          />
-                          <button
-                            type="button"
-                            className="bpl-btn-primary"
-                            disabled={!responseNote.trim()}
-                            onClick={() => confirmLogResponse(row.key, row.name, consequence.category, consequence.occurrenceIndex)}
-                            style={{ fontSize: 12, padding: '7px 12px', opacity: responseNote.trim() ? 1 : 0.6 }}
-                          >
-                            Confirm log
-                          </button>
-                          <button
-                            type="button"
-                            className="bpl-btn-secondary"
-                            onClick={cancelLogForm}
-                            style={{ fontSize: 12, padding: '7px 12px' }}
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                   {open && (
                     <tr>
                       <td colSpan={7} style={{ padding: '12px 16px 16px 48px', background: 'var(--cd-bg, var(--cd-surface))' }}>
@@ -643,35 +702,59 @@ function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: b
 }
 
 export default function IncidentIntelligence({ tab }: { tab: Tab }) {
+  const [searchParams] = useSearchParams();
+  const highlightEventId = searchParams.get('event');
   const [dateRange, setDateRange] = useState<DateRange>('7days');
   const { events, eventsLoading } = useFleet();
+  const [summary, setSummary] = useState<{
+    incidentTotal: number;
+    byLabel: Record<string, number>;
+  } | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
 
-  const filtered = useMemo(
+  useEffect(() => {
+    if (!highlightEventId) return;
+    const hit = events.find(e => e.eventId === highlightEventId);
+    if (!hit) return;
+    if (!getDateFilter(hit, dateRange)) setDateRange('alltime');
+  }, [highlightEventId, events, dateRange]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setSummaryLoading(true);
+      try {
+        const { from, to } = isoIncidentRange(dateRange);
+        const res = await authFetch(`/api/safety/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setSummary({
+          incidentTotal: Number(data.incidentTotal || 0),
+          byLabel: data.byLabel && typeof data.byLabel === 'object' ? data.byLabel : {},
+        });
+      } catch {
+        if (!cancelled) setSummary({ incidentTotal: 0, byLabel: {} });
+      } finally {
+        if (!cancelled) setSummaryLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [dateRange]);
+
+  const patternEvents = useMemo(
     () => events.filter(e => getDateFilter(e, dateRange)),
     [events, dateRange],
   );
 
-  const summaryKpis = useMemo(() => {
-    let total = 0;
-    let harshBraking = 0;
-    let overspeeding = 0;
-    let harshAccel = 0;
-    for (const e of filtered) {
-      if (e.type === 'panic') continue;
-      const label = getLabel(e);
-      if (HIDDEN_LABELS.includes(label)) continue;
-      total++;
-      if (label === 'Harsh Braking') harshBraking++;
-      else if (label === 'Overspeeding' || label === 'Overspeed Tiered') overspeeding++;
-      else if (label === 'Harsh Acceleration') harshAccel++;
-    }
-    return [
-      { label: 'Total Events', value: total, color: 'var(--cd-text)' },
-      { label: 'Harsh Braking', value: harshBraking, color: '#CC0000' },
-      { label: 'Overspeeding', value: overspeeding, color: '#9333ea' },
-      { label: 'Harsh Accel.', value: harshAccel, color: '#0078D4' },
-    ];
-  }, [filtered]);
+  const byLabel = summary?.byLabel || {};
+  const summaryKpis = [
+    { label: 'Total Events', value: summary?.incidentTotal ?? 0, color: 'var(--cd-text)' },
+    { label: 'Harsh Braking', value: byLabel['Harsh Braking'] ?? 0, color: '#CC0000' },
+    { label: 'Overspeeding', value: (byLabel['Overspeeding'] ?? 0) + (byLabel['Overspeed Tiered'] ?? 0) + (byLabel['Road Speed Overspeeding'] ?? 0), color: '#9333ea' },
+    { label: 'Harsh Accel.', value: byLabel['Harsh Acceleration'] ?? 0, color: '#0078D4' },
+  ];
 
   const TAB_TITLES: Record<Tab, string> = {
     'events': 'Event Explorer',
@@ -712,15 +795,15 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
           <div key={s.label} className="bpl-kpi-card">
             <div className="bpl-kpi-label">{s.label}</div>
             <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
-              {eventsLoading ? <SkelValue wide /> : s.value}
+              {summaryLoading ? <SkelValue wide /> : s.value.toLocaleString()}
             </div>
           </div>
         ))}
       </div>
 
-      {tab === 'events' && <EventsTab events={filtered} busy={eventsLoading} />}
-      {tab === 'by-driver' && <ByDriverTab events={filtered} busy={eventsLoading} />}
-      {tab === 'patterns' && <PatternsTab events={filtered} eventsBusy={eventsLoading} />}
+      {tab === 'events' && <EventsTab dateRange={dateRange} highlightEventId={highlightEventId} />}
+      {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} />}
+      {tab === 'patterns' && <PatternsTab events={patternEvents} eventsBusy={eventsLoading} />}
     </div>
   );
 }

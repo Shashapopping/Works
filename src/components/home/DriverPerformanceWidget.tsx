@@ -1,69 +1,71 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingDown, TrendingUp, Minus, UserRound } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
+import { displayDriverName } from '../../lib/driverUtils';
+import { CATEGORY_COLORS, type ConsequenceCategory } from '../../lib/consequenceScore';
+import { assessDrivers, pickHomeDriverMix, latestEventIso } from '../../lib/driverAssessment';
+import { useAssessmentTripDrivers } from '../../hooks/useAssessmentTripDrivers';
 
-function scoreColor(score: number) {
-  if (score >= 80) return '#16a34a';
-  if (score >= 60) return '#d97706';
-  if (score >= 45) return '#e05c2a';
-  return '#CC0000';
+const BAND_LABEL: Record<ConsequenceCategory, string> = {
+  Green: 'On track',
+  Amber: 'Needs coaching',
+  Yellow: 'Suspension review',
+  Red: 'Critical',
+};
+
+function timeAgo(iso: string) {
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 export default function DriverPerformanceWidget() {
-  const { drivers } = useFleet();
+  const { events } = useFleet();
+  const { tripDrivers } = useAssessmentTripDrivers();
+  const rows = useMemo(
+    () => pickHomeDriverMix(assessDrivers(events, tripDrivers)),
+    [events, tripDrivers],
+  );
 
   return (
-    <div className="bpl-card bpl-home-panel-card">
+    <div className="bpl-card bpl-home-panel-card bpl-home-drivers-panel">
       <div className="bpl-card-header">
         <span className="bpl-card-title">Driver Performance</span>
         <Link to="/drivers" className="bpl-card-link">See all</Link>
       </div>
-      <div className="bpl-card-body bpl-home-panel-scroll">
-        {drivers.length === 0 ? (
-          <div style={{ color: 'var(--cd-text-muted)', fontSize: 13 }}>No driver data yet</div>
-        ) : drivers.map(d => {
-          const color = scoreColor(d.score);
-          const detailParts = [
-            `${d.incidents} incident${d.incidents === 1 ? '' : 's'} (30d)`,
+      <div className="bpl-card-body bpl-home-panel-scroll bpl-driver-list">
+        {rows.length === 0 ? (
+          <div className="bpl-driver-empty">No driver data yet</div>
+        ) : rows.map(d => {
+          const color = CATEGORY_COLORS[d.consequence.category] ?? CATEGORY_COLORS.Green;
+          const last = latestEventIso(d);
+          const meta = [
             d.harshBraking > 0 ? `${d.harshBraking} brake` : null,
             d.overspeeding > 0 ? `${d.overspeeding} speed` : null,
-            d.lastEvent ? `last ${d.lastEvent}` : null,
-          ].filter(Boolean);
-
+          ].filter(Boolean).join(' · ');
           return (
-            <Link key={d.name} to="/drivers" className="bpl-driver-row bpl-widget-row-link">
-              <div
-                className="bpl-driver-avatar-img"
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: '50%',
-                  background: 'var(--cd-surface-2)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: 'var(--cd-text-muted)',
-                  flexShrink: 0,
-                }}
-              >
-                <UserRound size={18} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)' }}>{d.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2, lineHeight: 1.35 }}>
-                  {detailParts.join(' · ')}
+            <Link
+              key={d.key}
+              to={`/drivers?q=${encodeURIComponent(d.name)}`}
+              className="bpl-driver-card"
+              style={{ '--driver-accent': color } as React.CSSProperties}
+            >
+              <div className="bpl-driver-card-body">
+                <div className="bpl-driver-card-top">
+                  <span className="bpl-driver-band">{BAND_LABEL[d.consequence.category]}</span>
+                  {last && <span className="bpl-driver-time">{timeAgo(last)}</span>}
+                </div>
+                <div className="bpl-driver-name">{displayDriverName(d.name)}</div>
+                <div className="bpl-driver-meta">
+                  {d.total} incident{d.total === 1 ? '' : 's'}
+                  {meta ? ` · ${meta}` : ''}
                 </div>
               </div>
-              <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--cd-font-display)', color }}>
-                  {d.score}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                  <span style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>score</span>
-                  {d.trend === 'up' && <TrendingUp size={13} color="#16a34a" />}
-                  {d.trend === 'down' && <TrendingDown size={13} color="#CC0000" />}
-                  {d.trend === 'stable' && <Minus size={13} color="var(--cd-text-muted)" />}
-                </div>
+              <div className="bpl-driver-score">
+                <span className="bpl-driver-score-value">{d.consequence.displayScore}</span>
+                <span className="bpl-driver-score-unit">score</span>
               </div>
             </Link>
           );

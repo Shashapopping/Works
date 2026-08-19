@@ -69,7 +69,6 @@ function slimTrip(t) {
     DrivingTime: t.DrivingTime ?? t.drivingTimeSeconds ?? null,
     DistanceKilometers: t.DistanceKilometers ?? t.distanceKm ?? null,
     MaxSpeedKilometersPerHour: t.MaxSpeedKilometersPerHour ?? t.maxSpeedKph ?? null,
-    FuelUsedLitres: t.FuelUsedLitres ?? null,
   };
 }
 

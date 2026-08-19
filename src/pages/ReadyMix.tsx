@@ -112,7 +112,7 @@ function MixerCard({ v, opts }: { v: Vehicle; opts?: DispatchOpts }) {
   const showSpeed = speed != null && speed > 0;
 
   return (
-    <div className="gv-card" style={{ borderTop: `3px solid ${meta.color}` }}>
+    <div className="gv-card rmx-mixer-card" style={{ borderTop: `3px solid ${meta.color}` }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{
@@ -186,14 +186,7 @@ function MixerRow({ v, opts }: { v: Vehicle; opts?: DispatchOpts }) {
   const loc = locationLabel(v);
 
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: 'minmax(90px, 110px) minmax(70px, 90px) minmax(70px, 90px) 1fr auto',
-      gap: 10, alignItems: 'center',
-      padding: '8px 12px',
-      borderBottom: '1px solid var(--cd-border)',
-      background: 'var(--cd-surface)',
-    }}>
+    <div className="rmx-compact-row">
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, fontFamily: 'var(--cd-font-display)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {v.regNo}
@@ -277,19 +270,12 @@ function SiteSection({
 
       {open && (
         density === 'cards' ? (
-          <div className="gv-grid">
+          <div className="rmx-mixer-grid">
             {vehicles.map(v => <MixerCard key={v.id} v={v} opts={opts} />)}
           </div>
         ) : (
-          <div>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(90px, 110px) minmax(70px, 90px) minmax(70px, 90px) 1fr auto',
-              gap: 10, padding: '6px 12px',
-              fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
-              color: 'var(--cd-text-muted)', background: 'var(--cd-surface-2)',
-              borderBottom: '1px solid var(--cd-border)',
-            }}>
+          <div className="rmx-compact-list">
+            <div className="rmx-compact-head">
               <span>Reg</span><span>Status</span><span>Dispatch</span><span>Location</span><span>Updated</span>
             </div>
             {vehicles.map(v => <MixerRow key={v.id} v={v} opts={opts} />)}
@@ -521,14 +507,24 @@ export default function ReadyMix() {
             </div>
 
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <button
-                type="button"
-                className="gv-btn-ghost"
-                onClick={() => setDensity(d => d === 'cards' ? 'compact' : 'cards')}
-                title={density === 'cards' ? 'Switch to compact rows' : 'Switch to cards'}
-              >
-                {density === 'cards' ? <><Rows3 size={13} /> Compact</> : <><LayoutGrid size={13} /> Cards</>}
-              </button>
+              <div className="rmx-density" role="group" aria-label="Board density">
+                <button
+                  type="button"
+                  className={`rmx-density-btn${density === 'cards' ? ' is-on' : ''}`}
+                  aria-pressed={density === 'cards'}
+                  onClick={() => { setDensity('cards'); setAllOpen(true); }}
+                >
+                  <LayoutGrid size={13} /> Cards
+                </button>
+                <button
+                  type="button"
+                  className={`rmx-density-btn${density === 'compact' ? ' is-on' : ''}`}
+                  aria-pressed={density === 'compact'}
+                  onClick={() => { setDensity('compact'); setAllOpen(true); }}
+                >
+                  <Rows3 size={13} /> Compact
+                </button>
+              </div>
               <button type="button" className="gv-btn-ghost" onClick={() => setAllOpen(o => !o)}>
                 {allOpen ? 'Collapse all' : 'Expand all'}
               </button>

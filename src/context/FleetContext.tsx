@@ -5,13 +5,11 @@ import { lookupSafetyReference, formatReferenceForPrompt } from '../data/safetyR
 import {
   type StatusFilter,
   type AlertItem,
-  type DriverScore,
   type MaintenanceItem,
   type FuelDay,
   type AiInsight,
   type TripItem,
   deriveAlerts,
-  deriveDriverScores,
   deriveInsights,
   normalizeVehicle,
   DEFAULT_MAINTENANCE,
@@ -26,7 +24,6 @@ import {
   sanitizeNotification,
   sanitizeDriverDistance,
   sanitizeVaultRecord,
-  sanitizeDriverScore,
 } from '../lib/demoSanitize';
 import {
   computeFleetScore,
@@ -34,13 +31,14 @@ import {
   saveFleetScoreConfig,
   FLEET_SCORE_CONFIG_EVENT,
   type FleetScoreConfig,
+  type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, BOOT_PREFETCH_URLS } from '../lib/apiCache';
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
 
-export type { StatusFilter, AlertItem, DriverScore, MaintenanceItem, FuelDay, AiInsight, TripItem };
+export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
 export type DistanceRange = '24h' | 'currentMonth' | 'lastMonth';
 
@@ -248,12 +246,13 @@ interface FleetContextType {
   eventsLoading: boolean;
   /** True while driver-distance for current distanceRange is in flight. */
   distanceLoading: boolean;
+  safetyExposure: FleetSafetyExposure | null;
+  safetyExposureLoading: boolean;
   fleetSafetyScore: number;
   fleetScoreDelta: number;
   safetyScore: number;
   safetyDelta: number;
   alerts: AlertItem[];
-  drivers: DriverScore[];
   maintenance: MaintenanceItem[];
   fuelSeries: FuelDay[];
   insights: AiInsight[];
@@ -347,6 +346,9 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const [vehiclesLoading, setVehiclesLoading] = useState(() => !cachePeek<Vehicle[]>(CACHE_KEYS.fleetData)?.length);
   const [eventsLoading, setEventsLoading] = useState(() => !(cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents)?.length));
   const [distanceLoading, setDistanceLoading] = useState(true);
+  const [safetyExposure, setSafetyExposure] = useState<FleetSafetyExposure | null>(null);
+  const [safetyExposurePrev, setSafetyExposurePrev] = useState<FleetSafetyExposure | null>(null);
+  const [safetyExposureLoading, setSafetyExposureLoading] = useState(true);
   const [distanceRange, setDistanceRangeState] = useState<DistanceRange>('24h');
   const setDistanceRange = useCallback((range: DistanceRange) => {
     setDistanceLoading(true);
@@ -475,9 +477,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         async () => {
           const to = new Date().toISOString();
           const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=5000`);
+          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=500`);
           if (!res.ok) return null;
-          return res.json();
+          const payload = await res.json();
+          return Array.isArray(payload) ? payload : payload?.entries ?? [];
         },
       );
       if (!data) return;
@@ -646,15 +649,44 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const loadDriverDistance = useCallback(async () => {
     setDistanceLoading(true);
     try {
-      const res = await authFetch(`/api/driver-distance?range=${distanceRange}`);
+      const res = await authFetch(`/api/driver-distance?range=${distanceRange}&trips=0`);
       if (res.ok) setDriverDistance(await res.json());
     } catch {}
     finally { setDistanceLoading(false); }
   }, [distanceRange]);
 
+  const loadSafetyExposure = useCallback(async () => {
+    setSafetyExposureLoading(true);
+    try {
+      const [cur, prev] = await Promise.all([
+        cachedFetchJson<FleetSafetyExposure>(
+          CACHE_KEYS.safetySummary('30d'),
+          CACHE_TTL.safetySummary,
+          async () => {
+            const res = await authFetch('/api/safety/summary?range=30d');
+            if (!res.ok) return null;
+            return res.json();
+          },
+        ),
+        cachedFetchJson<FleetSafetyExposure>(
+          CACHE_KEYS.safetySummary('prev30d'),
+          CACHE_TTL.safetySummary,
+          async () => {
+            const res = await authFetch('/api/safety/summary?range=prev30d');
+            if (!res.ok) return null;
+            return res.json();
+          },
+        ),
+      ]);
+      if (cur) setSafetyExposure(cur);
+      if (prev) setSafetyExposurePrev(prev);
+    } catch { /* keep prior */ }
+    finally { setSafetyExposureLoading(false); }
+  }, []);
+
   const loadFuelSummary = useCallback(async () => {
     try {
-      const url = '/api/fuel/consumption?period=week';
+      const url = '/api/fuel/consumption?period=week&trips=0';
       const data = await cachedFetchJson<{
         assets?: { totalFuelLiters?: number }[];
         summary?: { totalFuelLiters?: number };
@@ -681,51 +713,36 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     setEnvironment({ weather: 'Partly cloudy', traffic: 'Moderate', temp: '28°C' });
   }, []);
 
-  /** Warm Utilization & KPIs so /kpi isn't a cold 20s+ log scan. */
-  const prefetchKpi = useCallback(async () => {
-    const url = '/api/kpi?period=week&scope=quarry';
-    try {
-      await cachedFetchJson(
-        CACHE_KEYS.kpi(url),
-        CACHE_TTL.kpi,
-        async () => {
-          const res = await authFetch(url);
-          if (!res.ok) return null;
-          return res.json();
-        },
-      );
-    } catch { /* ignore */ }
-  }, []);
-
   useEffect(() => {
     loadMetadata();
     loadVehicles();
     loadEvents();
     loadDriverDistance();
+    loadSafetyExposure();
     loadFuelSummary();
     loadEnvironment();
-    const kpiWarm = window.setTimeout(() => { void prefetchKpi(); }, 1500);
     const bootWarm = window.setTimeout(() => {
       for (const url of BOOT_PREFETCH_URLS) {
         void authCachedJson(url, authFetch, { force: true });
       }
-    }, 2500);
+    }, 500);
     const metaInterval = setInterval(loadMetadata, 10_000);
     const vehicleInterval = setInterval(loadVehicles, 10_000);
     // Heavy rollups: ~60s + jitter so pages don't all hit SQLite together
     const stopEvents = startJitteredInterval(loadEvents, 15_000, 4_000);
     const stopDistance = startJitteredInterval(loadDriverDistance);
+    const stopExposure = startJitteredInterval(loadSafetyExposure);
     const stopFuel = startJitteredInterval(loadFuelSummary);
     return () => {
-      clearTimeout(kpiWarm);
       clearTimeout(bootWarm);
       clearInterval(metaInterval);
       clearInterval(vehicleInterval);
       stopEvents();
       stopDistance();
+      stopExposure();
       stopFuel();
     };
-  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadFuelSummary, loadEnvironment, prefetchKpi]);
+  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment]);
 
   // ── Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays
@@ -792,14 +809,14 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   }, [metadata, filteredVehicles, siteFilterActive]);
 
   const { score: fleetSafetyScore, delta: fleetScoreDelta } = useMemo(
-    () => computeFleetScore(filteredEvents, filteredVehicles.length, scoreConfig),
-    [filteredEvents, filteredVehicles.length, scoreConfig],
+    () => computeFleetScore(
+      safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0, byLabel: {} },
+      safetyExposurePrev,
+      scoreConfig,
+    ),
+    [safetyExposure, safetyExposurePrev, scoreConfig],
   );
   const alerts = useMemo(() => deriveAlerts(filteredEvents), [filteredEvents]);
-  const drivers = useMemo(
-    () => deriveDriverScores(filteredEvents, scoreConfig.driverPenaltyPerEvent).filter(d => isKnownDriver(d.name)),
-    [filteredEvents, scoreConfig.driverPenaltyPerEvent],
-  );
   const insights = useMemo(() => deriveInsights(filteredEvents, filteredVehicles), [filteredEvents, filteredVehicles]);
   const maintenance = DEFAULT_MAINTENANCE;
   const trips = DEMO_TRIPS;
@@ -852,10 +869,6 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     () => sanitizeDriverDistance(driverDistance),
     [driverDistance],
   );
-  const demoDrivers = useMemo(
-    () => (DEMO_BRANDING ? drivers.map(sanitizeDriverScore) : drivers),
-    [drivers],
-  );
   const demoNotifications = useMemo(
     () => (DEMO_BRANDING ? notifications.map(sanitizeNotification) : notifications),
     [notifications],
@@ -875,10 +888,11 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     <FleetContext.Provider value={{
       authFetch, metadata: effectiveMetadata, vehicles: demoVehicles, events: demoEvents, driverDistance: demoDriverDistance,
       vehiclesLoading, eventsLoading, distanceLoading,
+      safetyExposure, safetyExposureLoading,
       fleetSafetyScore, fleetScoreDelta,
       safetyScore: fleetSafetyScore,
       safetyDelta: fleetScoreDelta,
-      alerts, drivers: demoDrivers, maintenance, fuelSeries, insights, trips,
+      alerts, maintenance, fuelSeries, insights, trips,
       distanceRange, setDistanceRange, totalDistanceKm, environment,
       redAlertCount,
       notifications: demoNotifications, dismissNotification, clearAllNotifications, selectedNotification: demoSelectedNotification,

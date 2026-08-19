@@ -2,22 +2,32 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { TrendingDown, TrendingUp, Minus } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
-import { scoreBandColor, scoreBandLabel, ratePer100Vehicles } from '../../lib/fleetSafetyScore';
+import {
+  scoreBandColor,
+  scoreBandLabel,
+  ratePer100Km,
+  totalSafetyPointsFromCensus,
+  hosSlicesFromMinutes,
+} from '../../lib/fleetSafetyScore';
 import ConsequenceExplainerModal from '../ConsequenceExplainerModal';
 import { SkelValue } from '../data/DataBusy';
 
 export default function FleetSafetyScore() {
-  const { safetyScore, safetyDelta, events, eventsLoading, metadata, scoreConfig } = useFleet();
+  const {
+    safetyScore, safetyDelta, eventsLoading,
+    metadata, scoreConfig, safetyExposure, safetyExposureLoading,
+  } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
 
   const color = scoreBandColor(safetyScore, scoreConfig);
   const label = scoreBandLabel(safetyScore, scoreConfig);
+  const busy = eventsLoading || safetyExposureLoading;
 
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const recent = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= thirtyDaysAgo);
-  const totalIncidents = recent.length;
-  const vehicleCount = metadata.totalVehicles;
-  const weightedRate = ratePer100Vehicles(recent, vehicleCount, scoreConfig);
+  const distanceKm = safetyExposure?.distanceKm ?? 0;
+  const hosHeldMinutes = safetyExposure?.hosHeldMinutes ?? 0;
+  const hosSlices = hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
+  const points = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
+  const weightedRate = ratePer100Km(points.total, distanceKm);
 
   return (
     <>
@@ -47,25 +57,25 @@ export default function FleetSafetyScore() {
               <circle cx="30" cy="30" r="24" fill="none" stroke="var(--cd-border)" strokeWidth="5" />
               <circle
                 cx="30" cy="30" r="24" fill="none"
-                stroke={eventsLoading ? 'var(--cd-border)' : color} strokeWidth="5"
+                stroke={busy ? 'var(--cd-border)' : color} strokeWidth="5"
                 strokeDasharray={`${2 * Math.PI * 24}`}
-                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (eventsLoading ? 0 : safetyScore) / 100)}`}
+                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (busy ? 0 : safetyScore) / 100)}`}
                 strokeLinecap="round"
               />
             </svg>
             <div className="bpl-safety-gauge-center">
-              <span className="bpl-safety-gauge-score" style={{ color: eventsLoading ? 'var(--cd-text-muted)' : color }}>
-                {eventsLoading ? <SkelValue /> : safetyScore}
+              <span className="bpl-safety-gauge-score" style={{ color: busy ? 'var(--cd-text-muted)' : color }}>
+                {busy ? <SkelValue /> : safetyScore}
               </span>
-              {!eventsLoading && <span className="bpl-safety-gauge-denom">/100</span>}
+              {!busy && <span className="bpl-safety-gauge-denom">/100</span>}
             </div>
           </div>
           <div className="bpl-safety-score-home-meta">
-            <div className="bpl-safety-score-home-status" style={{ color: eventsLoading ? 'var(--cd-text-muted)' : color }}>
-              {eventsLoading ? <SkelValue wide /> : label}
+            <div className="bpl-safety-score-home-status" style={{ color: busy ? 'var(--cd-text-muted)' : color }}>
+              {busy ? <SkelValue wide /> : label}
             </div>
             <div className="bpl-safety-score-home-delta">
-              {eventsLoading ? (
+              {busy ? (
                 <SkelValue wide />
               ) : safetyDelta > 0 ? (
                 <><TrendingUp size={13} color="#16a34a" /><span className="bpl-kpi-delta-up">+{safetyDelta} pts</span></>
@@ -76,18 +86,20 @@ export default function FleetSafetyScore() {
               )}
             </div>
             <div className="bpl-safety-score-home-stats">
-              {eventsLoading ? (
+              {busy ? (
                 <SkelValue wide />
               ) : (
                 <>
-                  <span><strong>{weightedRate.toFixed(1)}</strong> wt/100</span>
+                  <span><strong>{weightedRate.toFixed(2)}</strong> /100 km</span>
                   <span className="bpl-safety-score-home-dot" />
-                  <span>aim ≤<strong>{scoreConfig.leadingRatePer100}</strong></span>
+                  <span>0 harm = 100</span>
+                  <span className="bpl-safety-score-home-dot" />
+                  <span>{hosSlices} HOS</span>
                 </>
               )}
             </div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              Aim = 85 · beat aim → 100 · click for detail
+              0 harm/100 km = 100 · click for detail
             </div>
           </div>
         </button>
@@ -97,9 +109,12 @@ export default function FleetSafetyScore() {
         <ConsequenceExplainerModal
           fleetScore={safetyScore}
           fleetDelta={safetyDelta}
-          totalIncidents={totalIncidents}
-          vehicleCount={vehicleCount}
+          totalIncidents={safetyExposure?.incidentTotal ?? 0}
+          vehicleCount={metadata.totalVehicles}
           actualWeightedRate={weightedRate}
+          distanceKm={distanceKm}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

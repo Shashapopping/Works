@@ -1,8 +1,26 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { Fuel, ZoomIn } from 'lucide-react';
 import { fetchFuelHistoryCached, peekFuelHistory } from '../hooks/useFuelConsumption';
 import { DataRegion } from './data/DataBusy';
+import {
+  chartBucketMinutes,
+  dropoutRevealFromRaw,
+  formatFuel,
+  formatRefuelTimes,
+  processFuelReadings,
+  type FuelSignalMetrics,
+} from '../lib/fuelSignal';
+import FuelSparkNotes from './FuelSparkNotes';
 
 export type FuelTimeMode = 'day' | 'week' | 'month' | 'custom';
 
@@ -32,10 +50,28 @@ export function fuelZoneColor(zone: string) {
   return FUEL_ZONE_COLORS[zone?.toUpperCase()] ?? '#6B7A8D';
 }
 
+export function sameAssetId(a?: string | number | null, b?: string | number | null) {
+  if (a == null || b == null || a === '' || b === '') return false;
+  return String(a).trim() === String(b).trim();
+}
+
+export function findFuelSeries(
+  all: FuelSeries[],
+  opts: { assetId?: string | null; regNo?: string | null },
+): FuelSeries | undefined {
+  const id = opts.assetId != null ? String(opts.assetId).trim() : '';
+  const reg = (opts.regNo || '').trim();
+  const regCompact = reg.replace(/\s+/g, '');
+  return all.find(s => {
+    if (id && sameAssetId(s.assetId, id)) return true;
+    const plate = (s.regNo || '').trim();
+    if (reg && (plate === reg || plate.replace(/\s+/g, '') === regCompact)) return true;
+    return false;
+  });
+}
+
 // Zoom levels: scrolling out widens the window and compresses readings into coarser buckets
 const WINDOW_STEPS_HOURS = [6, 12, 24, 48, 72, 168, 336, 720] as const;
-const BUCKET_STEPS = [5, 15, 30, 60, 180, 360, 720, 1440] as const;
-const TARGET_POINTS = 288;
 
 const PRESETS: { label: string; hours: number }[] = [
   { label: 'Today', hours: 24 },
@@ -43,14 +79,6 @@ const PRESETS: { label: string; hours: number }[] = [
   { label: '7 Days', hours: 168 },
   { label: '30 Days', hours: 720 },
 ];
-
-function bucketForWindow(windowHours: number) {
-  const raw = (windowHours * 60) / TARGET_POINTS;
-  for (const step of BUCKET_STEPS) {
-    if (step >= raw) return step;
-  }
-  return BUCKET_STEPS[BUCKET_STEPS.length - 1];
-}
 
 function windowLabel(hours: number) {
   if (hours < 24) return `${hours}h`;
@@ -164,34 +192,22 @@ function buildAxisTicks(domainStart: number, domainEnd: number, windowHours: num
   return cleaned;
 }
 
-function buildChartPoints(
-  series: FuelSeries,
-  bucketMin: number,
-  startMs: number | null,
-  endMs: number | null,
-) {
-  const bucketMs = bucketMin * 60_000;
-  // Last reading per bucket — x uses bucket floor so the series sits on a regular grid
-  const buckets = new Map<number, { readingTs: number; level: number }>();
-  series.data.forEach(pt => {
-    const ts = new Date(pt.time).getTime();
-    if (!Number.isFinite(ts)) return;
-    if (startMs != null && ts < startMs) return;
-    if (endMs != null && ts > endMs) return;
-    const b = Math.floor(ts / bucketMs) * bucketMs;
-    const level = Math.max(0, pt.level);
-    const existing = buckets.get(b);
-    if (!existing || ts >= existing.readingTs) {
-      buckets.set(b, { readingTs: ts, level });
-    }
-  });
-  return [...buckets.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([bucketTs, pt]) => ({
-      ts: bucketTs,
-      readingTs: pt.readingTs,
-      level: pt.level,
-    }));
+function FuelTooltip({ active, payload, label, multiDay }: {
+  active?: boolean;
+  payload?: Array<{ value?: number }>;
+  label?: string | number;
+  multiDay: boolean;
+}) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload as { readingTs?: number; ts?: number } | undefined;
+  const t = row?.readingTs ?? row?.ts ?? label;
+  const fuel = payload[0]?.value;
+  return (
+    <div className="hbm-fuel-tooltip">
+      <div className="hbm-fuel-tooltip-date">{formatTooltipTime(Number(t), multiDay)}</div>
+      {fuel != null && <div><strong>{formatFuel(fuel, 0)} L</strong> fuel</div>}
+    </div>
+  );
 }
 
 function seriesDataSpanMs(series: FuelSeries | undefined): { earliest: number; latest: number } | null {
@@ -239,45 +255,40 @@ interface Props {
   selectedAssetId?: string | null;
   zone: QuarrySiteKey;
   onSeriesLoaded?: (series: FuelSeries[]) => void;
+  onSignalMetrics?: (metrics: FuelSignalMetrics | null) => void;
 }
 
-export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeriesLoaded }: Props) {
+export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeriesLoaded, onSignalMetrics }: Props) {
   const [timeMode, setTimeMode] = useState<FuelTimeMode>('day');
   const [windowIdx, setWindowIdx] = useState(() => nearestWindowIndex(24));
   const [customRange, setCustomRange] = useState(defaultCustomRange);
   const [allSeries, setAllSeries] = useState<FuelSeries[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastFetch, setLastFetch] = useState<string | null>(null);
-  const chartAreaRef = useRef<HTMLDivElement | null>(null);
+  const [highlightedSparkId, setHighlightedSparkId] = useState<string | null>(null);
+  const chartPlotRef = useRef<HTMLDivElement | null>(null);
 
   const color = fuelZoneColor(zone);
 
-  const activeSeries = allSeries.find(s => {
-    if (selectedAssetId && String(s.assetId) === String(selectedAssetId)) return true;
-    if (!selectedRegNo) return false;
-    return s.regNo === selectedRegNo || s.regNo?.trim() === selectedRegNo.trim();
+  const activeSeries = findFuelSeries(allSeries, {
+    assetId: selectedAssetId,
+    regNo: selectedRegNo,
   });
   const dataSpan = useMemo(() => seriesDataSpanMs(activeSeries), [activeSeries]);
+
+  useEffect(() => {
+    setHighlightedSparkId(null);
+  }, [selectedRegNo, selectedAssetId]);
 
   const windowHours = timeMode === 'custom'
     ? customWindowHours(customRange.from, customRange.to)
     : WINDOW_STEPS_HOURS[windowIdx];
-  const bucketMin = bucketForWindow(windowHours);
+  const bucketMin = chartBucketMinutes(windowHours);
   const axisDomain = useMemo(
     () => resolveAxisDomain(timeMode, windowHours, customRange.from, customRange.to),
     [timeMode, windowHours, customRange.from, customRange.to],
   );
   const [domainStartMs, domainEndMs] = axisDomain;
-  const axisTicks = useMemo(
-    () => buildAxisTicks(domainStartMs, domainEndMs, windowHours),
-    [domainStartMs, domainEndMs, windowHours],
-  );
-  // Multi-day labels follow the selected window, not sparse data extents
-  const chartSpansMultipleDays = useMemo(() => {
-    if (windowHours > 24) return true;
-    const dayKey = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
-    return dayKey(domainStartMs) !== dayKey(domainEndMs);
-  }, [windowHours, domainStartMs, domainEndMs]);
 
   // dir 1 = zoom out (wider window, compressed data), -1 = zoom in
   const zoomBy = useCallback((dir: 1 | -1) => {
@@ -318,12 +329,13 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
     return false;
   }, [timeMode, windowIdx, dataSpan]);
 
-  // Non-passive wheel listener so zooming doesn't scroll the page
+  // Wheel zoom only on the plot — not summary/header chrome around it
   useEffect(() => {
-    const el = chartAreaRef.current;
+    const el = chartPlotRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       zoomBy(e.deltaY > 0 ? 1 : -1);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -370,19 +382,102 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
     return () => clearInterval(interval);
   }, [load]);
 
-  const chartData = useMemo(
-    () => (activeSeries
-      ? buildChartPoints(activeSeries, bucketMin, domainStartMs, domainEndMs)
-      : []),
-    [activeSeries, bucketMin, domainStartMs, domainEndMs],
+  const processed = useMemo(() => {
+    if (!activeSeries) return null;
+    const clipped = processFuelReadings(activeSeries.data, bucketMin, domainStartMs, domainEndMs);
+    if (clipped.display.length > 0) return clipped;
+    return processFuelReadings(activeSeries.data, bucketMin, null, null);
+  }, [activeSeries, bucketMin, domainStartMs, domainEndMs]);
+
+  const chartData = useMemo(() => {
+    if (!processed?.display.length) return [];
+    return processed.display.map(pt => ({
+      ts: new Date(pt.timestamp).getTime(),
+      readingTs: new Date(pt.timestamp).getTime(),
+      level: pt.levelL,
+    }));
+  }, [processed]);
+
+  const signalMetrics = processed?.metrics ?? null;
+
+  useEffect(() => {
+    onSignalMetrics?.(signalMetrics);
+  }, [signalMetrics, onSignalMetrics]);
+
+  const plotDomain = useMemo((): [number, number] => {
+    if (chartData.length === 0) return [domainStartMs, domainEndMs];
+    const inWindow = chartData.some(p => p.ts >= domainStartMs && p.ts <= domainEndMs);
+    if (inWindow) return [domainStartMs, domainEndMs];
+    const start = chartData[0].ts;
+    const end = Math.max(chartData[chartData.length - 1].ts, start + 60_000);
+    return [start, end];
+  }, [chartData, domainStartMs, domainEndMs]);
+  const [plotStartMs, plotEndMs] = plotDomain;
+  const plotTicks = useMemo(
+    () => buildAxisTicks(plotStartMs, plotEndMs, Math.max(1, (plotEndMs - plotStartMs) / 3_600_000)),
+    [plotStartMs, plotEndMs],
   );
+  const plotSpansMultipleDays = useMemo(() => {
+    const dayKey = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+    return (plotEndMs - plotStartMs) > 24 * 3_600_000 || dayKey(plotStartMs) !== dayKey(plotEndMs);
+  }, [plotStartMs, plotEndMs]);
   const headerLevel = chartData.length
     ? chartData[chartData.length - 1].level
     : activeSeries
       ? latestReading(activeSeries)
       : 0;
 
+  const selectedDropout = useMemo(
+    () => processed?.dropouts.find(d => d.id === highlightedSparkId) ?? null,
+    [processed, highlightedSparkId],
+  );
+
+  const sparkReveal = useMemo(() => {
+    if (!selectedDropout || !processed) return null;
+    return dropoutRevealFromRaw(processed.raw, selectedDropout);
+  }, [selectedDropout, processed]);
+
+  const plotData = useMemo(() => {
+    if (!sparkReveal || !selectedDropout) {
+      return chartData.map(p => ({ ...p, highlight: null as number | null }));
+    }
+    const held = selectedDropout.beforeLevel;
+    const byTs = new Map(chartData.map(p => [p.ts, { ...p, highlight: null as number | null }]));
+    sparkReveal.forEach(pt => {
+      const existing = byTs.get(pt.ts);
+      if (existing) existing.highlight = pt.level;
+      else {
+        byTs.set(pt.ts, {
+          ts: pt.ts,
+          readingTs: pt.ts,
+          level: held,
+          highlight: pt.level,
+        });
+      }
+    });
+    return [...byTs.values()].sort((a, b) => a.ts - b.ts);
+  }, [chartData, sparkReveal, selectedDropout]);
+
+  const yDomain = useMemo((): [number, number] | ['dataMin - 8', 'dataMax + 8'] => {
+    if (!selectedDropout) return ['dataMin - 8', 'dataMax + 8'];
+    const values = plotData.map(p => p.level).concat(selectedDropout.dipLevel, selectedDropout.beforeLevel);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    return [Math.max(0, min - 8), max + 8];
+  }, [plotData, selectedDropout]);
+
   const activePresetHours = timeMode === 'custom' ? null : WINDOW_STEPS_HOURS[windowIdx];
+
+  const efficiencyNote = (() => {
+    if (!signalMetrics) return 'Select a vehicle to view fuel signal.';
+    const refillBit = signalMetrics.refuelCount === 0
+      ? 'No refuels detected on this chart.'
+      : `Refuelled ${signalMetrics.refuelCount}× (${formatRefuelTimes(signalMetrics.refuelTimes)}).`;
+    if (signalMetrics.fuelUsedL <= 0) {
+      return `${refillBit} No measurable fuel drawdown in this window.`;
+    }
+    return `${refillBit} ${formatFuel(signalMetrics.fuelUsedL, 1)} L used in window.`;
+  })();
 
   // If current stepped window has no usable coverage, snap back to the widest available preset
   useEffect(() => {
@@ -418,7 +513,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
               display: 'flex', alignItems: 'center', gap: 4,
               background: 'var(--cd-surface-2)', padding: '3px 6px', borderRadius: 8,
             }}
-            title="Scroll on the chart to zoom — out widens the window and compresses the data"
+            title="Scroll on the chart plot to zoom"
           >
             <ZoomIn size={13} color="var(--cd-text-muted)" />
             <button
@@ -521,8 +616,8 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
         </div>
       </div>
 
-      {/* Chart body — scroll to zoom the time window */}
-      <div ref={chartAreaRef} style={{ flex: 1, padding: '16px 16px 12px' }}>
+      {/* Chart body */}
+      <div style={{ flex: 1, padding: '16px 16px 12px' }}>
         {!selectedRegNo && !selectedAssetId ? (
           <div style={{ height: 320, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--cd-text-muted)', fontSize: 13 }}>
             Select a vehicle from the list
@@ -537,62 +632,95 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
               </div>
             ) : (
               <>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 14 }}>
+                <div className="hbm-fuel-chart-head">
                   <div>
-                    <span style={{ fontSize: 20, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)' }}>{activeSeries.regNo}</span>
-                    <span style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginLeft: 8 }}>{activeSeries.assetName}</span>
-                  </div>
-                  <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                    <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
-                      {headerLevel.toFixed(0)}
-                      <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--cd-text-muted)', marginLeft: 3 }}>L</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 2 }}>Current level</div>
+                    <span className="hbm-fuel-chart-reg" style={{ color }}>{activeSeries.regNo}</span>
+                    <span className="hbm-fuel-chart-asset">{activeSeries.assetName}</span>
                   </div>
                 </div>
-                <ResponsiveContainer width="100%" height={280}>
-                  <LineChart data={chartData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" />
+                <div className="hbm-fuel-summary">
+                  <div>
+                    <span>Current fuel</span>
+                    <strong>{formatFuel(headerLevel, 0)} L</strong>
+                  </div>
+                  <div>
+                    <span>Fuel used</span>
+                    <strong>{formatFuel(signalMetrics?.fuelUsedL ?? null, 1)} L</strong>
+                  </div>
+                  <div>
+                    <span>Refuels</span>
+                    <strong>{signalMetrics?.refuelCount ?? 0}</strong>
+                    {(signalMetrics?.refuelCount ?? 0) > 0 && (
+                      <small>{formatRefuelTimes(signalMetrics!.refuelTimes)}</small>
+                    )}
+                  </div>
+                </div>
+                <p className="hbm-fuel-signal-note">{efficiencyNote}</p>
+                <FuelSparkNotes
+                  events={processed?.dropouts ?? []}
+                  selectedId={highlightedSparkId}
+                  onSelect={setHighlightedSparkId}
+                />
+                <div ref={chartPlotRef} className="hbm-fuel-chart-plot" title="Scroll here to zoom the time window">
+                  <ResponsiveContainer width="100%" height={260}>
+                  <ComposedChart data={plotData} margin={{ top: 8, right: 12, left: 12, bottom: 28 }}>
+                    <CartesianGrid stroke="var(--cd-border)" strokeDasharray="4 8" vertical={false} />
                     <XAxis
                       type="number"
                       dataKey="ts"
-                      domain={[domainStartMs, domainEndMs]}
-                      ticks={axisTicks}
-                      tickFormatter={t => formatAxisTime(Number(t), chartSpansMultipleDays)}
-                      tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }}
+                      domain={[plotStartMs, plotEndMs]}
+                      ticks={plotTicks}
+                      tickFormatter={t => formatAxisTime(Number(t), plotSpansMultipleDays)}
+                      tick={{ fill: 'var(--cd-text-muted)', fontSize: 10 }}
                       tickLine={false}
                       axisLine={false}
+                      minTickGap={72}
+                      height={40}
                       scale="time"
                       allowDataOverflow
                     />
                     <YAxis
                       tickFormatter={v => `${v}L`}
-                      tick={{ fontSize: 11, fill: 'var(--cd-text-muted)' }}
+                      tick={{ fill: 'var(--cd-text-muted)', fontSize: 10 }}
                       tickLine={false}
                       axisLine={false}
-                      width={46}
-                      domain={['auto', 'auto']}
+                      width={58}
+                      domain={yDomain}
                     />
-                    <Tooltip
-                      contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }}
-                      labelFormatter={(_label, payload) => {
-                        const row = payload?.[0]?.payload as { readingTs?: number; ts?: number } | undefined;
-                        const t = row?.readingTs ?? row?.ts ?? _label;
-                        return formatTooltipTime(Number(t), chartSpansMultipleDays);
-                      }}
-                      formatter={(v: number) => [`${parseFloat(String(v)).toFixed(0)}L`, 'Fuel Level']}
-                    />
-                    <Line
-                      type="monotone"
+                    <Tooltip content={<FuelTooltip multiDay={plotSpansMultipleDays} />} />
+                    <Area
+                      type="stepAfter"
                       dataKey="level"
                       stroke={color}
-                      strokeWidth={2}
+                      strokeWidth={2.5}
+                      fill={`${color}1f`}
                       dot={false}
-                      activeDot={{ r: 4 }}
+                      activeDot={{ r: 5, fill: color, stroke: '#fff', strokeWidth: 2 }}
                       connectNulls
+                      isAnimationActive={false}
                     />
-                  </LineChart>
-                </ResponsiveContainer>
+                    {sparkReveal && (
+                      <Line
+                        type="stepAfter"
+                        dataKey="highlight"
+                        stroke="#d97706"
+                        strokeWidth={3}
+                        dot={false}
+                        activeDot={false}
+                        connectNulls={false}
+                        isAnimationActive={false}
+                        legendType="none"
+                      />
+                    )}
+                  </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+                {(signalMetrics?.refuelCount ?? 0) > 0 && (
+                  <div className="hbm-fuel-refuel-legend">
+                    <span className="hbm-fuel-refuel-dot" aria-hidden="true" />
+                    Confirmed refuel on chart
+                  </div>
+                )}
               </>
             )}
           </DataRegion>

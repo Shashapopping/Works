@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Users, User, GraduationCap, Award, BadgeCheck,
+  LayoutDashboard, Users, User, GraduationCap, BadgeCheck,
   AlertTriangle, Search, ListChecks, TrendingUp,
   Shield, Wrench, FileBarChart2, Folder, BarChart3, Fuel,
   Truck, Map, Navigation, Route, Brain, Lock, Gauge,
@@ -38,8 +38,7 @@ const NAV: NavGroup[] = [
     path: '/drivers', icon: Users, label: 'Driver Management',
     children: [
       { path: '/drivers', label: 'Drivers', icon: User },
-      { path: '/drivers/coaching', label: 'Coaching', icon: GraduationCap },
-      { path: '/drivers/training', label: 'Training', icon: Award },
+      { path: '/drivers/coaching', label: 'Coaching & Training', icon: GraduationCap },
       { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
       { path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon },
       { path: '/drivers/vision', label: 'Vision', icon: Camera },
@@ -338,7 +337,8 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
               }}>
                 {group.children!.map(child => {
                   const SubIcon = child.icon;
-                  const childActive = location.pathname === child.path;
+                  const childActive = location.pathname === child.path
+                    || (child.path === '/drivers/coaching' && location.pathname === '/drivers/training');
                   return (
                     <NavLink
                       key={child.path}

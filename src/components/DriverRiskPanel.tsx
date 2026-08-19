@@ -53,6 +53,24 @@ type DateRange = 'today' | '7days' | '30days' | 'alltime' | 'custom';
 type Format = 'csv' | 'excel' | 'pdf';
 type TopN = 10 | 20 | 50 | 'all';
 
+function isoLogRange(dateRange: DateRange, fromDate: string, toDate: string): { from: string; to: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  if (dateRange === 'today') {
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    return { from: start.toISOString(), to };
+  }
+  if (dateRange === '7days') return { from: new Date(now.getTime() - 7 * 86400000).toISOString(), to };
+  if (dateRange === '30days') return { from: new Date(now.getTime() - 30 * 86400000).toISOString(), to };
+  if (dateRange === 'custom' && fromDate && toDate) {
+    return {
+      from: new Date(fromDate).toISOString(),
+      to: new Date(new Date(toDate).getTime() + 86400000 - 1).toISOString(),
+    };
+  }
+  return { from: '2020-01-01T00:00:00.000Z', to };
+}
+
 const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 
 const LABEL_TO_KEY: Record<string, keyof Pick<DriverRisk, 'harshBraking' | 'harshAcceleration' | 'overspeeding' | 'overspeedTiered' | 'harshCornering'>> = {
@@ -84,7 +102,8 @@ function formatTime(iso: string) {
 }
 
 export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: Props) {
-  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [driversRaw, setDriversRaw] = useState<DriverRisk[]>([]);
+  const [eventPages, setEventPages] = useState<Record<string, LogEntry[]>>({});
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [dateRange, setDateRange] = useState<DateRange>('7days');
@@ -97,95 +116,58 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
 
   useEffect(() => {
     if (!open) return;
+    if (dateRange === 'custom' && (!fromDate || !toDate)) return;
+    let cancelled = false;
     const load = async () => {
       setLoading(true);
       try {
-        const res = await authFetch('/api/events/log');
-        if (res.ok) {
-          const data = await res.json();
-          setEntries(Array.isArray(data) ? data : []);
-        }
+        const { from, to } = isoLogRange(dateRange, fromDate, toDate);
+        const params = new URLSearchParams({ from, to });
+        const res = await authFetch(`/api/risk/drivers?${params}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const rows = Array.isArray(data?.drivers) ? data.drivers : [];
+        if (cancelled) return;
+        setDriversRaw(rows
+          .filter((d: { driverName?: string }) => isKnownDriver(d.driverName))
+          .map((d: {
+            driverName?: string;
+            assetId?: string | null;
+            harshBraking?: number;
+            harshAcceleration?: number;
+            overspeeding?: number;
+            overspeedTiered?: number;
+            harshCornering?: number;
+            total?: number;
+          }) => ({
+            driverName: d.driverName || 'N/A',
+            driverPhone: 'N/A',
+            assetName: d.assetId || 'N/A',
+            regNo: 'N/A',
+            transporter: 'N/A',
+            harshBraking: d.harshBraking || 0,
+            harshAcceleration: d.harshAcceleration || 0,
+            overspeeding: d.overspeeding || 0,
+            overspeedTiered: d.overspeedTiered || 0,
+            harshCornering: d.harshCornering || 0,
+            total: d.total || 0,
+            panic: 0,
+            events: [],
+          })));
+        setEventPages({});
       } catch {
         // ignore
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
-    load();
-    const interval = setInterval(load, 10_000);
-    return () => clearInterval(interval);
-  }, [open]);
+    void load();
+    return () => { cancelled = true; };
+  }, [open, dateRange, fromDate, toDate, authFetch]);
 
   if (!open) return null;
 
-  const getDateFilter = (entry: LogEntry): boolean => {
-    const ts = new Date(entry.eventTime || entry.timestamp).getTime();
-    if (isNaN(ts)) return true;
-    const now = Date.now();
-    if (dateRange === 'today') {
-      const start = new Date(); start.setHours(0, 0, 0, 0);
-      return ts >= start.getTime();
-    }
-    if (dateRange === '7days') return ts >= now - 7 * 24 * 60 * 60 * 1000;
-    if (dateRange === '30days') return ts >= now - 30 * 24 * 60 * 60 * 1000;
-    if (dateRange === 'custom' && fromDate && toDate) {
-      const from = new Date(fromDate).getTime();
-      const to = new Date(toDate).getTime() + 86400000;
-      return ts >= from && ts <= to;
-    }
-    return true;
-  };
-
-  const driverMap = new Map<string, DriverRisk>();
-
-  entries.forEach(entry => {
-    const panic = isPanicEntry(entry);
-    const label = entry.label || (panic ? 'Panic' : undefined);
-    if (!label) return;
-    if (HIDDEN_LABELS.includes(label)) return;
-    if (!getDateFilter(entry)) return;
-
-    if (!isKnownDriver(entry.driverName)) return;
-
-    const driverKey = entry.driverName!;
-
-    if (!driverMap.has(driverKey)) {
-      driverMap.set(driverKey, {
-        driverName: entry.driverName || 'N/A',
-        driverPhone: entry.driverPhone || 'N/A',
-        assetName: entry.assetName || 'N/A',
-        regNo: entry.regNo || 'N/A',
-        transporter: entry.transporter || 'N/A',
-        harshBraking: 0,
-        harshAcceleration: 0,
-        overspeeding: 0,
-        overspeedTiered: 0,
-        harshCornering: 0,
-        total: 0,
-        panic: 0,
-        events: [],
-      });
-    }
-
-    const driver = driverMap.get(driverKey)!;
-    driver.events.push(entry);
-
-    if (panic) {
-      driver.panic++;
-    } else {
-      const key = LABEL_TO_KEY[label];
-      if (key) {
-        driver[key]++;
-        driver.total++;
-      }
-    }
-
-    if (entry.assetName && entry.assetName !== 'N/A') driver.assetName = entry.assetName;
-    if (entry.regNo && entry.regNo !== 'N/A') driver.regNo = entry.regNo;
-    if (entry.transporter && entry.transporter !== 'N/A') driver.transporter = entry.transporter;
-  });
-
-  let drivers = Array.from(driverMap.values()).sort((a, b) => b.total - a.total);
+  let drivers = [...driversRaw].sort((a, b) => b.total - a.total);
 
   if (searchTerm) {
     const s = searchTerm.toLowerCase();
@@ -201,12 +183,29 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
     drivers = drivers.slice(0, topN);
   }
 
-  const toggleExpanded = (key: string) => {
+  const toggleExpanded = (key: string, driverName: string) => {
     setExpandedDrivers(prev => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+    if (eventPages[key]) return;
+    const { from, to } = isoLogRange(dateRange, fromDate, toDate);
+    const params = new URLSearchParams({
+      format: 'page',
+      limit: '40',
+      from,
+      to,
+      driver: driverName,
+    });
+    void authFetch(`/api/events/log?${params}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data) return;
+        const rows = Array.isArray(data) ? data : data.entries ?? [];
+        setEventPages(prev => ({ ...prev, [key]: rows }));
+      })
+      .catch(() => { /* ignore */ });
   };
 
   const COLUMNS = [
@@ -228,19 +227,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
     { header: 'Location', getSummary: (_d: DriverRisk) => '—', getEvent: (_d: DriverRisk, e: LogEntry) => getLocation(e) },
   ];
 
-  const buildRows = () => {
-    const rows: string[][] = [];
-    drivers.forEach(d => {
-      rows.push(COLUMNS.map(c => c.getSummary(d)));
-      d.events
-        .filter(e => !HIDDEN_LABELS.includes(e.label || ''))
-        .sort((a, b) => new Date(b.eventTime).getTime() - new Date(a.eventTime).getTime())
-        .forEach(e => {
-          rows.push(COLUMNS.map(c => c.getEvent(d, e)));
-        });
-    });
-    return rows;
-  };
+  const buildRows = () => drivers.map(d => COLUMNS.map(c => c.getSummary(d)));
 
   const downloadCSV = () => {
     const headers = COLUMNS.map(c => `"${c.header}"`);
@@ -311,43 +298,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
           margin: { left: 14, right: 14 },
         });
 
-        y = (doc as any).lastAutoTable.finalY + 1;
-
-        const eventRows = d.events
-          .filter(e => !HIDDEN_LABELS.includes(e.label || ''))
-          .sort((a, b) => new Date(b.eventTime).getTime() - new Date(a.eventTime).getTime())
-          .map(e => [
-            e.assetName || d.assetName,
-            e.regNo || d.regNo,
-            e.transporter || d.transporter,
-            e.label || 'Panic',
-            e.eventTime ? formatTime(e.eventTime) : 'N/A',
-            getLocation(e),
-          ]);
-
-        if (eventRows.length > 0) {
-          (doc as any).autoTable({
-            startY: y,
-            head: [['Asset Name', 'Reg No', 'Transporter', 'Event', 'Event Time', 'Location']],
-            body: eventRows,
-            theme: 'plain',
-            styles: { fontSize: 7, cellPadding: 2 },
-            headStyles: { fillColor: [241, 245, 249], textColor: [100, 116, 139], fontStyle: 'bold', fontSize: 7 },
-            alternateRowStyles: { fillColor: [248, 250, 252] },
-            columnStyles: { 0: { cellWidth: 35 }, 1: { cellWidth: 25 }, 2: { cellWidth: 30 }, 3: { cellWidth: 28 }, 4: { cellWidth: 30 }, 5: { cellWidth: 'auto' } },
-            didParseCell: (data: any) => {
-              if (data.section === 'body' && data.column.index === 3) {
-                const isPanic = eventRows[data.row.index]?.[3] === 'Panic';
-                data.cell.styles.textColor = isPanic ? [200, 16, 46] : [133, 79, 11];
-                data.cell.styles.fontStyle = 'bold';
-              }
-            },
-            margin: { left: 14, right: 14 },
-          });
-          y = (doc as any).lastAutoTable.finalY + 6;
-        } else {
-          y += 6;
-        }
+        y = (doc as any).lastAutoTable.finalY + 6;
       });
 
       doc.save(`cnl-driver-risk-${new Date().toISOString().slice(0, 10)}.pdf`);
@@ -453,7 +404,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
 
         {/* Driver List */}
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {loading && entries.length === 0 ? (
+          {loading && driversRaw.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: '13px' }}>Loading...</div>
           ) : drivers.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: '13px' }}>No data found</div>
@@ -465,7 +416,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
               <div key={key} style={{ borderRadius: '8px', border: `0.5px solid ${hasInfractions ? '#fde68a' : 'var(--cd-border)'}`, backgroundColor: hasInfractions ? '#fffbeb' : 'var(--cd-surface-2)', overflow: 'hidden', flexShrink: 0 }}>
 
                 {/* Summary Row */}
-                <div onClick={() => toggleExpanded(key)} style={{ padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div onClick={() => toggleExpanded(key, driver.driverName)} style={{ padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
 
                   {/* Rank */}
                   <span style={{ fontSize: '11px', fontWeight: '600', color: hasInfractions ? '#854F0B' : 'var(--cd-text-muted)', minWidth: '24px' }}>
@@ -505,7 +456,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
                 {/* Expanded Events */}
                 {isExpanded && (
                   <div style={{ borderTop: '0.5px solid #fde68a', backgroundColor: 'var(--cd-surface)', maxHeight: '320px', overflowY: 'auto' }}>
-                    {driver.events
+                    {(eventPages[key] || driver.events)
                       .filter(e => !HIDDEN_LABELS.includes(e.label || ''))
                       .sort((a, b) => new Date(b.eventTime).getTime() - new Date(a.eventTime).getTime())
                       .map((e, ei) => {
@@ -541,7 +492,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
 
         {/* Footer */}
         <div style={{ padding: '10px 16px', borderTop: '1px solid var(--cd-border)', fontSize: '11px', color: 'var(--cd-text-muted)', textAlign: 'center', flexShrink: 0 }}>
-          {drivers.length} driver{drivers.length !== 1 ? 's' : ''} • auto-refreshes every 10s
+          {drivers.length} driver{drivers.length !== 1 ? 's' : ''} · totals from SQL
         </div>
 
       </div>
