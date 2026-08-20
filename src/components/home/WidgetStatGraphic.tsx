@@ -6,7 +6,7 @@ interface Props {
   icon?: LucideIcon;
   graphicSrc?: string;
   graphicAlt?: string;
-  size?: 'sm' | 'md';
+  size?: 'xs' | 'sm' | 'md';
 }
 
 export default function WidgetStatGraphic({
@@ -16,7 +16,7 @@ export default function WidgetStatGraphic({
   graphicAlt = '',
   size = 'md',
 }: Props) {
-  const dim = size === 'sm' ? 28 : 36;
+  const dim = size === 'xs' ? 24 : size === 'sm' ? 28 : 36;
   const style: CSSProperties = {
     width: dim,
     height: dim,
@@ -29,7 +29,7 @@ export default function WidgetStatGraphic({
       {graphicSrc ? (
         <img src={graphicSrc} alt={graphicAlt} className="bpl-stat-graphic-img" />
       ) : Icon ? (
-        <Icon size={size === 'sm' ? 16 : 20} style={{ color }} strokeWidth={2.25} />
+        <Icon size={size === 'xs' ? 14 : size === 'sm' ? 16 : 20} style={{ color }} strokeWidth={2.25} />
       ) : null}
     </div>
   );

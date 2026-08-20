@@ -311,7 +311,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
   const [isStale, setIsStale] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedGroup, setSelectedGroup] = useState<string>('All');
-  const [allOpen, setAllOpen] = useState(true);
+  const [allOpen, setAllOpen] = useState(false);
 
   // Count vehicles per major group for tab badges
   const groupCounts = useMemo(() => {

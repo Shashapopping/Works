@@ -14,7 +14,9 @@ import {
 import {
   analyzeFuelSignal,
   buildStableFuelSeries,
+  formatFuelSignalSummary,
   periodBucketMinutes,
+  type FuelSignalMetrics,
 } from '../../lib/fuelSignal';
 import {
   fetchFuelHistoryCached,
@@ -27,7 +29,55 @@ type FuelPeriod = PeriodValue;
 interface ChartPoint {
   label: string;
   level: number;
+  ts: number;
   time: string;
+}
+
+function tickStepMs(windowMs: number) {
+  const targetTicks = 5;
+  const raw = windowMs / targetTicks;
+  const candidates = [
+    15 * 60_000,
+    30 * 60_000,
+    60 * 60_000,
+    2 * 60 * 60_000,
+    3 * 60 * 60_000,
+    6 * 60 * 60_000,
+    12 * 60 * 60_000,
+    24 * 60 * 60_000,
+    2 * 24 * 60 * 60_000,
+    7 * 24 * 60 * 60_000,
+  ];
+  for (const step of candidates) {
+    if (step >= raw) return step;
+  }
+  return candidates[candidates.length - 1];
+}
+
+function buildAxisTicks(startMs: number, endMs: number): number[] {
+  if (!(endMs > startMs)) return [startMs];
+  const windowMs = endMs - startMs;
+  const step = tickStepMs(windowMs);
+  const first = Math.ceil(startMs / step) * step;
+  const ticks: number[] = [startMs];
+  for (let t = first; t < endMs; t += step) {
+    if (t > startMs && t < endMs) ticks.push(t);
+  }
+  if (ticks[ticks.length - 1] !== endMs) ticks.push(endMs);
+  return [...new Set(ticks)].sort((a, b) => a - b);
+}
+
+function formatAxisTime(ts: number, period: FuelPeriod) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '—';
+  if (period === 'day') {
+    return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' });
+  }
+  return d.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'Africa/Lagos',
+  });
 }
 
 function defaultCustomRange() {
@@ -127,7 +177,7 @@ function bucketSeries(series: FuelSeries, period: FuelPeriod): ChartPoint[] {
       : period === 'month'
         ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Africa/Lagos' })
         : d.toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', timeZone: 'Africa/Lagos' });
-    return { label, level: pt.levelL, time: d.toISOString() };
+    return { label, level: pt.levelL, ts: d.getTime(), time: d.toISOString() };
   });
 }
 
@@ -251,6 +301,20 @@ export default function FuelChartWidget() {
     [displaySeries, period],
   );
 
+  const chartDomain = useMemo(() => {
+    if (!chartData.length) return null;
+    const start = chartData[0].ts;
+    const end = chartData[chartData.length - 1].ts;
+    return {
+      start,
+      end: end > start ? end : start + 60_000,
+    };
+  }, [chartData]);
+  const chartTicks = useMemo(
+    () => (chartDomain ? buildAxisTicks(chartDomain.start, chartDomain.end) : []),
+    [chartDomain],
+  );
+
   const liveLevel = displaySeries ? liveLevels.get(String(displaySeries.assetId)) : liveFallback?.level;
   const chartLevel = chartData.length ? chartData[chartData.length - 1].level : null;
   const currentLevel = liveLevel != null && liveLevel > 0
@@ -265,6 +329,13 @@ export default function FuelChartWidget() {
   const siteLabel = isQuarryZone(zone) ? QUARRY_SITE_LABELS[zone] : 'Quarry';
   const displayReg = (displaySeries?.regNo || liveFallback?.regNo || '').trim();
   const detailAssetId = displaySeries?.assetId || liveFallback?.id;
+  const signalMetrics = useMemo<FuelSignalMetrics | null>(() => {
+    if (!displaySeries || chartData.length === 0) return null;
+    const bucketMin = periodBucketMinutes(period === 'custom' ? 'week' : period);
+    const stable = buildStableFuelSeries(displaySeries.data, bucketMin);
+    return analyzeFuelSignal(stable, bucketMin);
+  }, [displaySeries, period, chartData.length]);
+  const signalNote = formatFuelSignalSummary(signalMetrics);
 
   const detailHref = detailAssetId
     ? `/fuel/monitoring?site=${encodeURIComponent(zone)}&asset=${encodeURIComponent(detailAssetId)}`
@@ -311,6 +382,9 @@ export default function FuelChartWidget() {
                 ? `${displayReg} · ${siteLabel} probe`
                 : 'Quarry probe'}
             </div>
+            <p className="hbm-fuel-signal-note bpl-fuel-signal-note bpl-fuel-signal-note-compact">
+              {signalNote}
+            </p>
           </div>
         </div>
 
@@ -328,11 +402,17 @@ export default function FuelChartWidget() {
                     </linearGradient>
                   </defs>
                   <XAxis
-                    dataKey="label"
+                    type="number"
+                    dataKey="ts"
+                    domain={chartDomain ? [chartDomain.start, chartDomain.end] : [0, 0]}
+                    ticks={chartTicks}
+                    tickFormatter={t => formatAxisTime(Number(t), period)}
                     tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
                     axisLine={false}
                     tickLine={false}
-                    interval={period === 'month' ? 4 : period === 'day' ? 3 : 2}
+                    minTickGap={20}
+                    scale="time"
+                    allowDataOverflow
                   />
                   <YAxis
                     tickFormatter={v => `${v}L`}
@@ -347,7 +427,7 @@ export default function FuelChartWidget() {
                   <Tooltip
                     contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 8, fontSize: 12 }}
                     formatter={(value: number) => [`${Math.round(value).toLocaleString()} L`, 'Fuel level']}
-                    labelFormatter={label => String(label)}
+                    labelFormatter={label => formatAxisTime(Number(label), period)}
                   />
                   <Area
                     type="stepAfter"

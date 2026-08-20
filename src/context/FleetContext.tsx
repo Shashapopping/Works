@@ -370,8 +370,18 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const [scoreConfig, setScoreConfig] = useState<FleetScoreConfig>(() => loadFleetScoreConfig());
   const [selectedSites, setSelectedSitesState] = useState<string[]>(() => loadSelectedSites());
   const seenEventIds = useRef<Set<string>>(new Set());
+  const driverDistanceRef = useRef<DriverDistanceSummary | null>(driverDistance);
+  const safetyExposureRef = useRef<FleetSafetyExposure | null>(safetyExposure);
   // Tracks the incident count at which we last fired a Claude analysis per driver
   const driverAnalysisRef = useRef<Map<string, { lastThreshold: number; notifId: string }>>(new Map());
+
+  useEffect(() => {
+    driverDistanceRef.current = driverDistance;
+  }, [driverDistance]);
+
+  useEffect(() => {
+    safetyExposureRef.current = safetyExposure;
+  }, [safetyExposure]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -647,16 +657,20 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const reloadEvents = useCallback(() => { loadEvents(); }, [loadEvents]);
 
   const loadDriverDistance = useCallback(async () => {
-    setDistanceLoading(true);
+    const hasVisibleDistance = !!driverDistanceRef.current;
+    if (!hasVisibleDistance) setDistanceLoading(true);
     try {
       const res = await authFetch(`/api/driver-distance?range=${distanceRange}&trips=0`);
       if (res.ok) setDriverDistance(await res.json());
     } catch {}
-    finally { setDistanceLoading(false); }
+    finally {
+      if (!hasVisibleDistance) setDistanceLoading(false);
+    }
   }, [distanceRange]);
 
   const loadSafetyExposure = useCallback(async () => {
-    setSafetyExposureLoading(true);
+    const hasVisibleExposure = !!safetyExposureRef.current;
+    if (!hasVisibleExposure) setSafetyExposureLoading(true);
     try {
       const [cur, prev] = await Promise.all([
         cachedFetchJson<FleetSafetyExposure>(
@@ -681,7 +695,9 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       if (cur) setSafetyExposure(cur);
       if (prev) setSafetyExposurePrev(prev);
     } catch { /* keep prior */ }
-    finally { setSafetyExposureLoading(false); }
+    finally {
+      if (!hasVisibleExposure) setSafetyExposureLoading(false);
+    }
   }, []);
 
   const loadFuelSummary = useCallback(async () => {

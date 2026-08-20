@@ -16,6 +16,7 @@ import {
   chartBucketMinutes,
   dropoutRevealFromRaw,
   formatFuel,
+  formatFuelSignalSummary,
   formatRefuelTimes,
   processFuelReadings,
   type FuelSignalMetrics,
@@ -468,16 +469,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
 
   const activePresetHours = timeMode === 'custom' ? null : WINDOW_STEPS_HOURS[windowIdx];
 
-  const efficiencyNote = (() => {
-    if (!signalMetrics) return 'Select a vehicle to view fuel signal.';
-    const refillBit = signalMetrics.refuelCount === 0
-      ? 'No refuels detected on this chart.'
-      : `Refuelled ${signalMetrics.refuelCount}× (${formatRefuelTimes(signalMetrics.refuelTimes)}).`;
-    if (signalMetrics.fuelUsedL <= 0) {
-      return `${refillBit} No measurable fuel drawdown in this window.`;
-    }
-    return `${refillBit} ${formatFuel(signalMetrics.fuelUsedL, 1)} L used in window.`;
-  })();
+  const efficiencyNote = formatFuelSignalSummary(signalMetrics);
 
   // If current stepped window has no usable coverage, snap back to the widest available preset
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, MapPin } from 'lucide-react';
 import type { FleetVehicle } from '../../context/FleetContext';
 
@@ -80,6 +80,10 @@ function VehicleCard({ vehicle }: { vehicle: FleetVehicle }) {
 function ZoneSection({ siteName, vehicles, startOpen }: { siteName: string; vehicles: FleetVehicle[]; startOpen: boolean }) {
   const [open, setOpen] = useState(startOpen);
 
+  useEffect(() => {
+    setOpen(startOpen);
+  }, [startOpen]);
+
   return (
     <div className="gv-zone">
       <button type="button" className="gv-zone-header" onClick={() => setOpen(o => !o)}>
@@ -110,7 +114,7 @@ interface Props {
 }
 
 export default function FleetGroupedCompact({ vehicles }: Props) {
-  const [allOpen, setAllOpen] = useState(true);
+  const [allOpen, setAllOpen] = useState(false);
 
   const groups = useMemo(() => {
     const map = new Map<string, FleetVehicle[]>();

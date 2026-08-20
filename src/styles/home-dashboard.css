@@ -28,24 +28,24 @@
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 10px;
-  flex: 4;
+  flex: 3.7;
   min-width: 0;
 }
 
-/* Row 1: 4 equal cards (3/12 each). Row 2: 3 equal cards (4/12 each) — no empty cell. */
-.bpl-status-stats-grid > *:nth-child(-n+4) {
-  grid-column: span 3;
-}
-
-.bpl-status-stats-grid > *:nth-child(n+5) {
+/* Row 1: 3 equal cards (4/12 each). Row 2: 4 equal cards (3/12 each). */
+.bpl-status-stats-grid > *:nth-child(-n+3) {
   grid-column: span 4;
 }
 
+.bpl-status-stats-grid > *:nth-child(n+4) {
+  grid-column: span 3;
+}
+
 .bpl-status-metrics-col {
-  flex: 1.6;
+  flex: 2.15;
   min-width: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -66,6 +66,7 @@
   font-size: 10px;
   font-weight: 500;
   font-family: inherit;
+  line-height: 1;
   cursor: pointer;
   appearance: auto;
 }
@@ -135,10 +136,11 @@
 .bpl-status-metric-card { cursor: default; }
 
 .bpl-status-metric-unit {
-  font-size: 12px;
+  font-size: clamp(9px, 1.8cqw, 11px);
   font-weight: 600;
-  margin-left: 3px;
+  margin-left: 2px;
   opacity: 0.75;
+  white-space: nowrap;
 }
 
 .bpl-status-stat {
@@ -156,6 +158,7 @@
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
+  container-type: inline-size;
 }
 
 .bpl-status-stat.active {
@@ -172,8 +175,8 @@
 .bpl-status-stat-inner {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 8px;
-  align-items: start;
+  column-gap: 7px;
+  align-items: center;
   flex: 1;
   min-height: 0;
 }
@@ -183,6 +186,7 @@
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+  gap: 1px;
 }
 
 .bpl-stat-graphic {
@@ -456,30 +460,121 @@
 }
 
 .bpl-status-stat-label {
-  font-size: 10px;
+  font-size: clamp(8px, 1.9cqw, 10px);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--cd-text-muted);
-  line-height: 1.25;
-  word-break: break-word;
+  line-height: 1;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
   hyphens: auto;
   max-width: 100%;
   padding-right: 2px;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.bpl-status-stat-label-wrap {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
 }
 
 .bpl-status-stat-value {
-  font-size: 20px;
+  font-size: clamp(16px, 5.2cqw, 22px);
   font-weight: 700;
-  line-height: 1;
+  line-height: 0.95;
   font-family: var(--cd-font-display);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-wrap: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
 .bpl-status-stat-sub {
-  font-size: 10px;
+  font-size: clamp(8px, 1.9cqw, 10px);
   color: var(--cd-text-muted);
   margin-top: auto;
-  padding-top: 2px;
+  padding-top: 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  line-height: 1;
+}
+
+.bpl-status-stat-label--stacked {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  white-space: normal;
+}
+
+.bpl-status-stat-label--stacked > span {
+  display: block;
+  white-space: nowrap;
+}
+
+.bpl-status-stat--status-compact .bpl-status-stat-label {
+  font-size: clamp(7px, 1.5cqw, 9px);
+  letter-spacing: 0.035em;
+}
+
+.bpl-status-stat--status-compact .bpl-status-stat-value {
+  font-size: clamp(15px, 4.8cqw, 19px);
+}
+
+.bpl-status-stat--status-compact .bpl-status-stat-sub {
+  font-size: clamp(7px, 1.6cqw, 9px);
+}
+
+.bpl-status-stat--status-compact .bpl-stat-graphic {
+  transform: scale(0.92);
+  transform-origin: center;
+}
+
+.bpl-status-stat--metric-regular .bpl-status-stat-label {
+  font-size: clamp(7.5px, 1.7cqw, 9px);
+}
+
+.bpl-status-stat--metric-regular .bpl-status-stat-value {
+  font-size: clamp(15px, 4.6cqw, 18px);
+}
+
+.bpl-status-stat--metric-regular .bpl-status-stat-sub {
+  font-size: clamp(7px, 1.6cqw, 9px);
+}
+
+.bpl-status-stat--metric-compact .bpl-status-stat-label {
+  font-size: clamp(7px, 1.5cqw, 8.5px);
+  letter-spacing: 0.03em;
+}
+
+.bpl-status-stat--metric-compact .bpl-status-stat-value {
+  font-size: clamp(14px, 4.2cqw, 17px);
+}
+
+.bpl-status-stat--metric-compact .bpl-status-metric-unit {
+  font-size: clamp(8px, 1.5cqw, 10px);
+}
+
+.bpl-status-stat--metric-compact .bpl-status-stat-sub {
+  font-size: clamp(7px, 1.4cqw, 8.5px);
+}
+
+.bpl-status-stat--metric-compact .bpl-stat-graphic {
+  transform: scale(0.88);
+  transform-origin: center;
 }
 
 /* Row 2 â€” Live Map (map-sized) Â· Trips Â· Recent Alerts */

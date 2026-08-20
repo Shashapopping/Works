@@ -395,3 +395,16 @@ export function formatRefuelTimes(times: string[]) {
     minute: '2-digit',
   })).join(' · ');
 }
+
+export function formatFuelSignalSummary(metrics: Pick<FuelSignalMetrics, 'fuelUsedL' | 'refuelCount' | 'refuelTimes'> | null) {
+  if (!metrics) return 'Select a vehicle to view fuel signal.';
+  const refillBit = metrics.refuelCount === 0
+    ? 'No refuel activity recorded.'
+    : metrics.refuelCount === 1
+      ? `Refuel activity: 1 stop recorded at ${formatRefuelTimes(metrics.refuelTimes)}.`
+      : `Refuel activity: ${metrics.refuelCount} stops recorded at ${formatRefuelTimes(metrics.refuelTimes)}.`;
+  if (metrics.fuelUsedL <= 0) {
+    return `${refillBit} No measurable fuel drawdown in this window.`;
+  }
+  return refillBit;
+}

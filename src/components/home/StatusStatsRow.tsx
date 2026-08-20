@@ -67,6 +67,15 @@ export default function StatusStatsRow({
     return metadata[key];
   };
 
+  const getStatusCardClass = (key: typeof STATUS_STATS[number]['key']) => {
+    switch (key) {
+      case 'inactive':
+        return 'bpl-status-stat--status-compact';
+      default:
+        return 'bpl-status-stat--status-regular';
+    }
+  };
+
   return (
     <div className="bpl-status-stats-layout">
       <div className="bpl-status-stats-grid">
@@ -82,7 +91,7 @@ export default function StatusStatsRow({
             <button
               key={stat.key}
               type="button"
-              className={`bpl-card bpl-status-stat${isActive ? ' active' : ''}`}
+              className={`bpl-card bpl-status-stat ${getStatusCardClass(stat.key)}${isActive ? ' active' : ''}`}
               style={{
                 borderTopColor: stat.color,
                 cursor: 'pointer',
@@ -96,10 +105,17 @@ export default function StatusStatsRow({
             >
               <div className="bpl-status-stat-inner">
                 <div className="bpl-status-stat-copy">
-                  <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                    {stat.label}
-                    <InfoTip text={stat.tip} label={stat.label} />
-                  </span>
+                  {stat.key === 'inactive' ? (
+                    <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
+                      <span>Non-</span>
+                      <span>Operational</span>
+                    </span>
+                  ) : (
+                    <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      {stat.label}
+                      <InfoTip text={stat.tip} label={stat.label} />
+                    </span>
+                  )}
                   <div className="bpl-status-stat-value" style={{ color: stat.color }}>
                     {vehiclesLoading ? <SkelValue /> : value}
                   </div>
@@ -118,14 +134,17 @@ export default function StatusStatsRow({
         <div className="bpl-status-metrics-stack">
           <button
             type="button"
-            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-regular"
             style={{ borderTopColor: '#8b5cf6', cursor: 'pointer', textAlign: 'left', width: '100%' }}
             title="Open trips"
             onClick={() => navigate('/trips')}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
-                <span className="bpl-status-stat-label">Fleet Distance</span>
+                <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
+                  <span>Fleet</span>
+                  <span>Distance</span>
+                </span>
                 <div className="bpl-status-stat-value" style={{ color: '#8b5cf6' }}>
                   {distanceLoading ? <SkelValue wide /> : (
                     <>
@@ -148,21 +167,24 @@ export default function StatusStatsRow({
                   </select>
                 </div>
               </div>
-              <WidgetStatGraphic color="#8b5cf6" icon={Route} />
+              <WidgetStatGraphic color="#8b5cf6" icon={Route} size="xs" />
             </div>
           </button>
 
           <button
             type="button"
-            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
             style={{ borderTopColor: '#CC0000', cursor: 'pointer', textAlign: 'left', width: '100%' }}
             title="Open hours-of-service tracking"
             onClick={() => navigate('/drivers/fatigue')}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
-                <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                  HOS Violations
+                <span className="bpl-status-stat-label-wrap">
+                  <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
+                    <span>HOS</span>
+                    <span>Violations</span>
+                  </span>
                   <InfoTip text="Drivers with an active HOS breach: over 4h continuous (resets after 30+ min rest), over 8h continuous in a rolling 24h cycle, or missing ≥24h continuous rest in the last 7 days." label="HOS Violations" />
                 </span>
                 <div
@@ -173,7 +195,7 @@ export default function StatusStatsRow({
                 </div>
                 <div className="bpl-status-stat-sub">4h / 8h / weekly rest</div>
               </div>
-              <WidgetStatGraphic color="#CC0000" icon={ShieldAlert} />
+              <WidgetStatGraphic color="#CC0000" icon={ShieldAlert} size="xs" />
             </div>
           </button>
         </div>
@@ -181,17 +203,18 @@ export default function StatusStatsRow({
         <div className="bpl-status-metrics-stack">
           <button
             type="button"
-            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-regular"
             style={{ borderTopColor: '#0891b2', cursor: 'pointer', textAlign: 'left', width: '100%' }}
             title="Open fuel consumption"
             onClick={() => navigate('/fuel/consumption')}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
-                <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                  Fuel Distance
-                  <InfoTip text="Distance covered only by vehicles that reported fuel probe data in this period — pair with Fuel Used for a fair L/km." label="Fuel Distance" />
+                <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
+                  <span>Fuel</span>
+                  <span>Distance</span>
                 </span>
+                <InfoTip text="Distance covered only by vehicles that reported fuel probe data in this period — pair with Fuel Used for a fair L/km." label="Fuel Distance" />
                 <div className="bpl-status-stat-value" style={{ color: '#0891b2' }}>
                   {fuelLoading ? <SkelValue wide /> : (
                     <>
@@ -214,20 +237,23 @@ export default function StatusStatsRow({
                   </select>
                 </div>
               </div>
-              <WidgetStatGraphic color="#0891b2" icon={Route} />
+              <WidgetStatGraphic color="#0891b2" icon={Route} size="xs" />
             </div>
           </button>
 
           <button
             type="button"
-            className="bpl-card bpl-status-stat bpl-status-metric-card"
+            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
             style={{ borderTopColor: '#f97316', cursor: 'pointer', textAlign: 'left', width: '100%' }}
             title="Open quarry fuel consumption"
             onClick={() => navigate('/fuel/consumption')}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
-                <span className="bpl-status-stat-label">Fuel Used</span>
+                <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
+                  <span>Fuel</span>
+                  <span>Used</span>
+                </span>
                 <div className="bpl-status-stat-value" style={{ color: '#f97316' }}>
                   {fuelLoading ? <SkelValue wide /> : (
                     <>
@@ -250,7 +276,7 @@ export default function StatusStatsRow({
                   </select>
                 </div>
               </div>
-              <WidgetStatGraphic color="#f97316" icon={Fuel} />
+              <WidgetStatGraphic color="#f97316" icon={Fuel} size="xs" />
             </div>
           </button>
         </div>
