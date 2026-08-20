@@ -4,8 +4,6 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { useFleet, type LogEntry } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
 
-declare const jspdf: any;
-
 interface Action {
   id: string;
   goal: string;
@@ -21,6 +19,15 @@ const TEXT_FORCE_HEADERS = ['Reg No', 'Phone'];
 
 type ReportProcessId = 'weekly' | 'monthly' | 'quarterly' | 'actions';
 type ReportFormat = 'csv' | 'excel' | 'pdf';
+
+async function loadExportLibs() {
+  const [{ default: XLSX }, { default: jsPDF }, { default: autoTable }] = await Promise.all([
+    import('xlsx-js-style'),
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  return { XLSX, jsPDF, autoTable };
+}
 
 const REPORT_PROCESSES: Array<{
   id: ReportProcessId;
@@ -184,9 +191,8 @@ function downloadCsv(filename: string, headers: string[], rows: string[][]) {
   URL.revokeObjectURL(url);
 }
 
-function downloadExcel(filename: string, sheetName: string, headers: string[], rows: string[][]) {
-  const XLSX = (window as any).XLSX;
-  if (!XLSX) throw new Error('Excel library is not available');
+async function downloadExcel(filename: string, sheetName: string, headers: string[], rows: string[][]) {
+  const { XLSX } = await loadExportLibs();
   const wb = XLSX.utils.book_new();
   const wsData = [
     headers,
@@ -199,8 +205,8 @@ function downloadExcel(filename: string, sheetName: string, headers: string[], r
   XLSX.writeFile(wb, `${filename}.xlsx`);
 }
 
-function downloadPdf(filename: string, process: (typeof REPORT_PROCESSES)[number], headers: string[], rows: string[][]) {
-  const { jsPDF } = jspdf;
+async function downloadPdf(filename: string, process: (typeof REPORT_PROCESSES)[number], headers: string[], rows: string[][]) {
+  const { jsPDF, autoTable } = await loadExportLibs();
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   doc.setFontSize(16);
   doc.setTextColor(51, 65, 85);
@@ -210,7 +216,7 @@ function downloadPdf(filename: string, process: (typeof REPORT_PROCESSES)[number
   doc.text(`${process.cadence} | Generated ${new Date().toLocaleString('en-GB')} | ${rows.length} row${rows.length !== 1 ? 's' : ''}`, 14, 23);
   doc.text(process.description, 14, 29);
 
-  (doc as any).autoTable({
+  autoTable(doc, {
     head: [headers],
     body: rows,
     startY: 36,
@@ -238,13 +244,13 @@ function ReportDownloadCenter({ events, actions }: { events: LogEntry[]; actions
   const totalRowCount = exportData.rows.length;
   const hasSearch = searchTerm.trim().length > 0;
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     setError('');
     try {
       const filename = `cnl-${process.id}-report-${new Date().toISOString().slice(0, 10)}`;
       if (format === 'csv') downloadCsv(filename, filteredExportData.headers, filteredExportData.rows);
-      else if (format === 'excel') downloadExcel(filename, process.title, filteredExportData.headers, filteredExportData.rows);
-      else downloadPdf(filename, process, filteredExportData.headers, filteredExportData.rows);
+      else if (format === 'excel') await downloadExcel(filename, process.title, filteredExportData.headers, filteredExportData.rows);
+      else await downloadPdf(filename, process, filteredExportData.headers, filteredExportData.rows);
     } catch (err) {
       console.error('Report download failed:', err);
       setError('Could not generate the selected report. Please confirm the export libraries loaded and try again.');

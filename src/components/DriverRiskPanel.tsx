@@ -6,8 +6,6 @@ import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { brandLabel } from '../lib/branding';
 import { DEMO_BRANDING } from '../config/demoBranding';
 
-declare const jspdf: any;
-
 const PANIC_EVENT_TYPE_ID = '-4444421556390778105';
 
 interface LogEntry {
@@ -52,6 +50,15 @@ interface Props {
 type DateRange = 'today' | '7days' | '30days' | 'alltime' | 'custom';
 type Format = 'csv' | 'excel' | 'pdf';
 type TopN = 10 | 20 | 50 | 'all';
+
+async function loadExportLibs() {
+  const [{ default: XLSX }, { default: jsPDF }, { default: autoTable }] = await Promise.all([
+    import('xlsx-js-style'),
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  return { XLSX, jsPDF, autoTable };
+}
 
 function isoLogRange(dateRange: DateRange, fromDate: string, toDate: string): { from: string; to: string } {
   const now = new Date();
@@ -248,8 +255,9 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
     URL.revokeObjectURL(url);
   };
 
-  const downloadExcel = () => {
-    const wb = (window as any).XLSX.utils.book_new();
+  const downloadExcel = async () => {
+    const { XLSX } = await loadExportLibs();
+    const wb = XLSX.utils.book_new();
     const wsData = [
       COLUMNS.map(c => c.header),
       ...buildRows().map(row => row.map((val, i) => {
@@ -257,14 +265,14 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
         return val;
       }))
     ];
-    const ws = (window as any).XLSX.utils.aoa_to_sheet(wsData);
-    (window as any).XLSX.utils.book_append_sheet(wb, ws, 'Driver Risk');
-    (window as any).XLSX.writeFile(wb, `cnl-driver-risk-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, 'Driver Risk');
+    XLSX.writeFile(wb, `cnl-driver-risk-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const downloadPDF = () => {
+  const downloadPDF = async () => {
     try {
-      const { jsPDF } = jspdf;
+      const { jsPDF, autoTable } = await loadExportLibs();
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
       doc.setFontSize(16);
@@ -283,7 +291,7 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
       drivers.forEach(d => {
         if (y > 175) { doc.addPage(); y = 14; }
 
-        (doc as any).autoTable({
+        autoTable(doc, {
           startY: y,
           body: [[
             `${displayDriverName(d.driverName)}  •  ${DEMO_BRANDING ? '***' : d.driverPhone}`,
@@ -307,12 +315,12 @@ export default function DriverRiskPanel({ open, onClose, authFetch, isMobile }: 
     }
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     setDownloading(true);
     try {
       if (format === 'csv') downloadCSV();
-      else if (format === 'excel') downloadExcel();
-      else if (format === 'pdf') downloadPDF();
+      else if (format === 'excel') await downloadExcel();
+      else if (format === 'pdf') await downloadPDF();
     } finally {
       setDownloading(false);
     }

@@ -6,6 +6,7 @@ import AppShell from './components/layout/AppShell';
 import RequireAuth from './components/RequireAuth';
 import Login from './pages/Login';
 import { TRENDS_ENABLED } from './config/trends';
+import { FATIGUE_ENABLED } from './config/fatigue';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const FleetPage = lazy(() => import('./pages/FleetPage'));
@@ -17,7 +18,9 @@ const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const DriverManagement = lazy(() => import('./pages/DriverManagement'));
 const CoachingPage = lazy(() => import('./pages/driver/CoachingPage'));
 const CertificatesPage = lazy(() => import('./pages/driver/CertificatesPage'));
-const FatigueManagementPage = lazy(() => import('./pages/driver/FatigueManagementPage'));
+const FatigueManagementPage = FATIGUE_ENABLED
+  ? lazy(() => import('./pages/driver/FatigueManagementPage'))
+  : null;
 const VisionPage = lazy(() => import('./pages/driver/VisionPage'));
 const IncidentIntelligence = lazy(() => import('./pages/IncidentIntelligence'));
 const TrendsPage = TRENDS_ENABLED ? lazy(() => import('./pages/TrendsPage')) : null;
@@ -49,7 +52,14 @@ export default function App() {
                 <Route path="/drivers/coaching" element={<CoachingPage />} />
                 <Route path="/drivers/training" element={<CoachingPage />} />
                 <Route path="/drivers/certifications" element={<CertificatesPage />} />
-                <Route path="/drivers/fatigue" element={<FatigueManagementPage />} />
+                <Route
+                  path="/drivers/fatigue"
+                  element={
+                    FATIGUE_ENABLED && FatigueManagementPage
+                      ? <FatigueManagementPage />
+                      : <Navigate to="/drivers" replace />
+                  }
+                />
                 <Route path="/drivers/vision" element={<VisionPage />} />
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
 

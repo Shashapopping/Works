@@ -10,6 +10,7 @@ import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
 import { useHosRecords } from '../../hooks/useHosRecords';
 import { SkelValue } from '../data/DataBusy';
+import { FATIGUE_ENABLED } from '../../config/fatigue';
 
 export type MetricPeriod = DistanceRange;
 
@@ -174,9 +175,12 @@ export default function StatusStatsRow({
           <button
             type="button"
             className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
-            style={{ borderTopColor: '#CC0000', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            style={{ borderTopColor: '#CC0000', cursor: FATIGUE_ENABLED ? 'pointer' : 'default', textAlign: 'left', width: '100%' }}
             title="Open hours-of-service tracking"
-            onClick={() => navigate('/drivers/fatigue')}
+            onClick={() => {
+              if (!FATIGUE_ENABLED) return;
+              navigate('/drivers/fatigue');
+            }}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">

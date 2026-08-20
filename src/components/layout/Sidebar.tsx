@@ -12,6 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
 import { brandLogoAlt, brandLogoSrc } from '../../lib/branding';
 import { TRENDS_ENABLED } from '../../config/trends';
+import { FATIGUE_ENABLED } from '../../config/fatigue';
 
 interface SubItem {
   path: string;
@@ -40,7 +41,7 @@ const NAV: NavGroup[] = [
       { path: '/drivers', label: 'Drivers', icon: User },
       { path: '/drivers/coaching', label: 'Coaching & Training', icon: GraduationCap },
       { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
-      { path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon },
+      ...(FATIGUE_ENABLED ? [{ path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon }] : []),
       { path: '/drivers/vision', label: 'Vision', icon: Camera },
     ],
   },

@@ -372,8 +372,18 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const seenEventIds = useRef<Set<string>>(new Set());
   const driverDistanceRef = useRef<DriverDistanceSummary | null>(driverDistance);
   const safetyExposureRef = useRef<FleetSafetyExposure | null>(safetyExposure);
+  const bootTasksStartedRef = useRef(false);
   // Tracks the incident count at which we last fired a Claude analysis per driver
   const driverAnalysisRef = useRef<Map<string, { lastThreshold: number; notifId: string }>>(new Map());
+
+  const scheduleIdle = useCallback((fn: () => void, timeoutMs: number) => {
+    if ('requestIdleCallback' in window) {
+      const id = window.requestIdleCallback(() => fn(), { timeout: timeoutMs });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(fn, Math.min(timeoutMs, 1200));
+    return () => window.clearTimeout(id);
+  }, []);
 
   useEffect(() => {
     driverDistanceRef.current = driverDistance;
@@ -733,24 +743,63 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     loadMetadata();
     loadVehicles();
     loadEvents();
-    loadDriverDistance();
-    loadSafetyExposure();
-    loadFuelSummary();
     loadEnvironment();
+    const bootCancels: Array<() => void> = [];
+    if (!bootTasksStartedRef.current) {
+      bootTasksStartedRef.current = true;
+      bootCancels.push(() => { bootTasksStartedRef.current = false; });
+      bootCancels.push(scheduleIdle(() => { void loadDriverDistance(); }, 800));
+      bootCancels.push(scheduleIdle(() => { void loadSafetyExposure(); }, 1200));
+      bootCancels.push(scheduleIdle(() => { void loadFuelSummary(); }, 1600));
+    } else {
+      void loadDriverDistance();
+      void loadSafetyExposure();
+      void loadFuelSummary();
+    }
     const bootWarm = window.setTimeout(() => {
-      for (const url of BOOT_PREFETCH_URLS) {
-        void authCachedJson(url, authFetch, { force: true });
+      const warm = () => {
+        for (const url of BOOT_PREFETCH_URLS) {
+          void authCachedJson(url, authFetch, { force: true });
+        }
+      };
+      if (document.visibilityState === 'visible') warm();
+      else {
+        const onVisible = () => {
+          if (document.visibilityState !== 'visible') return;
+          document.removeEventListener('visibilitychange', onVisible);
+          warm();
+        };
+        document.addEventListener('visibilitychange', onVisible);
       }
-    }, 500);
-    const metaInterval = setInterval(loadMetadata, 10_000);
-    const vehicleInterval = setInterval(loadVehicles, 10_000);
+    }, 2200);
+    const metaInterval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadMetadata();
+    }, 20_000);
+    const vehicleInterval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadVehicles();
+    }, 20_000);
     // Heavy rollups: ~60s + jitter so pages don't all hit SQLite together
-    const stopEvents = startJitteredInterval(loadEvents, 15_000, 4_000);
-    const stopDistance = startJitteredInterval(loadDriverDistance);
-    const stopExposure = startJitteredInterval(loadSafetyExposure);
-    const stopFuel = startJitteredInterval(loadFuelSummary);
+    const stopEvents = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadEvents();
+    }, 20_000, 5_000);
+    const stopDistance = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadDriverDistance();
+    });
+    const stopExposure = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadSafetyExposure();
+    });
+    const stopFuel = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadFuelSummary();
+    });
     return () => {
       clearTimeout(bootWarm);
+      bootCancels.forEach(cancel => cancel());
       clearInterval(metaInterval);
       clearInterval(vehicleInterval);
       stopEvents();
@@ -758,7 +807,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       stopExposure();
       stopFuel();
     };
-  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment]);
+  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, scheduleIdle]);
 
   // ── Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays

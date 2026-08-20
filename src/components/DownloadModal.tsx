@@ -2,8 +2,6 @@ import { useState } from 'react';
 import { X } from 'lucide-react';
 import { displayDriverName } from '../lib/driverUtils';
 
-declare const jspdf: any;
-
 interface Props {
   onClose: () => void;
   authFetch: (url: string, options?: RequestInit) => Promise<Response>;
@@ -32,6 +30,15 @@ const COLUMNS = [
 
 // Columns where values must be forced as text in CSV/Excel (phone numbers, large IDs)
 const TEXT_FORCE_COLUMNS = ['Phone', 'Reg No'];
+
+async function loadExportLibs() {
+  const [{ default: XLSX }, { default: jsPDF }, { default: autoTable }] = await Promise.all([
+    import('xlsx-js-style'),
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  return { XLSX, jsPDF, autoTable };
+}
 
 export default function DownloadModal({ onClose, authFetch }: Props) {
   const [dateRange, setDateRange] = useState<DateRange>('today');
@@ -106,8 +113,8 @@ export default function DownloadModal({ onClose, authFetch }: Props) {
       });
 
       if (format === 'csv') downloadCSV(filtered);
-      else if (format === 'excel') downloadExcel(filtered);
-      else if (format === 'pdf') downloadPDF(filtered);
+      else if (format === 'excel') await downloadExcel(filtered);
+      else if (format === 'pdf') await downloadPDF(filtered);
     } catch (err) {
       console.error('Download failed:', err);
     } finally {
@@ -136,8 +143,9 @@ export default function DownloadModal({ onClose, authFetch }: Props) {
     URL.revokeObjectURL(url);
   };
 
-const downloadExcel = (entries: any[]) => {
-  const wb = (window as any).XLSX.utils.book_new();
+const downloadExcel = async (entries: any[]) => {
+  const { XLSX } = await loadExportLibs();
+  const wb = XLSX.utils.book_new();
   const wsData = [
     COLUMNS.map(c => c.header),
     ...entries.map(e => COLUMNS.map(c => {
@@ -146,14 +154,14 @@ const downloadExcel = (entries: any[]) => {
       return String(val);
     }))
   ];
-  const ws = (window as any).XLSX.utils.aoa_to_sheet(wsData);
-  (window as any).XLSX.utils.book_append_sheet(wb, ws, 'Fleet Report');
-  (window as any).XLSX.writeFile(wb, `cnl-fleet-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  XLSX.utils.book_append_sheet(wb, ws, 'Fleet Report');
+  XLSX.writeFile(wb, `cnl-fleet-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
 };
 
-  const downloadPDF = (entries: any[]) => {
+  const downloadPDF = async (entries: any[]) => {
     try {
-      const { jsPDF } = jspdf;
+      const { jsPDF, autoTable } = await loadExportLibs();
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
       doc.setFontSize(16);
@@ -174,7 +182,7 @@ const downloadExcel = (entries: any[]) => {
       const headers = COLUMNS.map(c => c.header);
       const rows = entries.map(e => COLUMNS.map(c => String(c.get(e))));
 
-      (doc as any).autoTable({
+      autoTable(doc, {
         head: [headers],
         body: rows,
         startY: 34,
