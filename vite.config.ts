@@ -369,6 +369,7 @@ export default defineConfig({
               from: params.get('from') || null,
               to: params.get('to') || null,
               assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))
@@ -386,6 +387,7 @@ export default defineConfig({
               from: params.get('from') || null,
               to: params.get('to') || null,
               assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))
@@ -402,6 +404,8 @@ export default defineConfig({
               range: params.get('range') || '30d',
               from: params.get('from') || null,
               to: params.get('to') || null,
+              assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))

@@ -44,6 +44,7 @@ import {
 import { isReportExportAllowed, normalizeReportEmail } from './report-export-allowlist.js';
 import {
   issueDriverWarning,
+  listDriverWarnings,
   listActiveUsersForTagging,
   listNotificationsForUser,
   markAllNotificationsRead,
@@ -498,6 +499,17 @@ export async function handleAuthRequest(req, res) {
         taggedUserIds,
       });
       sendJson(res, 201, { warning });
+      return true;
+    }
+
+    if (path === '/api/coaching/warnings' && method === 'GET') {
+      const user = await requireUser(req, res, 'drivers');
+      if (!user) return true;
+      const keys = (url.searchParams.get('driverKeys') || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      sendJson(res, 200, { warnings: listDriverWarnings({ driverKeys: keys }) });
       return true;
     }
 

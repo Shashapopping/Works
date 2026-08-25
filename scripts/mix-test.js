@@ -2041,6 +2041,47 @@ function parseAssetIdList(raw) {
   return ids;
 }
 
+function parseScopeKeyList(raw) {
+  if (raw == null || raw === '') return null;
+  const keys = [...new Set(
+    (Array.isArray(raw) ? raw : String(raw).split(','))
+      .map(key => String(key || '').trim())
+      .filter(Boolean),
+  )];
+  return keys.length ? keys : null;
+}
+
+function siteKeyFor(zone) {
+  const z = String(zone || '').trim();
+  return z || 'Unknown';
+}
+
+function assetIdsForSiteScope(siteScope) {
+  const keys = parseScopeKeyList(siteScope);
+  if (!keys) return null;
+  const allowed = new Set(keys);
+  try {
+    const dataPath = path.join(process.cwd(), 'public', 'data.json');
+    if (!fs.existsSync(dataPath)) return [];
+    const vehicles = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    if (!Array.isArray(vehicles)) return [];
+    return [...new Set(
+      vehicles
+        .filter(v => allowed.has(siteKeyFor(v.zone)) || allowed.has(String(v.site || '').trim()))
+        .map(v => v.id?.toString())
+        .filter(Boolean),
+    )];
+  } catch {
+    return [];
+  }
+}
+
+function resolveAssetScope(assetIds = null, siteScope = null) {
+  const explicit = parseAssetIdList(assetIds);
+  if (explicit) return explicit;
+  return assetIdsForSiteScope(siteScope);
+}
+
 function assetScopeCacheKey(ids) {
   if (!ids) return '*';
   const s = ids.slice().sort().join(',');
@@ -2091,8 +2132,8 @@ export function getHosHeldMinutesInRange(fromIso, toIso, assetIds = null) {
 }
 
 /** Distance + HOS held minutes for the fleet safety score (same window). */
-export function getFleetSafetyExposure({ range = '30d', from = null, to = null, assetIds = null } = {}) {
-  const ids = parseAssetIdList(assetIds);
+export function getFleetSafetyExposure({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
+  const ids = resolveAssetScope(assetIds, siteScope);
   const { start, end } = getDistanceRangeBounds(range, null, from, to);
   const key = `${start.toISOString()}|${end.toISOString()}|${assetScopeCacheKey(ids)}`;
   const cached = readSafetyExposureCache(key);
@@ -2125,19 +2166,21 @@ export function getFleetSafetyExposure({ range = '30d', from = null, to = null, 
   return value;
 }
 
-export function getSafetySummary({ range = '30d', from = null, to = null, assetIds = null } = {}) {
-  const ids = parseAssetIdList(assetIds);
+export function getSafetySummary({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
+  const ids = resolveAssetScope(assetIds, siteScope);
   const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
   const agg = querySafetyEventAggregates({ from: exposure.start, to: exposure.end, assetIds: ids });
   return { ...exposure, ...agg };
 }
 
-export function getRiskDrivers({ range = '30d', from = null, to = null } = {}) {
-  const exposure = getFleetSafetyExposure({ range, from, to });
+export function getRiskDrivers({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
+  const ids = resolveAssetScope(assetIds, siteScope);
+  const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
   const drivers = queryRiskAggregates({
     from: exposure.start,
     to: exposure.end,
     groupBy: 'driver',
+    assetIds: ids,
   });
   return {
     range: exposure.range,

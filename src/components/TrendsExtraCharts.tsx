@@ -13,7 +13,7 @@ import { buildDriverConsequenceCard } from '../lib/consequenceScore';
 import { isActiveDriver, isActiveDriverId, isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { sanitizeTripDriver } from '../lib/demoSanitize';
 import type { ConsumptionData } from '../lib/fuelConsumption';
-import { CACHE_KEYS, CACHE_TTL, cachedFetchJson } from '../lib/apiCache';
+import { authCachedJson, CACHE_KEYS, CACHE_TTL, cachedFetchJson, cachePeek } from '../lib/apiCache';
 import { chartDef, type TrendsChartId, type TrendsGrouping, type TrendsScope } from '../lib/trendsDashboard';
 import {
   bucketKeyFromDay,
@@ -256,6 +256,14 @@ type TrendsSharedValue = {
   bands: DriverBands;
 };
 
+type TripDistancePayload = {
+  drivers?: TripDriver[];
+  totalDistanceKm?: number;
+};
+
+const TRIP_STATS_CACHE_KEY = '/api/driver-distance?range=currentMonth&trips=0';
+const WEEK_CONSUMPTION_URL = '/api/fuel/consumption?period=week&trips=0';
+
 const EMPTY_BANDS: DriverBands = {
   counts: { Green: 0, Amber: 0, Red: 0 },
   distance: { Green: 0, Amber: 0, Red: 0 },
@@ -345,19 +353,7 @@ function computeDriverBands(events: LogEntry[], drivers: TripDriver[]): DriverBa
   };
 }
 
-async function fetchTripStats(): Promise<Omit<TripStats, 'loading'>> {
-  const data = await cachedFetchJson<{
-    drivers?: TripDriver[];
-    totalDistanceKm?: number;
-  }>(
-    'trends:driver-distance:currentMonth',
-    60_000,
-    async () => {
-      const res = await authFetch('/api/driver-distance?range=currentMonth&trips=0');
-      if (!res.ok) return null;
-      return res.json();
-    },
-  );
+function buildTripStats(data: TripDistancePayload | null): Omit<TripStats, 'loading'> {
   const drivers = ((data?.drivers || []) as TripDriver[]).map(sanitizeTripDriver);
   const assets = new Set(drivers.flatMap(d => d.vehicles || [])).size;
   return {
@@ -369,6 +365,20 @@ async function fetchTripStats(): Promise<Omit<TripStats, 'loading'>> {
   };
 }
 
+function peekTripStats(): TripStats | null {
+  const cached = cachePeek<TripDistancePayload>(TRIP_STATS_CACHE_KEY);
+  return cached ? { ...buildTripStats(cached), loading: false } : null;
+}
+
+async function fetchTripStats(): Promise<Omit<TripStats, 'loading'>> {
+  const data = await authCachedJson<TripDistancePayload>(
+    TRIP_STATS_CACHE_KEY,
+    authFetch,
+    { ttlMs: CACHE_TTL.driverAssessment },
+  );
+  return buildTripStats(data);
+}
+
 /** Shared once per Trends page — kills N× trip/fuel fetches and N× band scoring. */
 export function TrendsSharedDataProvider({
   events,
@@ -378,18 +388,24 @@ export function TrendsSharedDataProvider({
   children: ReactNode;
 }) {
   const [, startTransition] = useTransition();
-  const [tripStats, setTripStats] = useState<TripStats>({
+  const [tripStats, setTripStats] = useState<TripStats>(() => peekTripStats() ?? ({
     km: 0, trips: 0, hours: 0, assets: 0, drivers: [], loading: true,
-  });
-  const [consumption, setConsumption] = useState<ConsumptionData | null>(null);
-  const [consumptionLoading, setConsumptionLoading] = useState(true);
+  }));
+  const [consumption, setConsumption] = useState<ConsumptionData | null>(
+    () => cachePeek<ConsumptionData>(CACHE_KEYS.fuelConsumption(WEEK_CONSUMPTION_URL)),
+  );
+  const [consumptionLoading, setConsumptionLoading] = useState(
+    () => cachePeek<ConsumptionData>(CACHE_KEYS.fuelConsumption(WEEK_CONSUMPTION_URL)) === null,
+  );
   const [bands, setBands] = useState<DriverBands>(EMPTY_BANDS);
 
   const caption = useMemo(() => computeCaption(events), [events]);
 
   useEffect(() => {
     let cancelled = false;
-    setTripStats(prev => ({ ...prev, loading: true }));
+    const cached = peekTripStats();
+    if (cached) setTripStats(cached);
+    else setTripStats(prev => ({ ...prev, loading: true }));
     fetchTripStats()
       .then(next => {
         if (!cancelled) setTripStats({ ...next, loading: false });
@@ -402,13 +418,18 @@ export function TrendsSharedDataProvider({
 
   useEffect(() => {
     let cancelled = false;
-    setConsumptionLoading(true);
-    const url = '/api/fuel/consumption?period=week&trips=0';
+    const cached = cachePeek<ConsumptionData>(CACHE_KEYS.fuelConsumption(WEEK_CONSUMPTION_URL));
+    if (cached) {
+      setConsumption(cached);
+      setConsumptionLoading(false);
+    } else {
+      setConsumptionLoading(true);
+    }
     cachedFetchJson<ConsumptionData>(
-      CACHE_KEYS.fuelConsumption(url),
+      CACHE_KEYS.fuelConsumption(WEEK_CONSUMPTION_URL),
       CACHE_TTL.fuelConsumption,
       async () => {
-        const res = await authFetch(url);
+        const res = await authFetch(WEEK_CONSUMPTION_URL);
         if (!res.ok) return null;
         return res.json();
       },
@@ -479,7 +500,11 @@ function useTripStats(): TripStats {
 function useConsumption(period: 'week' | 'month' = 'week') {
   const shared = useContext(TrendsSharedCtx);
   const [data, setData] = useState<ConsumptionData | null>(
-    shared && period === 'week' ? shared.consumption : null,
+    () => {
+      if (shared && period === 'week') return shared.consumption;
+      const url = `/api/fuel/consumption?period=${period}&trips=0`;
+      return cachePeek<ConsumptionData>(CACHE_KEYS.fuelConsumption(url));
+    },
   );
   useEffect(() => {
     if (shared && period === 'week') {

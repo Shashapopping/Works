@@ -274,10 +274,14 @@ export default function FuelConsumption() {
   const fetchData = useCallback(async (silent = false) => {
     const url = buildConsumptionUrl(period, selectedSite, customRange.from, customRange.to);
     if (!silent) {
-      setLoading(true);
       const cached = peekFuelConsumption(url);
-      if (cached) setData(cached);
-      else setData(null);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+      } else {
+        setData(null);
+        setLoading(true);
+      }
     }
     try {
       const next = await fetchFuelConsumptionCached(url, { force: silent });

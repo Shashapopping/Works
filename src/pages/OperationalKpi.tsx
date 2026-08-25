@@ -71,10 +71,14 @@ export default function OperationalKpi() {
     const cacheKey = CACHE_KEYS.kpi(url);
 
     if (!silent) {
-      setLoading(true);
       const cached = cachePeek<KpiData>(cacheKey);
-      if (cached) setData(cached);
-      else setData(null);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+      } else {
+        setData(null);
+        setLoading(true);
+      }
     }
 
     try {

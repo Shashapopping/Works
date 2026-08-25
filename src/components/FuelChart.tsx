@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Area,
   CartesianGrid,
@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Fuel, ZoomIn } from 'lucide-react';
+import { Fuel } from 'lucide-react';
 import { fetchFuelHistoryCached, peekFuelHistory } from '../hooks/useFuelConsumption';
 import { DataRegion } from './data/DataBusy';
 import {
@@ -23,7 +23,7 @@ import {
 } from '../lib/fuelSignal';
 import FuelSparkNotes from './FuelSparkNotes';
 
-export type FuelTimeMode = 'day' | 'week' | 'month' | 'custom';
+export type FuelTimeMode = 'today' | 'yesterday' | 'custom';
 
 export interface FuelEntry { time: string; level: number }
 export interface FuelSeries {
@@ -71,29 +71,6 @@ export function findFuelSeries(
   });
 }
 
-// Zoom levels: scrolling out widens the window and compresses readings into coarser buckets
-const WINDOW_STEPS_HOURS = [6, 12, 24, 48, 72, 168, 336, 720] as const;
-
-const PRESETS: { label: string; hours: number }[] = [
-  { label: 'Today', hours: 24 },
-  { label: '2 Days', hours: 48 },
-  { label: '7 Days', hours: 168 },
-  { label: '30 Days', hours: 720 },
-];
-
-function windowLabel(hours: number) {
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-function nearestWindowIndex(hours: number) {
-  let best = 0;
-  for (let i = 0; i < WINDOW_STEPS_HOURS.length; i++) {
-    if (Math.abs(WINDOW_STEPS_HOURS[i] - hours) < Math.abs(WINDOW_STEPS_HOURS[best] - hours)) best = i;
-  }
-  return best;
-}
-
 function defaultCustomRange() {
   const to = new Date();
   const from = new Date();
@@ -108,6 +85,12 @@ function customWindowHours(customFrom: string, customTo: string) {
   const from = new Date(customFrom);
   const to = new Date(customTo);
   return Math.max(6, (to.getTime() - from.getTime()) / 3_600_000 + 24);
+}
+
+function lagosDate(offsetDays: number) {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return d.toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
 }
 
 function formatAxisTime(t: number | string, multiDay: boolean) {
@@ -134,6 +117,14 @@ function resolveAxisDomain(
   customTo: string,
 ): [number, number] {
   const now = Date.now();
+  if (timeMode === 'today' || timeMode === 'yesterday') {
+    const day = timeMode === 'today' ? lagosDate(0) : lagosDate(-1);
+    const start = new Date(`${day}T00:00:00`).getTime();
+    const end = new Date(`${day}T23:59:59.999`).getTime();
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      return [start, timeMode === 'today' ? Math.min(end, now) : end];
+    }
+  }
   if (timeMode === 'custom' && customFrom && customTo) {
     const start = new Date(`${customFrom}T00:00:00`).getTime();
     const end = new Date(`${customTo}T23:59:59.999`).getTime();
@@ -211,29 +202,6 @@ function FuelTooltip({ active, payload, label, multiDay }: {
   );
 }
 
-function seriesDataSpanMs(series: FuelSeries | undefined): { earliest: number; latest: number } | null {
-  if (!series?.data.length) return null;
-  let earliest = Infinity;
-  let latest = -Infinity;
-  series.data.forEach(pt => {
-    const ts = new Date(pt.time).getTime();
-    if (!Number.isFinite(ts)) return;
-    if (ts < earliest) earliest = ts;
-    if (ts > latest) latest = ts;
-  });
-  if (!Number.isFinite(earliest) || !Number.isFinite(latest)) return null;
-  return { earliest, latest };
-}
-
-/** True when history covers at least ~40% of the requested window (or any data for ≤24h). */
-function windowHasEnoughData(span: { earliest: number; latest: number } | null, windowHours: number) {
-  if (!span) return false;
-  const availableMs = Math.max(0, span.latest - span.earliest);
-  const needMs = windowHours * 3_600_000;
-  if (windowHours <= 24) return availableMs > 0;
-  return availableMs >= needMs * 0.4;
-}
-
 function latestReading(series: FuelSeries): number {
   if (!series.data.length) return 0;
   const sorted = [...series.data].sort(
@@ -245,6 +213,14 @@ function latestReading(series: FuelSeries): number {
 function historyUrl(mode: FuelTimeMode, windowHours: number, customFrom: string, customTo: string) {
   if (mode === 'custom' && customFrom && customTo) {
     return `/api/fuel/history?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}`;
+  }
+  if (mode === 'yesterday') {
+    const day = lagosDate(-1);
+    return `/api/fuel/history?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`;
+  }
+  if (mode === 'today') {
+    const day = lagosDate(0);
+    return `/api/fuel/history?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`;
   }
   const from = new Date(Date.now() - windowHours * 3_600_000).toISOString().slice(0, 10);
   const to = new Date().toISOString().slice(0, 10);
@@ -260,14 +236,15 @@ interface Props {
 }
 
 export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeriesLoaded, onSignalMetrics }: Props) {
-  const [timeMode, setTimeMode] = useState<FuelTimeMode>('day');
-  const [windowIdx, setWindowIdx] = useState(() => nearestWindowIndex(24));
+  const [timeMode, setTimeMode] = useState<FuelTimeMode>('today');
   const [customRange, setCustomRange] = useState(defaultCustomRange);
-  const [allSeries, setAllSeries] = useState<FuelSeries[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialHistoryUrl = historyUrl('today', 24, customRange.from, customRange.to);
+  const [allSeries, setAllSeries] = useState<FuelSeries[]>(
+    () => peekFuelHistory<FuelSeries[]>(initialHistoryUrl) ?? [],
+  );
+  const [loading, setLoading] = useState(() => !peekFuelHistory<FuelSeries[]>(initialHistoryUrl));
   const [lastFetch, setLastFetch] = useState<string | null>(null);
   const [highlightedSparkId, setHighlightedSparkId] = useState<string | null>(null);
-  const chartPlotRef = useRef<HTMLDivElement | null>(null);
 
   const color = fuelZoneColor(zone);
 
@@ -275,7 +252,6 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
     assetId: selectedAssetId,
     regNo: selectedRegNo,
   });
-  const dataSpan = useMemo(() => seriesDataSpanMs(activeSeries), [activeSeries]);
 
   useEffect(() => {
     setHighlightedSparkId(null);
@@ -283,7 +259,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
 
   const windowHours = timeMode === 'custom'
     ? customWindowHours(customRange.from, customRange.to)
-    : WINDOW_STEPS_HOURS[windowIdx];
+    : 24;
   const bucketMin = chartBucketMinutes(windowHours);
   const axisDomain = useMemo(
     () => resolveAxisDomain(timeMode, windowHours, customRange.from, customRange.to),
@@ -291,64 +267,11 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
   );
   const [domainStartMs, domainEndMs] = axisDomain;
 
-  // dir 1 = zoom out (wider window, compressed data), -1 = zoom in
-  const zoomBy = useCallback((dir: 1 | -1) => {
-    if (timeMode === 'custom') {
-      const idx = Math.min(
-        WINDOW_STEPS_HOURS.length - 1,
-        Math.max(0, nearestWindowIndex(customWindowHours(customRange.from, customRange.to)) + dir),
-      );
-      setTimeMode('day');
-      setWindowIdx(idx);
-      return;
-    }
-    setWindowIdx(prev => {
-      let next = prev;
-      for (let step = 0; step < WINDOW_STEPS_HOURS.length; step++) {
-        const candidate = Math.min(WINDOW_STEPS_HOURS.length - 1, Math.max(0, next + dir));
-        if (candidate === next) break;
-        next = candidate;
-        if (windowHasEnoughData(dataSpan, WINDOW_STEPS_HOURS[next])) break;
-      }
-      return next;
-    });
-  }, [timeMode, customRange.from, customRange.to, dataSpan]);
-
-  const canZoomIn = useMemo(() => {
-    if (timeMode === 'custom') return true;
-    for (let i = windowIdx - 1; i >= 0; i--) {
-      if (windowHasEnoughData(dataSpan, WINDOW_STEPS_HOURS[i])) return true;
-    }
-    return false;
-  }, [timeMode, windowIdx, dataSpan]);
-
-  const canZoomOut = useMemo(() => {
-    if (timeMode === 'custom') return true;
-    for (let i = windowIdx + 1; i < WINDOW_STEPS_HOURS.length; i++) {
-      if (windowHasEnoughData(dataSpan, WINDOW_STEPS_HOURS[i])) return true;
-    }
-    return false;
-  }, [timeMode, windowIdx, dataSpan]);
-
-  // Wheel zoom only on the plot — not summary/header chrome around it
-  useEffect(() => {
-    const el = chartPlotRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      zoomBy(e.deltaY > 0 ? 1 : -1);
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [zoomBy]);
-
   const fetchWindowHours = timeMode === 'custom' ? null : windowHours;
   const load = useCallback(async (silent = false) => {
     if (timeMode === 'custom' && (!customRange.from || !customRange.to)) return;
     const url = historyUrl(timeMode, fetchWindowHours ?? 0, customRange.from, customRange.to);
     if (!silent) {
-      setLoading(true);
       const cached = peekFuelHistory<FuelSeries[]>(url);
       if (cached) {
         const normalized = cached.map(s => ({
@@ -357,8 +280,10 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
         }));
         setAllSeries(normalized);
         onSeriesLoaded?.(normalized);
+        setLoading(false);
       } else {
         setAllSeries([]);
+        setLoading(true);
       }
     }
     try {
@@ -467,21 +392,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
     return [Math.max(0, min - 8), max + 8];
   }, [plotData, selectedDropout]);
 
-  const activePresetHours = timeMode === 'custom' ? null : WINDOW_STEPS_HOURS[windowIdx];
-
   const efficiencyNote = formatFuelSignalSummary(signalMetrics);
-
-  // If current stepped window has no usable coverage, snap back to the widest available preset
-  useEffect(() => {
-    if (timeMode === 'custom' || loading || !activeSeries) return;
-    if (windowHasEnoughData(dataSpan, windowHours)) return;
-    for (let i = 0; i < WINDOW_STEPS_HOURS.length; i++) {
-      if (windowHasEnoughData(dataSpan, WINDOW_STEPS_HOURS[i])) {
-        if (i !== windowIdx) setWindowIdx(i);
-        return;
-      }
-    }
-  }, [timeMode, loading, activeSeries, dataSpan, windowHours, windowIdx]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 420 }}>
@@ -500,84 +411,29 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <div
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              background: 'var(--cd-surface-2)', padding: '3px 6px', borderRadius: 8,
-            }}
-            title="Scroll on the chart plot to zoom"
-          >
-            <ZoomIn size={13} color="var(--cd-text-muted)" />
-            <button
-              type="button"
-              onClick={() => zoomBy(-1)}
-              disabled={!canZoomIn}
-              style={{
-                border: 'none', background: 'transparent', cursor: canZoomIn ? 'pointer' : 'default',
-                fontSize: 14, fontWeight: 700, lineHeight: 1, padding: '2px 4px',
-                color: canZoomIn ? 'var(--cd-text)' : 'var(--cd-border)',
-              }}
-            >
-              +
-            </button>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--cd-text-muted)', minWidth: 34, textAlign: 'center' }}>
-              {timeMode === 'custom' ? 'range' : windowLabel(windowHours)}
-            </span>
-            <button
-              type="button"
-              onClick={() => zoomBy(1)}
-              disabled={!canZoomOut}
-              style={{
-                border: 'none', background: 'transparent', cursor: canZoomOut ? 'pointer' : 'default',
-                fontSize: 14, fontWeight: 700, lineHeight: 1, padding: '2px 4px',
-                color: canZoomOut ? 'var(--cd-text)' : 'var(--cd-border)',
-              }}
-            >
-              −
-            </button>
-          </div>
           <div style={{ display: 'flex', gap: 3, background: 'var(--cd-surface-2)', padding: 3, borderRadius: 8 }}>
-            {PRESETS.map(p => {
-              const active = activePresetHours === p.hours;
-              const enabled = windowHasEnoughData(dataSpan, p.hours);
+            {([
+              ['today', 'Today'],
+              ['yesterday', 'Yesterday'],
+              ['custom', 'Custom'],
+            ] as const).map(([mode, label]) => {
+              const active = timeMode === mode;
               return (
                 <button
-                  key={p.label}
+                  key={mode}
                   type="button"
-                  disabled={!enabled}
-                  title={enabled ? undefined : 'Not enough probe history for this window'}
-                  onClick={() => {
-                    if (!enabled) return;
-                    setTimeMode('day');
-                    setWindowIdx(nearestWindowIndex(p.hours));
-                  }}
+                  onClick={() => setTimeMode(mode)}
                   style={{
-                    padding: '4px 10px', borderRadius: 6, border: 'none',
-                    cursor: enabled ? 'pointer' : 'not-allowed',
-                    fontSize: 12, fontWeight: 600,
+                    padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
                     background: active ? 'var(--cd-surface)' : 'transparent',
-                    color: !enabled ? 'var(--cd-border)' : active ? 'var(--cd-text)' : 'var(--cd-text-muted)',
+                    color: active ? 'var(--cd-text)' : 'var(--cd-text-muted)',
                     boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                    opacity: enabled ? 1 : 0.4,
-                    filter: enabled ? 'none' : 'blur(0.4px)',
                   }}
                 >
-                  {p.label}
+                  {label}
                 </button>
               );
             })}
-            <button
-              type="button"
-              onClick={() => setTimeMode('custom')}
-              style={{
-                padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
-                background: timeMode === 'custom' ? 'var(--cd-surface)' : 'transparent',
-                color: timeMode === 'custom' ? 'var(--cd-text)' : 'var(--cd-text-muted)',
-                boxShadow: timeMode === 'custom' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-              }}
-            >
-              Custom
-            </button>
           </div>
           {timeMode === 'custom' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
@@ -653,7 +509,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
                   selectedId={highlightedSparkId}
                   onSelect={setHighlightedSparkId}
                 />
-                <div ref={chartPlotRef} className="hbm-fuel-chart-plot" title="Scroll here to zoom the time window">
+                <div className="hbm-fuel-chart-plot">
                   <ResponsiveContainer width="100%" height={260}>
                   <ComposedChart data={plotData} margin={{ top: 8, right: 12, left: 12, bottom: 28 }}>
                     <CartesianGrid stroke="var(--cd-border)" strokeDasharray="4 8" vertical={false} />

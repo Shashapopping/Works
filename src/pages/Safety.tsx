@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, Minus,
@@ -9,7 +9,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   RadarChart, PolarGrid, PolarAngleAxis, Radar,
 } from 'recharts';
-import { useFleet, authFetch } from '../context/FleetContext';
+import { useFleet } from '../context/FleetContext';
+import type { DriverDistanceSummary, LogEntry } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { clientName } from '../lib/branding';
 import MockNamesBadge from '../components/MockNamesBadge';
@@ -21,12 +22,54 @@ import {
   totalSafetyPointsFromCensus,
   hosSlicesFromMinutes,
   SCORE_DROP_PER_HARM_UNIT,
+  eventWeight,
   type FleetScoreConfig,
+  type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
 import { SkelValue } from '../components/data/DataBusy';
 
 const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, config);
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
+
+function scopedSafetyExposureFromEvents(
+  events: LogEntry[],
+  driverDistance: DriverDistanceSummary | null,
+  scoreConfig: FleetScoreConfig,
+): FleetSafetyExposure {
+  const byLabel: Record<string, number> = {};
+  const assetKeys = new Set<string>();
+  const driverKeys = new Set<string>();
+  let panicCount = 0;
+
+  for (const event of events) {
+    if (event.type === 'panic') {
+      panicCount += 1;
+      continue;
+    }
+
+    const label = (event.label || '').trim();
+    if (!label || eventWeight(label, scoreConfig) <= 0) continue;
+
+    byLabel[label] = (byLabel[label] || 0) + 1;
+    if (event.assetId) assetKeys.add(String(event.assetId));
+    else if (event.regNo) assetKeys.add(event.regNo);
+    if (isKnownDriver(event.driverName)) driverKeys.add(event.driverId || event.driverName!);
+  }
+
+  const incidentTotal = Object.values(byLabel).reduce((sum, count) => sum + count, 0);
+  return {
+    distanceKm: driverDistance?.totalDistanceKm ?? 0,
+    hosHeldMinutes: 0,
+    incidentTotal,
+    scoringCount: incidentTotal,
+    byLabel,
+    panicCount,
+    assetCount: assetKeys.size,
+    driverCount: driverKeys.size,
+    start: driverDistance?.start,
+    end: driverDistance?.end,
+  };
+}
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
 function ScoreGauge({ score, delta, totalIncidents, weightedRate, hosSlices, onOpenExplainer, config, busy }: {
@@ -208,52 +251,41 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
 }
 
 // ─── WorstPerformers ─────────────────────────────────────────────────────────
-function WorstPerformers() {
+function WorstPerformers({ events, loading }: { events: LogEntry[]; loading: boolean }) {
   const { scoreConfig } = useFleet();
-  const [rows, setRows] = useState<{
+  const rows = useMemo<{
     name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string;
-  }[]>([]);
-  const [loading, setLoading] = useState(true);
+  }[]>(() => {
+    const byDriver = new Map<string, { name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string }>();
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    (async () => {
-      try {
-        const res = await authFetch('/api/risk/drivers?range=30d');
-        if (!res.ok) { if (!cancelled) setLoading(false); return; }
-        const data = await res.json();
-        const drivers = (data.drivers || [])
-          .filter((d: { driverName?: string }) => isKnownDriver(d.driverName))
-          .map((d: {
-            driverName: string;
-            total: number;
-            harshBraking: number;
-            harshAcceleration: number;
-            overspeeding: number;
-            overspeedTiered: number;
-            harshCornering: number;
-          }) => {
-            const types: Record<string, number> = {};
-            if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
-            if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
-            if (d.overspeeding) types.Overspeeding = d.overspeeding;
-            if (d.overspeedTiered) types['Overspeed Tiered'] = d.overspeedTiered;
-            if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
-            const riskScore =
-              d.harshBraking * scoreConfig.weights.harshBraking
-              + d.harshAcceleration * scoreConfig.weights.harshAcceleration
-              + (d.overspeeding + d.overspeedTiered) * scoreConfig.weights.overspeeding
-              + d.harshCornering * scoreConfig.weights.harshCornering;
-            return { name: d.driverName, incidents: d.total, riskScore, types, lastEvent: '' };
-          })
-          .sort((a: { riskScore: number }, b: { riskScore: number }) => b.riskScore - a.riskScore)
-          .slice(0, 10);
-        if (!cancelled) { setRows(drivers); setLoading(false); }
-      } catch { if (!cancelled) setLoading(false); }
-    })();
-    return () => { cancelled = true; };
-  }, [scoreConfig]);
+    for (const event of events) {
+      if (event.type === 'panic' || !isKnownDriver(event.driverName)) continue;
+      const label = (event.label || '').trim();
+      const weight = eventWeight(label, scoreConfig);
+      if (!label || weight <= 0) continue;
+
+      const key = event.driverId || event.driverName!;
+      const row = byDriver.get(key) || {
+        name: event.driverName!,
+        incidents: 0,
+        riskScore: 0,
+        types: {},
+        lastEvent: '',
+      };
+      row.incidents += 1;
+      row.riskScore += weight;
+      row.types[label] = (row.types[label] || 0) + 1;
+      const eventTime = event.eventTime || event.timestamp || '';
+      if (!row.lastEvent || new Date(eventTime).getTime() > new Date(row.lastEvent).getTime()) {
+        row.lastEvent = eventTime;
+      }
+      byDriver.set(key, row);
+    }
+
+    return Array.from(byDriver.values())
+      .sort((a, b) => b.riskScore - a.riskScore)
+      .slice(0, 10);
+  }, [events, scoreConfig]);
 
   const driverMap = rows;
 
@@ -555,10 +587,9 @@ function PriorityActions({ byLabel, score, vehicleCount }: {
 }
 
 // ─── KPI strip ───────────────────────────────────────────────────────────────
-function KpiStrip({ vehicleCount, busy }: { vehicleCount: number; busy?: boolean }) {
-  const { safetyExposure } = useFleet();
-  const incidents = safetyExposure?.incidentTotal ?? 0;
-  const affectedVehicles = safetyExposure?.assetCount ?? 0;
+function KpiStrip({ vehicleCount, exposure, busy }: { vehicleCount: number; exposure: FleetSafetyExposure | null; busy?: boolean }) {
+  const incidents = exposure?.incidentTotal ?? 0;
+  const affectedVehicles = exposure?.assetCount ?? 0;
   const cleanVehicles = vehicleCount - affectedVehicles;
 
   const kpis = [
@@ -590,16 +621,35 @@ function KpiStrip({ vehicleCount, busy }: { vehicleCount: number; busy?: boolean
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 export default function Safety() {
-  const { vehicles, scoreConfig, eventsLoading, safetyScore, safetyDelta, safetyExposure, safetyExposureLoading } = useFleet();
+  const {
+    vehicles,
+    events,
+    driverDistance,
+    scoreConfig,
+    safetyScore,
+    safetyDelta,
+    safetyExposure,
+    safetyExposureLoading,
+    eventsLoading,
+    distanceLoading,
+    selectedSites,
+  } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
 
-  const totalIncidents = safetyExposure?.incidentTotal ?? 0;
-  const distanceKm = safetyExposure?.distanceKm ?? 0;
-  const hosHeldMinutes = safetyExposure?.hosHeldMinutes ?? 0;
+  const siteFiltered = selectedSites.length > 0;
+  const scopedExposure = useMemo(
+    () => scopedSafetyExposureFromEvents(events, driverDistance, scoreConfig),
+    [driverDistance, events, scoreConfig],
+  );
+  const pageExposure = siteFiltered ? scopedExposure : safetyExposure;
+  const totalIncidents = pageExposure?.incidentTotal ?? 0;
+  const distanceKm = pageExposure?.distanceKm ?? 0;
+  const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
   const hosSlices = hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
-  const points = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
+  const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.total, distanceKm);
-  const busy = eventsLoading || safetyExposureLoading;
+  const pageBusy = siteFiltered ? (eventsLoading || distanceLoading) : safetyExposureLoading;
+  const scoreBusy = safetyExposureLoading;
 
   return (
     <div>
@@ -609,7 +659,7 @@ export default function Safety() {
       </div>
 
       {/* KPI strip */}
-      <KpiStrip vehicleCount={vehicles.length} busy={busy} />
+      <KpiStrip vehicleCount={vehicles.length} exposure={pageExposure} busy={pageBusy} />
 
       {/* Score + Breakdown + Radar */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 260px', gap: 14, marginBottom: 20 }}>
@@ -620,20 +670,20 @@ export default function Safety() {
           weightedRate={weightedRate}
           hosSlices={hosSlices}
           config={scoreConfig}
-          busy={busy}
+          busy={scoreBusy}
           onOpenExplainer={() => setExplainerOpen(true)}
         />
-        <IncidentBreakdown byLabel={safetyExposure?.byLabel} />
-        <SafetyRadar byLabel={safetyExposure?.byLabel} />
+        <IncidentBreakdown byLabel={pageExposure?.byLabel} />
+        <SafetyRadar byLabel={pageExposure?.byLabel} />
       </div>
 
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
-        <WorstPerformers />
+        <WorstPerformers events={events} loading={eventsLoading} />
       </div>
 
       {/* Priority actions */}
-      <PriorityActions byLabel={safetyExposure?.byLabel} score={safetyScore} vehicleCount={vehicles.length} />
+      <PriorityActions byLabel={pageExposure?.byLabel} score={safetyScore} vehicleCount={vehicles.length} />
 
       {explainerOpen && (
         <ConsequenceExplainerModal

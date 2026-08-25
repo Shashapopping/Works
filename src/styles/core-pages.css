@@ -1545,6 +1545,12 @@
   border-top: 1px solid var(--cd-border);
 }
 
+.bpl-automate--embedded {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .bpl-automate-check {
   display: flex;
   align-items: flex-start;
@@ -1607,6 +1613,13 @@
   border-radius: 14px;
   background: var(--cd-surface);
   border: 1px solid var(--cd-border);
+}
+
+.bpl-automate--embedded .bpl-automate-panel {
+  margin-top: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 :root[data-theme="dark"] .bpl-automate-panel,
@@ -1789,6 +1802,10 @@
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .bpl-automate-primary:disabled {
@@ -1857,6 +1874,42 @@
   color: var(--cd-text-muted);
 }
 
+.bpl-automate-saved-bar {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--cd-border);
+  background: var(--cd-surface-2);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.bpl-automate-saved-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bpl-automate-saved-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--cd-border);
+  border-radius: 999px;
+  background: var(--cd-surface);
+  color: var(--cd-text);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bpl-automate-saved-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .bpl-automate-banner {
   margin-top: 12px;
   padding: 10px 12px;
@@ -1905,6 +1958,53 @@
 
 @keyframes bpl-automate-spin {
   to { transform: rotate(360deg); }
+}
+
+.bpl-automation-page-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.bpl-automation-config-card,
+.bpl-automation-docs-card {
+  padding: 18px;
+}
+
+.bpl-automation-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+  color: var(--cd-text-muted);
+}
+
+.bpl-automation-card-head strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--cd-text);
+  letter-spacing: -0.02em;
+  margin-bottom: 3px;
+}
+
+.bpl-automation-card-head span {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--cd-text-muted);
+}
+
+.bpl-automation-docs-card .bpl-docs-explorer {
+  min-height: 680px;
+  grid-template-columns: 210px minmax(0, 1fr);
+}
+
+@media (max-width: 1100px) {
+  .bpl-automation-page-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Trends / chart body skeletons ── */

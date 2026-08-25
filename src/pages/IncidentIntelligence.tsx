@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useDeferredValue, useRef, Fragment } from 'react';
-import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
@@ -20,6 +20,8 @@ import { SkelValue, SkelTable } from '../components/data/DataBusy';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useTableSort } from '../hooks/useTableSort';
 import { isOverspeedLabel } from '../lib/overspeedFilter';
+import { filterTripDriversByVehicles, summarizeEventsByLabel } from '../lib/siteScope';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 
 type Tab = 'events' | 'by-driver' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -55,28 +57,6 @@ function isoIncidentRange(range: DateRange): { from: string; to: string } {
   return { from: '2020-01-01T00:00:00.000Z', to };
 }
 
-function mapLogEntry(e: Record<string, unknown>): LogEntry {
-  return {
-    eventId: String(e.eventId ?? e.id ?? `${e.regNo}-${e.eventTime}`),
-    label: e.label != null ? String(e.label) : undefined,
-    type: e.type === 'panic' ? 'panic' : 'warning',
-    timestamp: String(e.timestamp ?? e.eventTime ?? new Date().toISOString()),
-    eventTime: String(e.eventTime ?? e.timestamp ?? new Date().toISOString()),
-    assetId: String(e.assetId ?? e.regNo ?? 'unknown'),
-    driverId: e.driverId != null ? String(e.driverId) : undefined,
-    regNo: e.regNo != null ? String(e.regNo) : undefined,
-    assetName: e.assetName != null ? String(e.assetName) : undefined,
-    transporter: e.transporter != null ? String(e.transporter) : undefined,
-    driverName: e.driverName != null ? String(e.driverName) : undefined,
-    driverPhone: e.driverPhone != null ? String(e.driverPhone) : undefined,
-    address: e.address != null ? String(e.address) : undefined,
-    latitude: e.latitude != null ? Number(e.latitude) : null,
-    longitude: e.longitude != null ? Number(e.longitude) : null,
-    speed: e.speed != null && e.speed !== '' ? Number(e.speed) : null,
-    speedLimit: e.speedLimit != null ? Number(e.speedLimit) : null,
-  };
-}
-
 function getDateFilter(e: LogEntry, range: DateRange) {
   const ts = new Date(e.eventTime || e.timestamp).getTime();
   const now = Date.now();
@@ -99,19 +79,28 @@ function formatTime(iso: string) {
   } catch { return iso; }
 }
 
-function EventsTab({ dateRange, highlightEventId }: { dateRange: DateRange; highlightEventId: string | null }) {
+function EventsTab({
+  dateRange,
+  highlightEventId,
+  initialSearch,
+  events,
+  eventsLoading,
+}: {
+  dateRange: DateRange;
+  highlightEventId: string | null;
+  initialSearch: string;
+  events: LogEntry[];
+  eventsLoading: boolean;
+}) {
   const [searchParams] = useSearchParams();
   const filterParam = searchParams.get('filter');
   const initialFilter: EventFilter =
     !highlightEventId && filterParam && (EVENT_FILTERS as string[]).includes(filterParam)
       ? (filterParam as EventFilter)
       : 'All';
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [eventFilter, setEventFilter] = useState<EventFilter>(initialFilter);
   const [page, setPage] = useState(0);
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [censusTotal, setCensusTotal] = useState(0);
-  const [busy, setBusy] = useState(true);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
@@ -125,65 +114,47 @@ function EventsTab({ dateRange, highlightEventId }: { dateRange: DateRange; high
 
   useEffect(() => {
     setPage(0);
-  }, [dateRange, eventFilter]);
+  }, [dateRange, eventFilter, deferredSearch]);
 
   useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setBusy(true);
-      try {
-        const { from, to } = isoIncidentRange(dateRange);
-        const params = new URLSearchParams({
-          format: 'page',
-          limit: String(EVENT_PAGE_SIZE),
-          offset: String(page * EVENT_PAGE_SIZE),
-          from,
-          to,
-        });
-        if (eventFilter === 'All') params.set('types', EVENT_FILTERS.filter(f => f !== 'All').join(','));
-        else params.set('types', eventFilter);
-        const res = await authFetch(`/api/events/log?${params}`);
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        const rows = Array.isArray(data) ? data : data?.entries ?? [];
-        if (cancelled) return;
-        setEntries(rows.map((e: Record<string, unknown>) => mapLogEntry(e)));
-        setCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
-      } catch {
-        if (!cancelled) {
-          setEntries([]);
-          setCensusTotal(0);
-        }
-      } finally {
-        if (!cancelled) setBusy(false);
+    if (highlightEventId) return;
+    setSearch(initialSearch);
+    setPage(0);
+  }, [highlightEventId, initialSearch]);
+
+  const filtered = useMemo(() => {
+    const q = deferredSearch.toLowerCase();
+    return events.filter(e => {
+      if (!getDateFilter(e, dateRange)) return false;
+      if (e.type === 'panic') return false;
+      const label = getLabel(e);
+      if (HIDDEN_LABELS.includes(label)) return false;
+      if (eventFilter !== 'All' && label !== eventFilter) return false;
+      if (highlightEventId && e.eventId === highlightEventId) return true;
+      if (q) {
+        return (
+          (e.driverName || '').toLowerCase().includes(q) ||
+          (e.regNo || '').toLowerCase().includes(q) ||
+          (e.assetName || '').toLowerCase().includes(q) ||
+          label.toLowerCase().includes(q)
+        );
       }
-    };
-    void load();
-    return () => { cancelled = true; };
-  }, [dateRange, eventFilter, page]);
+      return true;
+    });
+  }, [dateRange, deferredSearch, eventFilter, events, highlightEventId]);
 
-  const filtered = entries.filter(e => {
-    if (e.type === 'panic') return false;
-    const label = getLabel(e);
-    if (HIDDEN_LABELS.includes(label)) return false;
-    if (highlightEventId && e.eventId === highlightEventId) return true;
-    if (deferredSearch) {
-      const s = deferredSearch.toLowerCase();
-      return (
-        (e.driverName || '').toLowerCase().includes(s) ||
-        (e.regNo || '').toLowerCase().includes(s) ||
-        (e.assetName || '').toLowerCase().includes(s) ||
-        label.toLowerCase().includes(s)
-      );
-    }
-    return true;
-  });
-
+  const censusTotal = filtered.length;
   const pageCount = Math.max(1, Math.ceil(censusTotal / EVENT_PAGE_SIZE) || 1);
+  const visibleRows = filtered.slice(page * EVENT_PAGE_SIZE, page * EVENT_PAGE_SIZE + EVENT_PAGE_SIZE);
+
   const from = censusTotal === 0 ? 0 : page * EVENT_PAGE_SIZE + 1;
   const to = Math.min(censusTotal, (page + 1) * EVENT_PAGE_SIZE);
   const hasPrev = page > 0;
   const hasNext = page < pageCount - 1;
+
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(Math.max(0, pageCount - 1));
+  }, [page, pageCount]);
 
   useEffect(() => {
     if (!highlightEventId) return;
@@ -231,13 +202,13 @@ function EventsTab({ dateRange, highlightEventId }: { dateRange: DateRange; high
       </div>
 
       <div className="bpl-incident-list" style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
-        {busy ? (
+        {eventsLoading ? (
           <div style={{ padding: 8 }}><SkelTable rows={8} /></div>
-        ) : filtered.length === 0 ? (
+        ) : visibleRows.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: 13 }}>
-            No events match your filters
+            No events available
           </div>
-        ) : filtered.map((e, i) => {
+        ) : visibleRows.map((e, i) => {
           const label = getLabel(e);
           const color = EVENT_COLORS[label] || 'var(--bpl-blue)';
           const location = eventLocationLabel(e);
@@ -316,59 +287,42 @@ function EventsTab({ dateRange, highlightEventId }: { dateRange: DateRange; high
   );
 }
 
-function ByDriverTab({ dateRange }: { dateRange: DateRange }) {
-  const [rows, setRows] = useState<{
+function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRange; events: LogEntry[]; eventsLoading: boolean }) {
+  const rows = useMemo(() => {
+    const byDriver = new Map<string, {
     name: string;
     harshBraking: number;
     overspeeding: number;
     harshAcceleration: number;
     harshCornering: number;
     total: number;
-  }[]>([]);
-  const [busy, setBusy] = useState(true);
+    }>();
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setBusy(true);
-      try {
-        const { from, to } = isoIncidentRange(dateRange);
-        const res = await authFetch(`/api/risk/drivers?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        const drivers = Array.isArray(data?.drivers) ? data.drivers : [];
-        if (cancelled) return;
-        setRows(
-          drivers
-            .filter((d: { driverName?: string }) => isKnownDriver(d.driverName))
-            .map((d: {
-              driverName?: string;
-              harshBraking?: number;
-              overspeeding?: number;
-              overspeedTiered?: number;
-              harshAcceleration?: number;
-              harshCornering?: number;
-              total?: number;
-            }) => ({
-              name: d.driverName || 'N/A',
-              harshBraking: d.harshBraking || 0,
-              overspeeding: (d.overspeeding || 0) + (d.overspeedTiered || 0),
-              harshAcceleration: d.harshAcceleration || 0,
-              harshCornering: d.harshCornering || 0,
-              total: d.total || 0,
-            }))
-            .sort((a, b) => b.total - a.total)
-            .slice(0, 30),
-        );
-      } catch {
-        if (!cancelled) setRows([]);
-      } finally {
-        if (!cancelled) setBusy(false);
-      }
-    };
-    void load();
-    return () => { cancelled = true; };
-  }, [dateRange]);
+    events.forEach(event => {
+      if (!getDateFilter(event, dateRange) || event.type === 'panic') return;
+      const label = getLabel(event);
+      if (HIDDEN_LABELS.includes(label) || !isKnownDriver(event.driverName)) return;
+      const key = event.driverId || event.driverName!;
+      const row = byDriver.get(key) || {
+        name: event.driverName || 'N/A',
+        harshBraking: 0,
+        overspeeding: 0,
+        harshAcceleration: 0,
+        harshCornering: 0,
+        total: 0,
+      };
+      if (label === 'Harsh Braking') row.harshBraking += 1;
+      if (label === 'Harsh Acceleration') row.harshAcceleration += 1;
+      if (label === 'Overspeeding' || label === 'Overspeed Tiered' || label === 'Road Speed Overspeeding') row.overspeeding += 1;
+      if (label === 'Harsh Cornering') row.harshCornering += 1;
+      row.total += 1;
+      byDriver.set(key, row);
+    });
+
+    return Array.from(byDriver.values())
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 30);
+  }, [dateRange, events]);
 
   return (
     <div className="bpl-card" style={{ overflow: 'hidden' }}>
@@ -386,8 +340,14 @@ function ByDriverTab({ dateRange }: { dateRange: DateRange }) {
           </tr>
         </thead>
         <tbody>
-          {busy ? (
+          {eventsLoading ? (
             <tr><td colSpan={8} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
+          ) : rows.length === 0 ? (
+            <tr>
+              <td colSpan={8} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
+                No driver event data available
+              </td>
+            </tr>
           ) : rows.map((d, i) => {
             const risk = d.total > 10 ? 'HIGH' : d.total > 5 ? 'MEDIUM' : 'LOW';
             const riskColor = risk === 'HIGH' ? '#CC0000' : risk === 'MEDIUM' ? '#d97706' : '#16a34a';
@@ -421,7 +381,7 @@ function ByDriverTab({ dateRange }: { dateRange: DateRange }) {
 
 type TrackingSortKey = 'driver' | 'vehicle' | 'score';
 
-function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: boolean }) {
+function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eventsBusy: boolean; vehicles: ReturnType<typeof useFleet>['vehicles'] }) {
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
   const [tripLoading, setTripLoading] = useState(true);
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
@@ -432,39 +392,50 @@ function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: b
 
   useEffect(() => {
     let cancelled = false;
-    setTripLoading(true);
-    (async () => {
-      try {
-        const [cur, last] = await Promise.all([
-          authFetch('/api/driver-distance?range=currentMonth&trips=0'),
-          authFetch('/api/driver-distance?range=lastMonth&trips=0'),
-        ]);
-        const map = new Map<string, TripDriver>();
-        for (const res of [cur, last]) {
-          if (!res.ok) continue;
-          const data = await res.json();
-          for (const d of (data.drivers || []) as TripDriver[]) {
-            if (!isActiveDriver(d.driverName, d.driverId)) continue;
-            const key = d.driverId || d.driverName;
-            if (!key) continue;
-            const prev = map.get(key);
-            if (!prev) map.set(key, sanitizeTripDriver({ ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 }));
-            else {
-              prev.totalDistanceKm += d.totalDistanceKm;
-              prev.journeyCount += d.journeyCount;
-              prev.totalDrivingTimeSeconds = (prev.totalDrivingTimeSeconds || 0) + (d.totalDrivingTimeSeconds || 0);
-              prev.vehicles = Array.from(new Set([...prev.vehicles, ...d.vehicles]));
-            }
+    const urls = [
+      '/api/driver-distance?range=currentMonth&trips=0',
+      '/api/driver-distance?range=lastMonth&trips=0',
+    ];
+    const applyTripBatches = (batches: any[]) => {
+      const map = new Map<string, TripDriver>();
+      for (const data of batches) {
+        if (!data) continue;
+        for (const d of (data.drivers || []) as TripDriver[]) {
+          if (!isActiveDriver(d.driverName, d.driverId)) continue;
+          const key = d.driverId || d.driverName;
+          if (!key) continue;
+          const prev = map.get(key);
+          if (!prev) map.set(key, sanitizeTripDriver({ ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 }));
+          else {
+            prev.totalDistanceKm += d.totalDistanceKm;
+            prev.journeyCount += d.journeyCount;
+            prev.totalDrivingTimeSeconds = (prev.totalDrivingTimeSeconds || 0) + (d.totalDrivingTimeSeconds || 0);
+            prev.vehicles = Array.from(new Set([...prev.vehicles, ...d.vehicles]));
           }
         }
-        if (!cancelled) setTripDrivers(Array.from(map.values()));
+      }
+      setTripDrivers(filterTripDriversByVehicles(Array.from(map.values()), vehicles));
+    };
+    const cached = urls.map(url => cachePeek<any>(url)).filter(Boolean);
+    if (cached.length) {
+      applyTripBatches(cached);
+      setTripLoading(false);
+    } else {
+      setTripLoading(true);
+    }
+    (async () => {
+      try {
+        const batches = await Promise.all(urls.map(url => (
+          authCachedJson<any>(url, authFetch, { ttlMs: CACHE_TTL.driverAssessment })
+        )));
+        if (!cancelled) applyTripBatches(batches);
       } catch { /* keep empty */ }
       finally {
         if (!cancelled) setTripLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [vehicles]);
 
   const distanceByKey = useMemo(() => {
     const m = new Map<string, number>();
@@ -704,13 +675,19 @@ function PatternsTab({ events, eventsBusy }: { events: LogEntry[]; eventsBusy: b
 export default function IncidentIntelligence({ tab }: { tab: Tab }) {
   const [searchParams] = useSearchParams();
   const highlightEventId = searchParams.get('event');
-  const [dateRange, setDateRange] = useState<DateRange>('7days');
-  const { events, eventsLoading } = useFleet();
-  const [summary, setSummary] = useState<{
-    incidentTotal: number;
-    byLabel: Record<string, number>;
-  } | null>(null);
-  const [summaryLoading, setSummaryLoading] = useState(true);
+  const querySearch = searchParams.get('q') ?? '';
+  const rangeParam = searchParams.get('range');
+  const initialDateRange: DateRange = rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime'
+    ? rangeParam
+    : '7days';
+  const [dateRange, setDateRange] = useState<DateRange>(initialDateRange);
+  const { events, eventsLoading, vehicles } = useFleet();
+
+  useEffect(() => {
+    if (rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime') {
+      setDateRange(rangeParam);
+    }
+  }, [rangeParam]);
 
   useEffect(() => {
     if (!highlightEventId) return;
@@ -719,38 +696,19 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
     if (!getDateFilter(hit, dateRange)) setDateRange('alltime');
   }, [highlightEventId, events, dateRange]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setSummaryLoading(true);
-      try {
-        const { from, to } = isoIncidentRange(dateRange);
-        const res = await authFetch(`/api/safety/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        if (cancelled) return;
-        setSummary({
-          incidentTotal: Number(data.incidentTotal || 0),
-          byLabel: data.byLabel && typeof data.byLabel === 'object' ? data.byLabel : {},
-        });
-      } catch {
-        if (!cancelled) setSummary({ incidentTotal: 0, byLabel: {} });
-      } finally {
-        if (!cancelled) setSummaryLoading(false);
-      }
-    };
-    void load();
-    return () => { cancelled = true; };
-  }, [dateRange]);
-
   const patternEvents = useMemo(
     () => events.filter(e => getDateFilter(e, dateRange)),
     [events, dateRange],
   );
 
-  const byLabel = summary?.byLabel || {};
+  const summary = useMemo(
+    () => summarizeEventsByLabel(patternEvents.filter(e => !HIDDEN_LABELS.includes(getLabel(e)))),
+    [patternEvents],
+  );
+
+  const byLabel = summary.byLabel || {};
   const summaryKpis = [
-    { label: 'Total Events', value: summary?.incidentTotal ?? 0, color: 'var(--cd-text)' },
+    { label: 'Total Events', value: summary.incidentTotal ?? 0, color: 'var(--cd-text)' },
     { label: 'Harsh Braking', value: byLabel['Harsh Braking'] ?? 0, color: '#CC0000' },
     { label: 'Overspeeding', value: (byLabel['Overspeeding'] ?? 0) + (byLabel['Overspeed Tiered'] ?? 0) + (byLabel['Road Speed Overspeeding'] ?? 0), color: '#9333ea' },
     { label: 'Harsh Accel.', value: byLabel['Harsh Acceleration'] ?? 0, color: '#0078D4' },
@@ -795,15 +753,15 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
           <div key={s.label} className="bpl-kpi-card">
             <div className="bpl-kpi-label">{s.label}</div>
             <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
-              {summaryLoading ? <SkelValue wide /> : s.value.toLocaleString()}
+              {eventsLoading ? <SkelValue wide /> : s.value.toLocaleString()}
             </div>
           </div>
         ))}
       </div>
 
-      {tab === 'events' && <EventsTab dateRange={dateRange} highlightEventId={highlightEventId} />}
-      {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} />}
-      {tab === 'patterns' && <PatternsTab events={patternEvents} eventsBusy={eventsLoading} />}
+      {tab === 'events' && <EventsTab dateRange={dateRange} highlightEventId={highlightEventId} initialSearch={querySearch} events={events} eventsLoading={eventsLoading} />}
+      {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} events={events} eventsLoading={eventsLoading} />}
+      {tab === 'patterns' && <PatternsTab events={patternEvents} eventsBusy={eventsLoading} vehicles={vehicles} />}
     </div>
   );
 }

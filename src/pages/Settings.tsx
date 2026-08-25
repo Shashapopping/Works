@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import {
@@ -149,6 +149,7 @@ function GeneralSettings() {
 
 function ThresholdSettings() {
   const { scoreConfig, updateScoreConfig } = useFleet();
+  const location = useLocation();
   const [form, setForm] = useState<FleetScoreConfig>(scoreConfig);
   const [consequenceForm, setConsequenceForm] = useState<ConsequenceScoreConfig>(() => loadConsequenceConfig());
   const [saved, setSaved] = useState(false);
@@ -156,11 +157,11 @@ function ThresholdSettings() {
   useEffect(() => { setForm(scoreConfig); }, [scoreConfig]);
 
   useEffect(() => {
-    if (window.location.hash !== '#consequence-bands') return;
+    if (location.hash !== '#consequence-bands') return;
     const el = document.getElementById('consequence-bands');
     if (!el) return;
     requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  }, []);
+  }, [location.hash]);
 
   const setWeight = (key: keyof FleetScoreConfig['weights'], value: number) => {
     setForm(p => ({ ...p, weights: { ...p.weights, [key]: value } }));
@@ -1381,7 +1382,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const TAB_TITLES: Record<Tab, string> = {
     general: 'General',
-    thresholds: 'Safety Score',
+    thresholds: 'Safety & Consequence',
     roles: 'Roles & Permissions',
     users: 'Users',
     dev: 'Developers',
@@ -1389,7 +1390,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const TAB_SUBTITLES: Record<Tab, string> = {
     general: 'Client name, timezone, currency, and display preferences',
-    thresholds: 'Fleet safety score weights, status bands, and driver discipline thresholds',
+    thresholds: 'Fleet safety score weights, driver discipline bands, and Consequence Management',
     roles: 'Define roles and drag access permissions onto each one',
     users: 'Create accounts, assign roles, enable or disable access',
     dev: 'Developer tools and API connection status',
@@ -1397,7 +1398,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const tabs: { id: Tab; path: string; label: string }[] = [
     { id: 'general', path: '/settings/general', label: 'General' },
-    { id: 'thresholds', path: '/settings/thresholds', label: 'Safety Score' },
+    { id: 'thresholds', path: '/settings/thresholds', label: 'Safety & Consequence' },
     { id: 'roles', path: '/settings/roles', label: 'Roles' },
     ...(hasPermission('user-management') ? [{ id: 'users' as const, path: '/settings/users', label: 'Users' }] : []),
     { id: 'dev', path: '/settings/dev', label: 'Dev' },

@@ -1,18 +1,22 @@
 import { useState, useMemo, useEffect, useDeferredValue } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Search, ChevronDown, ChevronUp } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Search, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
 import MockNamesBadge from '../components/MockNamesBadge';
 import { type ConsequenceCategory } from '../lib/consequenceScore';
-import { assessDrivers, type AssessedDriver, type DriverPeriod, defaultDriverCustomRange, periodCardStats, tripStatsByDriverKey } from '../lib/driverAssessment';
-import { useAssessmentTripDrivers, usePeriodTripDrivers } from '../hooks/useAssessmentTripDrivers';
+import { assessDrivers, eventsInDriverPeriod, type AssessedDriver, type DriverPeriod, defaultDriverCustomRange, periodCardStats, tripStatsByDriverKey } from '../lib/driverAssessment';
+import { usePeriodTripDrivers } from '../hooks/useAssessmentTripDrivers';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import PageControls from '../components/PageControls';
 import { brandLabel } from '../lib/branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
+import { filterTripDriversByVehicles } from '../lib/siteScope';
+import InfoTip from '../components/InfoTip';
+import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
+import { fetchDriverWarnings, type DriverWarning } from '../lib/coachingWarningsApi';
 
 type DateRange = DriverPeriod;
 type DriverProfile = AssessedDriver;
@@ -52,14 +56,69 @@ function ScoreBar({ score, category }: { score: number; category: ConsequenceCat
   );
 }
 
+function formatWriteUpTime(iso: string) {
+  try {
+    return new Date(iso).toLocaleString('en-GB', {
+      timeZone: 'Africa/Lagos',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function driverOfficialStatus(
+  category: ConsequenceCategory,
+  latestWarning: DriverWarning | null,
+) {
+  const hasWriteUp = !!latestWarning;
+  if (category === 'Yellow' && !hasWriteUp) {
+    return {
+      label: 'High risk - coaching record pending',
+      action: 'Create an official coaching record before escalating this driver for management review.',
+      official: false,
+    };
+  }
+  if (category === 'Red' && !hasWriteUp) {
+    return {
+      label: 'Severe risk - coaching record pending',
+      action: 'Create an official coaching record before escalating this driver for management review.',
+      official: false,
+    };
+  }
+  return {
+    label: category === 'Green'
+      ? 'On track'
+      : category === 'Amber'
+        ? 'Needs coaching'
+        : category === 'Yellow'
+          ? 'High risk'
+          : 'Severe risk',
+    action: category === 'Green'
+      ? 'No action needed - eligible for monthly / quarterly rewards'
+      : category === 'Amber'
+        ? 'Coaching review'
+        : category === 'Yellow'
+          ? 'Official coaching record found - proceed with management review.'
+          : 'Official coaching record found - proceed with management review.',
+    official: hasWriteUp,
+  };
+}
+
 function DriverCard({ driver, expanded, onToggle, stats }: {
   driver: DriverProfile;
   expanded: boolean;
   onToggle: () => void;
   stats: ReturnType<typeof periodCardStats>;
+  latestWarning: DriverWarning | null;
 }) {
   const { consequence } = driver;
   const color = consequence.categoryColor;
+  const officialStatus = driverOfficialStatus(consequence.category, latestWarning);
   const recentEvents = stats.events.slice(0, 10);
   const infractions = stats.eventCount;
   const distanceLabel = fmtDistanceKm(stats.km);
@@ -104,7 +163,7 @@ function DriverCard({ driver, expanded, onToggle, stats }: {
         <ScoreBar score={consequence.displayScore} category={consequence.category} />
 
         <div className="dm-tail">
-          <span className="dm-band">{consequence.categoryLabel}</span>
+          <span className="dm-band">{officialStatus.label}</span>
           {expanded
             ? <ChevronUp size={14} className="dm-chevron" />
             : <ChevronDown size={14} className="dm-chevron" />}
@@ -115,8 +174,22 @@ function DriverCard({ driver, expanded, onToggle, stats }: {
         <div className="dm-drop">
           <div className="dm-reco">
             <span className="dm-reco-kicker">Action</span>
-            <span className="dm-reco-text">{consequence.recommendedConsequence}</span>
+            <span className="dm-reco-text">{officialStatus.action}</span>
           </div>
+          {latestWarning && (
+            <div className="dm-reco" style={{ marginTop: 8 }}>
+              <span className="dm-reco-kicker">Official write-up</span>
+              <span className="dm-reco-text">
+                {latestWarning.issuedByName} - {formatWriteUpTime(latestWarning.createdAt)}
+              </span>
+            </div>
+          )}
+          {!latestWarning && (consequence.category === 'Yellow' || consequence.category === 'Red') && (
+            <div className="dm-reco" style={{ marginTop: 8 }}>
+              <span className="dm-reco-kicker">Official status</span>
+              <span className="dm-reco-text">No written warning record found in Response Tracking / Coaching.</span>
+            </div>
+          )}
           {driver.distanceKm <= 0 && consequence.counts.eventCount > 0 && (
             <div className="dm-reco" style={{ marginTop: 8 }}>
               <span className="dm-reco-kicker">Exposure</span>
@@ -155,7 +228,27 @@ function DriverCard({ driver, expanded, onToggle, stats }: {
 
           {recentEvents.length > 0 && (
             <div className="dm-events">
-              <div className="dm-events-label">Recent</div>
+              <div className="dm-events-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <span>Recent</span>
+                <Link
+                  to={`/incidents?q=${encodeURIComponent(driver.name)}&range=alltime`}
+                  onClick={e => e.stopPropagation()}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    color: 'var(--bpl-blue)',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                    textTransform: 'none',
+                  }}
+                  title={`View all incidents for ${displayDriverName(driver.name)}`}
+                >
+                  View all incidents
+                  <ExternalLink size={12} aria-hidden />
+                </Link>
+              </div>
               {recentEvents.map((e, i) => {
                 const label = e.label || 'Unknown';
                 const c = label === 'Harsh Braking' ? '#CC0000' : undefined;
@@ -183,10 +276,26 @@ export default function DriverManagement() {
   const [dateRange, setDateRange] = useState<DateRange>('30days');
   const [customRange, setCustomRange] = useState(defaultDriverCustomRange);
   const [expandedDrivers, setExpandedDrivers] = useState<Set<string>>(new Set());
-  const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers();
-  const { tripDrivers: periodTrips } = usePeriodTripDrivers(dateRange, customRange);
-  const { events, eventsLoading } = useFleet();
-  const seedBusy = eventsLoading || tripLoading;
+  const { tripDrivers: periodTrips, loading: periodTripLoading } = usePeriodTripDrivers(dateRange, customRange);
+  const { events, eventsLoading, vehicles, selectedSites, siteOptions, siteNameOptions } = useFleet();
+  const [driverWarnings, setDriverWarnings] = useState<Map<string, DriverWarning>>(new Map());
+  const seedBusy = eventsLoading || periodTripLoading;
+  const siteFiltered = selectedSites.length > 0;
+
+  const scopeLabel = useMemo(() => {
+    if (!siteFiltered) return null;
+    return selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions);
+  }, [selectedSites, siteFiltered, siteNameOptions, siteOptions]);
+
+  const scopedPeriodTrips = useMemo(
+    () => siteFiltered ? filterTripDriversByVehicles(periodTrips, vehicles) : periodTrips,
+    [periodTrips, siteFiltered, vehicles],
+  );
+
+  const scoreEvents = useMemo(
+    () => eventsInDriverPeriod(events, dateRange, customRange),
+    [customRange, dateRange, events],
+  );
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -196,10 +305,35 @@ export default function DriverManagement() {
   }, []);
 
   const drivers: DriverProfile[] = useMemo(
-    () => assessDrivers(events, tripDrivers),
-    [events, tripDrivers],
+    () => assessDrivers(scoreEvents, scopedPeriodTrips),
+    [scoreEvents, scopedPeriodTrips],
   );
-  const periodTripMap = useMemo(() => tripStatsByDriverKey(periodTrips), [periodTrips]);
+  const periodTripMap = useMemo(() => tripStatsByDriverKey(scopedPeriodTrips), [scopedPeriodTrips]);
+  const driverWarningKeys = useMemo(
+    () => Array.from(new Set(drivers.map(d => d.key).filter(Boolean))).sort(),
+    [drivers],
+  );
+
+  useEffect(() => {
+    if (driverWarningKeys.length === 0) {
+      setDriverWarnings(new Map());
+      return;
+    }
+    let cancelled = false;
+    fetchDriverWarnings(driverWarningKeys)
+      .then(warnings => {
+        if (cancelled) return;
+        const byDriver = new Map<string, DriverWarning>();
+        warnings.forEach(w => {
+          if (!byDriver.has(w.driverKey)) byDriver.set(w.driverKey, w);
+        });
+        setDriverWarnings(byDriver);
+      })
+      .catch(() => {
+        if (!cancelled) setDriverWarnings(new Map());
+      });
+    return () => { cancelled = true; };
+  }, [driverWarningKeys]);
 
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
@@ -222,13 +356,43 @@ export default function DriverManagement() {
   return (
     <div className="dm-page">
       <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Driver Management <MockNamesBadge /></h1>
-        <p className="bpl-page-subtitle">Consequence Management scorecards — penalty points normalized per 100 km</p>
+        <h1 className="bpl-page-title">
+          {scopeLabel ? (
+            <>
+              <span style={{ color: 'var(--bpl-blue)' }}>{brandLabel(scopeLabel)}</span> Drivers
+            </>
+          ) : (
+            'Driver Management'
+          )} <MockNamesBadge />
+        </h1>
+        <p className="bpl-page-subtitle">
+          Driver risk scorecards — selected-period safety events normalized per 100 km
+          {scopeLabel && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              marginLeft: 8,
+              padding: '2px 8px',
+              borderRadius: 9999,
+              background: 'var(--bpl-blue-soft)',
+              color: 'var(--bpl-blue)',
+              fontWeight: 700,
+            }}>
+              {brandLabel(scopeLabel)}
+            </span>
+          )}
+        </p>
       </div>
 
       <div className="bpl-kpi-grid dm-summary">
         <div className="bpl-kpi-card">
-          <div className="bpl-kpi-label">Total Drivers</div>
+          <div className="bpl-kpi-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
+            Total Drivers
+            <InfoTip
+              label="Total Drivers"
+              text="The site selector count is vehicles/assets. Total Drivers counts unique active driver profiles with usable driver data in this selected scope, so it can be lower than the asset count."
+            />
+          </div>
           <div className="bpl-kpi-value">{seedBusy ? <SkelValue wide /> : drivers.length}</div>
         </div>
         <div className="bpl-kpi-card" style={{ borderTop: '2px solid #CC0000' }}>
@@ -239,7 +403,7 @@ export default function DriverManagement() {
         <div className="bpl-kpi-card" style={{ borderTop: '2px solid #d97706' }}>
           <div className="bpl-kpi-label">Needs Action</div>
           <div className="bpl-kpi-value" style={{ color: '#d97706' }}>{seedBusy ? <SkelValue /> : needsAction}</div>
-          <div className="bpl-kpi-sub">Needs coaching + suspension + critical</div>
+          <div className="bpl-kpi-sub">Needs coaching or management review</div>
         </div>
         <div className="bpl-kpi-card" style={{ borderTop: '2px solid #16a34a' }}>
           <div className="bpl-kpi-label">Low Risk</div>
@@ -314,6 +478,7 @@ export default function DriverManagement() {
               expanded={expandedDrivers.has(d.name) || expandedDrivers.has(d.key)}
               onToggle={() => toggle(d.name)}
               stats={periodCardStats(d, dateRange, customRange, periodTripMap)}
+              latestWarning={driverWarnings.get(d.key) ?? null}
             />
           ))}
         </div>

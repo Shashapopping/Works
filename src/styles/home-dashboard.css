@@ -38,7 +38,7 @@
 }
 
 .bpl-status-stats-grid > *:nth-child(n+4) {
-  grid-column: span 3;
+  grid-column: span 4;
 }
 
 .bpl-status-metrics-col {

@@ -55,7 +55,7 @@ export default function FuelMonitoring() {
   const [selectedSite, setSelectedSite] = useState<QuarrySiteKey>(initialSite);
   const [siteMenuOpen, setSiteMenuOpen] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(linkedAsset);
-  const [eventsPeriod, setEventsPeriod] = useState<'day' | 'week' | 'month'>('week');
+  const eventsPeriod: 'day' = 'day';
   const eventsUrl = `/api/fuel/consumption?period=${eventsPeriod}&trips=0`;
   const [fuelEvents, setFuelEvents] = useState<ConsumptionData | null>(
     () => peekFuelConsumption(eventsUrl),
@@ -105,10 +105,14 @@ export default function FuelMonitoring() {
   useEffect(() => {
     let cancelled = false;
     const url = `/api/fuel/consumption?period=${eventsPeriod}&trips=0`;
-    setEventsLoading(true);
     const cached = peekFuelConsumption(url);
-    if (cached) setFuelEvents(cached);
-    else setFuelEvents(null);
+    if (cached) {
+      setFuelEvents(cached);
+      setEventsLoading(false);
+    } else {
+      setFuelEvents(null);
+      setEventsLoading(true);
+    }
 
     const load = async (silent = false) => {
       if (!silent) {
@@ -148,7 +152,7 @@ export default function FuelMonitoring() {
     return row.refuelCount === 1 ? `${row.refuelLiters.toFixed(0)} L` : `${row.refuelCount} refills`;
   };
 
-  const periodShort = { day: '24h', week: '7d', month: '30d' }[eventsPeriod];
+  const periodShort = '24h';
 
   return (
     <div>
@@ -230,26 +234,6 @@ export default function FuelMonitoring() {
             {QUARRY_SITE_LABELS[selectedSite]}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', fontWeight: 600 }}>Refills:</span>
-              <div style={{ display: 'flex', gap: 3, background: 'var(--cd-surface-2)', padding: 3, borderRadius: 8 }}>
-                {(['day', 'week', 'month'] as const).map(p => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => setEventsPeriod(p)}
-                    style={{
-                      padding: '3px 9px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                      background: eventsPeriod === p ? 'var(--cd-surface)' : 'transparent',
-                      color: eventsPeriod === p ? 'var(--cd-text)' : 'var(--cd-text-muted)',
-                      boxShadow: eventsPeriod === p ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                    }}
-                  >
-                    {p === 'day' ? 'Today' : p === 'week' ? '7 Days' : '30 Days'}
-                  </button>
-                ))}
-              </div>
-            </div>
             <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
               {siteVehicles.length} assets · <span style={{ color: '#16a34a', fontWeight: 600 }}>{siteOnline} online</span>
             </div>

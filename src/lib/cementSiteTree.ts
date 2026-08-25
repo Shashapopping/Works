@@ -573,6 +573,56 @@ export function allMatchKeys(node: SiteTreeNode, zoneOptions: SiteOption[], site
   return Array.from(set);
 }
 
+function setsMatch(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const key of a) {
+    if (!b.has(key)) return false;
+  }
+  return true;
+}
+
+function exactSelectedNode(
+  selectedKeys: string[],
+  node: SiteTreeNode,
+  zoneOptions: SiteOption[],
+  siteOptions: SiteOption[],
+): SiteTreeNode | null {
+  for (const child of node.children || []) {
+    const match = exactSelectedNode(selectedKeys, child, zoneOptions, siteOptions);
+    if (match) return match;
+  }
+
+  const keys = allMatchKeys(node, zoneOptions, siteOptions);
+  if (keys.length === 0) return null;
+  return setsMatch(new Set(selectedKeys), new Set(keys)) ? node : null;
+}
+
+/**
+ * User-facing name for the active site scope. Exact tree selections keep their
+ * group name; arbitrary multi-selects collapse to a simple "Multiple sites".
+ */
+export function selectedSiteScopeLabel(
+  selectedKeys: string[],
+  zoneOptions: SiteOption[],
+  siteOptions: SiteOption[],
+  fallbackLabel: string | null = null,
+): string | null {
+  if (selectedKeys.length === 0) return fallbackLabel;
+
+  if (selectedKeys.length === 1) {
+    const key = selectedKeys[0];
+    return zoneOptions.find(o => o.key === key)?.label
+      ?? siteOptions.find(o => o.key === key)?.label
+      ?? key;
+  }
+
+  const node = exactSelectedNode(selectedKeys, CEMENT_SITE_TREE, zoneOptions, siteOptions);
+  if (node?.key === 'cement') return 'Cement site';
+  if (node) return node.label;
+
+  return 'Multiple sites';
+}
+
 function collectFieldKeys(
   node: SiteTreeNode,
   zoneOptions: SiteOption[],

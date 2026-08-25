@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { authFetch } from '../context/FleetContext';
 import type { LogEntry } from '../context/FleetContext';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 import {
   EVENT_METRICS,
   RELATABLE_EVENTS,
@@ -32,6 +33,9 @@ const ICON_MAP = {
   car: Car,
   shield: Shield,
 };
+
+const DISTANCE_URL = '/api/driver-distance?range=currentMonth&trips=0';
+type DistanceSummary = { totalDistanceKm?: number };
 
 function MixSettingsModal({
   open,
@@ -465,8 +469,9 @@ export default function MixEventInsightsGrid({
   visibleIds?: WidgetId[];
   grouping?: TrendsGrouping;
 }) {
-  const [distanceKm, setDistanceKm] = useState(0);
-  const [distanceLoaded, setDistanceLoaded] = useState(false);
+  const cachedDistance = cachePeek<DistanceSummary>(DISTANCE_URL);
+  const [distanceKm, setDistanceKm] = useState(() => Number(cachedDistance?.totalDistanceKm || 0));
+  const [distanceLoaded, setDistanceLoaded] = useState(() => cachedDistance !== null);
   const [chartsReady, setChartsReady] = useState(false);
   const [agg, setAgg] = useState<EventDayAggregate>(EMPTY_AGG);
   const [, startTransition] = useTransition();
@@ -502,13 +507,16 @@ export default function MixEventInsightsGrid({
   useEffect(() => {
     if (!needsDistance || distanceLoaded) return;
     let cancelled = false;
+    const cached = cachePeek<DistanceSummary>(DISTANCE_URL);
+    if (cached) {
+      setDistanceKm(Number(cached.totalDistanceKm || 0));
+      setDistanceLoaded(true);
+    }
     (async () => {
       try {
-        const res = await authFetch('/api/driver-distance?range=currentMonth&trips=0');
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
+        const data = await authCachedJson<DistanceSummary>(DISTANCE_URL, authFetch, { ttlMs: CACHE_TTL.pageRollup });
         if (!cancelled) {
-          setDistanceKm(Number(data.totalDistanceKm || 0));
+          setDistanceKm(Number(data?.totalDistanceKm || 0));
           setDistanceLoaded(true);
         }
       } catch { /* keep 0 */ }

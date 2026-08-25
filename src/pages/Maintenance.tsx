@@ -94,9 +94,6 @@ export default function Maintenance() {
           <p className="bpl-page-subtitle">Fleet service status, scheduling, and recommended intervals</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, padding: '4px 10px', borderRadius: 9999, letterSpacing: '0.08em', background: 'rgba(0,120,212,0.08)', color: '#0078D4', border: '1px solid rgba(0,120,212,0.2)' }}>
-            DEMO VIEW
-          </span>
           <button className="bpl-btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
             <Plus size={13} /> Add Record
           </button>

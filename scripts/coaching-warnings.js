@@ -29,6 +29,28 @@ export function listNotificationsForUser(userId, { limit = 50 } = {}) {
   `).all(userId, limit);
 }
 
+export function listDriverWarnings({ driverKeys = [] } = {}) {
+  const db = getDb();
+  const keys = [...new Set((driverKeys || []).map(k => String(k || '').trim()).filter(Boolean))];
+  const where = keys.length
+    ? `WHERE driver_key IN (${keys.map(() => '?').join(',')})`
+    : '';
+  return db.prepare(`
+    SELECT
+      id,
+      driver_key AS driverKey,
+      driver_name AS driverName,
+      comment,
+      discipline_band AS disciplineBand,
+      issued_by_user_id AS issuedByUserId,
+      issued_by_name AS issuedByName,
+      created_at AS createdAt
+    FROM driver_warnings
+    ${where}
+    ORDER BY created_at DESC
+  `).all(...keys);
+}
+
 export function markNotificationRead(userId, notificationId) {
   const row = getDb().prepare(`
     SELECT id FROM user_notifications WHERE id = ? AND user_id = ?

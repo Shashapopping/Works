@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { authFetch } from '../context/FleetContext';
 import type { TripDriver } from '../context/FleetContext';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { authCachedJson, cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import {
   mergeAssessmentTripDrivers,
   periodDistanceSpec,
@@ -14,13 +14,12 @@ async function loadAssessmentTrips(): Promise<TripDriver[] | null> {
     CACHE_TTL.driverAssessment,
     async () => {
       const [cur, last] = await Promise.all([
-        authFetch('/api/driver-distance?range=currentMonth&trips=0'),
-        authFetch('/api/driver-distance?range=lastMonth&trips=0'),
+        authCachedJson<any>('/api/driver-distance?range=currentMonth&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
+        authCachedJson<any>('/api/driver-distance?range=lastMonth&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
       ]);
       const batches: TripDriver[][] = [];
-      for (const res of [cur, last]) {
-        if (!res.ok) continue;
-        const data = await res.json();
+      for (const data of [cur, last]) {
+        if (!data) continue;
         batches.push((data.drivers || []) as TripDriver[]);
       }
       return mergeAssessmentTripDrivers(batches);
@@ -35,10 +34,8 @@ async function loadPeriodTrips(period: DriverPeriod, custom: { from: string; to:
     `driver:period:${spec.url}`,
     CACHE_TTL.driverAssessment,
     async () => {
-      const res = await authFetch(spec.url);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return mergeAssessmentTripDrivers([(data.drivers || []) as TripDriver[]]);
+      const data = await authCachedJson<any>(spec.url, authFetch, { ttlMs: CACHE_TTL.driverAssessment });
+      return mergeAssessmentTripDrivers([((data?.drivers || []) as TripDriver[])]);
     },
   );
 }
@@ -51,7 +48,13 @@ export function useAssessmentTripDrivers() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(prev => prev || tripDrivers.length === 0);
+    const cached = cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment);
+    if (cached?.length) {
+      setTripDrivers(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     (async () => {
       try {
         const next = await loadAssessmentTrips();

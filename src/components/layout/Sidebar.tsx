@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users, User, GraduationCap, BadgeCheck,
   AlertTriangle, Search, ListChecks, TrendingUp,
-  Shield, Wrench, FileBarChart2, Folder, BarChart3, Fuel,
+  Shield, Wrench, FileBarChart2, BarChart3, Fuel, Bot,
   Truck, Map, Navigation, Route, Brain, Lock, Gauge,
   Mountain, Package, Droplets, Settings, ChevronDown, Sun, Moon, LogOut, Camera,
 } from 'lucide-react';
@@ -78,7 +78,7 @@ const NAV: NavGroup[] = [
     path: '/reports', icon: FileBarChart2, label: 'Reports',
     children: [
       { path: '/reports', label: 'Reports', icon: FileBarChart2 },
-      { path: '/reports/documents', label: 'Documents', icon: Folder },
+      { path: '/reports/automation', label: 'Automation', icon: Bot },
     ],
   },
   // Locked / upcoming — keep at bottom of nav

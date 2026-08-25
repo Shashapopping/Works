@@ -101,12 +101,13 @@ export default function FuelRefuelChartPanel({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     const cached = peekFuelHistory<FuelSeries[]>(historyUrl);
     if (cached) {
       setSeries(findFuelSeries(cached, { assetId, regNo }) ?? null);
+      setLoading(false);
     } else {
       setSeries(null);
+      setLoading(true);
     }
 
     void (async () => {

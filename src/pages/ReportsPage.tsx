@@ -11,8 +11,8 @@ import {
   YAxis,
 } from 'recharts';
 import FeatureGate from '../components/FeatureGate';
-import ReportAutomate from '../components/ReportAutomate';
 import { SkelTable, DataRegion } from '../components/data/DataBusy';
+import SiteScopeDropdown from '../components/SiteScopeDropdown';
 import { useAuth } from '../context/AuthContext';
 import { authFetch, useFleet } from '../context/FleetContext';
 import {
@@ -36,6 +36,8 @@ import type { TripReportGroupBy } from '../lib/reports/buildTripReport';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
 import { reportTitle as brandReportTitle } from '../lib/branding';
 import { authFetchInit } from '../lib/authApi';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
+import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 
 interface TrendDay {
   date: string;
@@ -79,6 +81,11 @@ const EVENT_COLORS: Record<string, string> = {
 /** Preview table only — full filtered set still used for download/email. */
 const EVENT_PREVIEW_LIMIT = 20;
 const EVENTS_REFRESH_MS = 30_000;
+
+function reportSiteKeyFor(zone?: string | null) {
+  const z = (zone || '').trim();
+  return z || 'Unknown';
+}
 
 function getDateBounds(
   dateRange: DateRange,
@@ -307,7 +314,7 @@ function MultiSelectDropdown({
 
 export default function ReportsPage() {
   const { user } = useAuth();
-  const { events: fleetEvents, vehicles } = useFleet();
+  const { events: fleetEvents, vehicles, siteOptions, siteNameOptions } = useFleet();
   const vehiclesRef = useRef(vehicles);
   const fleetEventsRef = useRef(fleetEvents);
   vehiclesRef.current = vehicles;
@@ -324,7 +331,7 @@ export default function ReportsPage() {
   const [selectedEventTypes, setSelectedEventTypes] = useState<Set<string>>(
     () => new Set(EVENT_TYPES),
   );
-  const [selectedSites, setSelectedSites] = useState<Set<string>>(() => new Set());
+  const [selectedSites, setSelectedSites] = useState<string[]>([]);
   const [dateRange, setDateRange] = useState<DateRange>('7days');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -351,28 +358,38 @@ export default function ReportsPage() {
     let cancelled = false;
 
     const load = async (silent = false) => {
-      if (!silent) setLoading(true);
-      try {
-        const { from, to } = getDateBounds(dateRange, fromDate, toDate);
-        const params = new URLSearchParams();
-        if (from) params.set('from', from);
-        if (to) params.set('to', to);
-        params.set('format', 'page');
-        params.set('limit', String(EVENT_PREVIEW_LIMIT));
-        if (selectedEventTypes.size > 0 && selectedEventTypes.size < EVENT_TYPES.length) {
-          params.set('types', [...selectedEventTypes].join(','));
-        }
-        const url = `/api/events/log?${params}`;
-        const res = await authFetch(url);
-        if (cancelled) return;
+      const { from, to } = getDateBounds(dateRange, fromDate, toDate);
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      params.set('format', 'page');
+      params.set('limit', String(EVENT_PREVIEW_LIMIT));
+      if (selectedEventTypes.size > 0 && selectedEventTypes.size < EVENT_TYPES.length) {
+        params.set('types', [...selectedEventTypes].join(','));
+      }
+      const url = `/api/events/log?${params}`;
+      const applyData = (data: any) => {
         const veh = vehiclesRef.current;
-        if (res.ok) {
-          const data = await res.json();
-          const rows = Array.isArray(data) ? data : data?.entries ?? [];
-          setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, veh)));
-          setEventCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
+        const rows = Array.isArray(data) ? data : data?.entries ?? [];
+        setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, veh)));
+        setEventCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
+      };
+      if (!silent) {
+        const cached = cachePeek<any>(url);
+        if (cached !== null) {
+          applyData(cached);
+          setLoading(false);
         } else {
-          const demo = mapDemoEntries(fleetEventsRef.current, veh);
+          setLoading(true);
+        }
+      }
+      try {
+        const data = await authCachedJson<any>(url, authFetch, { ttlMs: CACHE_TTL.fleetEvents });
+        if (cancelled) return;
+        if (data !== null) {
+          applyData(data);
+        } else {
+          const demo = mapDemoEntries(fleetEventsRef.current, vehiclesRef.current);
           setEntries(demo);
           setEventCensusTotal(demo.length);
         }
@@ -394,16 +411,38 @@ export default function ReportsPage() {
     };
   }, [dateRange, fromDate, toDate, selectedEventTypes]);
 
-  const siteOptions = useMemo(() => {
-    const sites = new Set<string>();
-    vehicles.forEach(v => {
-      if (v.site && v.site !== 'XN - Decommissioned') sites.add(v.site);
+  const toggleSite = (site: string) => {
+    setSelectedSites(prev => {
+      if (prev.includes(site)) return prev.filter(s => s !== site);
+      return [...prev, site];
     });
-    entries.forEach(e => {
-      if (e.site) sites.add(e.site);
-    });
-    return Array.from(sites).sort((a, b) => a.localeCompare(b));
-  }, [vehicles, entries]);
+  };
+
+  const selectedSiteLabel = useMemo(
+    () => selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions, 'All sites') ?? 'All sites',
+    [selectedSites, siteOptions, siteNameOptions],
+  );
+
+  const scopedVehicleRefs = useMemo(() => {
+    if (selectedSites.length === 0) return null;
+    const allowed = new Set(selectedSites);
+    const ids = new Set<string>();
+    const regs = new Set<string>();
+    vehicles
+      .filter(v => allowed.has(reportSiteKeyFor(v.zone)) || allowed.has((v.site || '').trim()))
+      .forEach(v => {
+        if (v.id) ids.add(v.id.toString());
+        if (v.regNo) regs.add(v.regNo.trim().toLowerCase());
+      });
+    return { ids, regs };
+  }, [selectedSites, vehicles]);
+
+  const eventMatchesSelectedSite = (event: LogEntry) => {
+    if (!scopedVehicleRefs) return true;
+    const id = event.assetId?.toString();
+    const reg = event.regNo?.trim().toLowerCase();
+    return Boolean((id && scopedVehicleRefs.ids.has(id)) || (reg && scopedVehicleRefs.regs.has(reg)));
+  };
 
   const earliestDate = useMemo(() => {
     if (entries.length === 0) return new Date();
@@ -424,7 +463,7 @@ export default function ReportsPage() {
         const label = eventLabel(e);
         if (HIDDEN_LABELS.includes(label)) return false;
         if (!matchesEventType(e, selectedEventTypes)) return false;
-        if (selectedSites.size > 0 && (!e.site || !selectedSites.has(e.site))) return false;
+        if (!eventMatchesSelectedSite(e)) return false;
         const q = searchTerm.toLowerCase();
         const matchesSearch =
           searchTerm === '' ||
@@ -435,7 +474,7 @@ export default function ReportsPage() {
           (e.driverPhone && e.driverPhone.toLowerCase().includes(q));
         return matchesSearch;
       }),
-    [entries, selectedEventTypes, selectedSites, searchTerm],
+    [entries, selectedEventTypes, scopedVehicleRefs, searchTerm],
   );
 
   const previewRows = useMemo(
@@ -585,17 +624,7 @@ export default function ReportsPage() {
     setShowTotal(false);
   };
 
-  const toggleSite = (site: string) => {
-    setSelectedSites(prev => {
-      const next = new Set(prev);
-      if (next.has(site)) next.delete(site);
-      else next.add(site);
-      return next;
-    });
-  };
-
   const selectAllEvents = () => setSelectedEventTypes(new Set(EVENT_TYPES));
-  const selectAllSites = () => setSelectedSites(new Set());
 
   const dateRangeLabel =
     dateRange === 'today' ? 'Today'
@@ -610,7 +639,7 @@ export default function ReportsPage() {
       ? `Events: ${selectedEventTypes.size === 0 ? 'None' : [...selectedEventTypes].join(', ')}`
       : null,
     reportType === 'events'
-      ? `Sites: ${selectedSites.size === 0 ? 'All' : [...selectedSites].join(', ')}`
+      ? `Sites: ${selectedSiteLabel}`
       : null,
     searchTerm ? `Search: ${searchTerm}` : '',
   ].filter(Boolean).join('  ·  ');
@@ -642,7 +671,7 @@ export default function ReportsPage() {
           const label = eventLabel(e);
           if (HIDDEN_LABELS.includes(label)) return false;
           if (!matchesEventType(e, selectedEventTypes)) return false;
-          if (selectedSites.size > 0 && (!e.site || !selectedSites.has(e.site))) return false;
+          if (!eventMatchesSelectedSite(e)) return false;
           const q = searchTerm.toLowerCase();
           return (
             searchTerm === '' ||
@@ -851,14 +880,14 @@ export default function ReportsPage() {
 
           {reportType === 'events' && (
             <>
-              <MultiSelectDropdown
+              <SiteScopeDropdown
                 label="Site"
-                options={siteOptions}
-                selected={selectedSites}
-                onToggle={toggleSite}
-                onSelectAll={selectAllSites}
-                allLabel="All sites"
-                emptyMeansAll
+                variant="field"
+                selectedSites={selectedSites}
+                setSelectedSites={setSelectedSites}
+                toggleSite={toggleSite}
+                siteOptions={siteOptions}
+                siteNameOptions={siteNameOptions}
               />
 
               <MultiSelectDropdown
@@ -963,8 +992,6 @@ export default function ReportsPage() {
               )}
             </div>
           </div>
-
-          <ReportAutomate />
 
           <div className="bpl-reports-filters-foot">
             Auto-refreshes every 30s

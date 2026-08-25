@@ -302,6 +302,9 @@ function initSchema() {
   ensureColumn('trips', 'idle_hours', 'REAL');
   ensureColumn('trips', 'engine_hours', 'REAL');
   ensureColumn('trips', 'has_subtrips', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('report_automations', 'title', 'TEXT');
+  ensureColumn('report_automations', 'report_config', 'TEXT');
+  ensureColumn('report_automations', 'format', "TEXT NOT NULL DEFAULT 'csv'");
 
   // Keep known BPL / bootstrap accounts organisational (idempotent)
   db.prepare(`

@@ -27,7 +27,6 @@ const STATUS_STATS = [
   { key: 'stationary' as const, label: 'Stationary', filter: 'Stationary' as StatusFilter, color: '#0d9488', icon: MapPin, tip: STATUS_DEFINITIONS.stationary, href: '/fleet?status=Stationary' },
   { key: 'parked' as const, label: 'Parked', filter: 'Parked' as StatusFilter, color: '#ea580c', icon: ParkingCircle, tip: STATUS_DEFINITIONS.parked, href: '/fleet?status=Parked' },
   { key: 'offline' as const, label: 'Offline', filter: 'Offline' as StatusFilter, color: '#64748b', icon: WifiOff, tip: STATUS_DEFINITIONS.offline, href: '/fleet?status=Offline' },
-  { key: 'inactive' as const, label: 'Non-Operational', filter: 'Inactive' as StatusFilter, color: '#2563eb', icon: Ban, tip: STATUS_DEFINITIONS.nonOperational, href: '/fleet?status=Inactive' },
 ];
 
 interface Props {
@@ -47,9 +46,9 @@ export default function StatusStatsRow({
   navigateOnStatusClick = false,
 }: Props) {
   const navigate = useNavigate();
-  const { metadata, totalDistanceKm, distanceLoading, vehiclesLoading } = useFleet();
+  const { metadata, totalDistanceKm, distanceLoading, vehiclesLoading, vehicles, selectedSites } = useFleet();
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(metricPeriod);
-  const { violationCount: hosViolations, loading: hosLoading } = useHosRecords();
+  const { records: hosRecords, loading: hosLoading } = useHosRecords();
 
   const quarryFuelLiters = useMemo(() => {
     if (tripFuelLiters > 0) return tripFuelLiters;
@@ -59,9 +58,21 @@ export default function StatusStatsRow({
     return tripFuelLiters;
   }, [tripFuelLiters, fuelData]);
 
-  const fuelDistanceKm = useMemo(() => {
-    return Math.round((fuelData?.assets ?? []).reduce((s, a) => s + (a.totalDistanceKm || 0), 0));
-  }, [fuelData]);
+  const scopedHosViolations = useMemo(() => {
+    if (selectedSites.length === 0) {
+      return hosRecords.filter(record => record.status === 'violation').length;
+    }
+    const allowedRegs = new Set(
+      vehicles
+        .map(v => (v.regNo || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    return hosRecords.filter(record => {
+      if (record.status !== 'violation') return false;
+      const reg = (record.vehicleReg || '').trim().toLowerCase();
+      return allowedRegs.size === 0 ? true : allowedRegs.has(reg);
+    }).length;
+  }, [hosRecords, selectedSites.length, vehicles]);
 
   const getValue = (key: typeof STATUS_STATS[number]['key']) => {
     if (key === 'totalVehicles') return metadata.totalVehicles;
@@ -70,8 +81,6 @@ export default function StatusStatsRow({
 
   const getStatusCardClass = (key: typeof STATUS_STATS[number]['key']) => {
     switch (key) {
-      case 'inactive':
-        return 'bpl-status-stat--status-compact';
       default:
         return 'bpl-status-stat--status-regular';
     }
@@ -106,17 +115,10 @@ export default function StatusStatsRow({
             >
               <div className="bpl-status-stat-inner">
                 <div className="bpl-status-stat-copy">
-                  {stat.key === 'inactive' ? (
-                    <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
-                      <span>Non-</span>
-                      <span>Operational</span>
-                    </span>
-                  ) : (
-                    <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                      {stat.label}
-                      <InfoTip text={stat.tip} label={stat.label} />
-                    </span>
-                  )}
+                  <span className="bpl-status-stat-label" style={{ display: 'inline-flex', alignItems: 'center' }}>
+                    {stat.label}
+                    <InfoTip text={stat.tip} label={stat.label} />
+                  </span>
                   <div className="bpl-status-stat-value" style={{ color: stat.color }}>
                     {vehiclesLoading ? <SkelValue /> : value}
                   </div>
@@ -193,9 +195,9 @@ export default function StatusStatsRow({
                 </span>
                 <div
                   className="bpl-status-stat-value"
-                  style={{ color: '#CC0000', animation: !hosLoading && hosViolations > 0 ? 'pulse 1.5s infinite' : 'none' }}
+                  style={{ color: '#CC0000', animation: !hosLoading && scopedHosViolations > 0 ? 'pulse 1.5s infinite' : 'none' }}
                 >
-                  {hosLoading ? <SkelValue /> : hosViolations}
+                  {hosLoading || vehiclesLoading ? <SkelValue /> : scopedHosViolations}
                 </div>
                 <div className="bpl-status-stat-sub">4h / 8h / weekly rest</div>
               </div>
@@ -207,41 +209,28 @@ export default function StatusStatsRow({
         <div className="bpl-status-metrics-stack">
           <button
             type="button"
-            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-regular"
-            style={{ borderTopColor: '#0891b2', cursor: 'pointer', textAlign: 'left', width: '100%' }}
-            title="Open fuel consumption"
-            onClick={() => navigate('/fuel/consumption')}
+            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
+            style={{ borderTopColor: '#2563eb', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            title="Open non-operational fleet"
+            onClick={() => navigate('/fleet?status=Inactive')}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
-                <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
-                  <span>Fuel</span>
-                  <span>Distance</span>
+                <span className="bpl-status-stat-label-wrap">
+                  <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
+                    <span>Non-</span>
+                    <span>Operational</span>
+                  </span>
+                  <InfoTip text={STATUS_DEFINITIONS.nonOperational} label="Non-Operational" />
                 </span>
-                <InfoTip text="Distance covered only by vehicles that reported fuel probe data in this period — pair with Fuel Used for a fair L/km." label="Fuel Distance" />
-                <div className="bpl-status-stat-value" style={{ color: '#0891b2' }}>
-                  {fuelLoading ? <SkelValue wide /> : (
-                    <>
-                      {fuelDistanceKm.toLocaleString()}
-                      <span className="bpl-status-metric-unit">km</span>
-                    </>
-                  )}
+                <div className="bpl-status-stat-value" style={{ color: '#2563eb' }}>
+                  {vehiclesLoading ? <SkelValue /> : metadata.inactive}
                 </div>
                 <div className="bpl-status-stat-sub">
-                  <select
-                    className="bpl-status-period-select"
-                    value={metricPeriod}
-                    onChange={e => onMetricPeriodChange(e.target.value as MetricPeriod)}
-                    onClick={e => e.stopPropagation()}
-                    aria-label="Fuel time period"
-                  >
-                    {(Object.keys(DISTANCE_PERIOD_LABELS) as DistanceRange[]).map(p => (
-                      <option key={p} value={p}>{DISTANCE_PERIOD_LABELS[p]}</option>
-                    ))}
-                  </select>
+                  {metadata.totalVehicles > 0 ? `${Math.round((metadata.inactive / metadata.totalVehicles) * 100)}% of fleet` : 'vehicles'}
                 </div>
               </div>
-              <WidgetStatGraphic color="#0891b2" icon={Route} size="xs" />
+              <WidgetStatGraphic color="#2563eb" icon={Ban} size="xs" />
             </div>
           </button>
 
@@ -255,8 +244,8 @@ export default function StatusStatsRow({
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
                 <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
-                  <span>Fuel</span>
-                  <span>Used</span>
+                  <span>Quarry</span>
+                  <span>Fuel Used</span>
                 </span>
                 <div className="bpl-status-stat-value" style={{ color: '#f97316' }}>
                   {fuelLoading ? <SkelValue wide /> : (

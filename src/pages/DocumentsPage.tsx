@@ -131,7 +131,7 @@ function TreeNode({
   );
 }
 
-export default function DocumentsPage() {
+export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean } = {}) {
   const [tree, setTree] = useState<DocFolder[]>([]);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<DocFolder[]>([]);
@@ -239,8 +239,8 @@ export default function DocumentsPage() {
     : 'This PC \\ Documents';
 
   return (
-    <FeatureGate featureId="reports">
-      <div>
+    <div>
+      {showHeader && (
         <div className="bpl-page-header bpl-page-header-row">
           <div>
             <h1 className="bpl-page-title">
@@ -261,6 +261,7 @@ export default function DocumentsPage() {
             Refresh
           </button>
         </div>
+      )}
 
         <div className="bpl-docs-explorer">
           <aside className="bpl-docs-sidebar">
@@ -387,6 +388,13 @@ export default function DocumentsPage() {
           </section>
         </div>
       </div>
+  );
+}
+
+export default function DocumentsPage() {
+  return (
+    <FeatureGate featureId="reports">
+      <DocumentsExplorer />
     </FeatureGate>
   );
 }

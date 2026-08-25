@@ -177,7 +177,13 @@ export async function sendAutomatedReportEmail({
   }
 
   const recipients = Array.isArray(to) ? to : [to];
-  const freqLabel = frequency === 'daily' ? 'Daily' : frequency === 'monthly' ? 'Monthly' : 'Weekly';
+  const freqLabel = frequency === 'hourly'
+    ? 'Hourly'
+    : frequency === 'daily'
+      ? 'Daily'
+      : frequency === 'monthly'
+        ? 'Monthly'
+        : 'Weekly';
   const periodLabel = formatPeriod(payload?.from, payload?.to);
   const subject = `${test ? '[Test] ' : ''}${freqLabel} fleet report · HBM`;
   const reportsUrl = appReportsUrl();

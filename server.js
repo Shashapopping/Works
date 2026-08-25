@@ -232,6 +232,7 @@ app.get('/api/safety-exposure', (req, res) => {
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
       assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || null,
     }))
   } catch (err) {
     console.error('safety exposure failed', err)
@@ -247,6 +248,7 @@ app.get('/api/safety/summary', (req, res) => {
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
       assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || null,
     }))
   } catch (err) {
     console.error('safety summary failed', err)
@@ -261,6 +263,8 @@ app.get('/api/risk/drivers', (req, res) => {
       range: req.query.range?.toString() || '30d',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
+      assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || null,
     }))
   } catch (err) {
     console.error('risk drivers failed', err)

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Truck, Activity, TrendingUp, DollarSign, AlertCircle, Wifi, WifiOff, Route, BarChart2, Fuel } from 'lucide-react';
-import { useFleet } from '../context/FleetContext';
+import { useFleet, authFetch, type DriverDistanceSummary } from '../context/FleetContext';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 
 const QUARRY_ZONES = ['lh quarry', 'quarry ewekoro', 'quarry mfamosing'];
 
@@ -90,19 +91,26 @@ function UtilizationSection() {
 type DistanceRange = '24h' | 'currentMonth' | 'lastMonth';
 
 function useDistanceData(range: DistanceRange) {
-  const { authFetch } = useFleet();
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const url = `/api/driver-distance?range=${range}&trips=0`;
+  const [data, setData] = useState<DriverDistanceSummary | null>(() => cachePeek<DriverDistanceSummary>(url));
+  const [loading, setLoading] = useState(() => !cachePeek<DriverDistanceSummary>(url));
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    authFetch(`/api/driver-distance?range=${range}&trips=0`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
-      .catch(() => { if (!cancelled) setLoading(false); });
+    const cached = cachePeek<DriverDistanceSummary>(url);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    } else {
+      setData(null);
+      setLoading(true);
+    }
+    authCachedJson<DriverDistanceSummary>(url, authFetch, { ttlMs: CACHE_TTL.pageRollup })
+      .then(d => { if (!cancelled && d) setData(d); })
+      .catch(() => { /* keep cached/null */ })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [range, authFetch]);
+  }, [url]);
 
   return { data, loading };
 }

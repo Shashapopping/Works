@@ -15,28 +15,28 @@ const inflight = new Map<string, Promise<unknown>>();
 const MAX_ENTRIES = 80;
 
 export const CACHE_TTL = {
-  fleetData: 8_000,
-  fleetMeta: 8_000,
-  fleetEvents: 12_000,
+  fleetData: 20_000,
+  fleetMeta: 20_000,
+  fleetEvents: 60_000,
   kpi: 5 * 60_000,
   /** Heavy: scans fuel-history for refill + trip fuel. */
-  fuelConsumption: 60_000,
-  fuelHistory: 45_000,
+  fuelConsumption: 5 * 60_000,
+  fuelHistory: 5 * 60_000,
   /** Live continuous-driving clock — keep fairly fresh. */
   hos: 20_000,
-  safetyExposure: 45_000,
-  safetySummary: 45_000,
-  riskDrivers: 45_000,
+  safetyExposure: 2 * 60_000,
+  safetySummary: 2 * 60_000,
+  riskDrivers: 2 * 60_000,
   /** Page rollups — align with ~60s jittered polls. */
-  pageRollup: 55_000,
+  pageRollup: 5 * 60_000,
   /** Current + last month trip km for driver consequence scores. */
-  driverAssessment: 60_000,
+  driverAssessment: 5 * 60_000,
 } as const;
 
 export const CACHE_KEYS = {
   fleetData: 'fleet:data',
   fleetMeta: 'fleet:metadata',
-  fleetEvents: 'fleet:events',
+  fleetEvents: 'fleet:events:unbounded-v2',
   kpi: (url: string) => `kpi:${url}`,
   fuelConsumption: (url: string) => `fuel:consumption:${url}`,
   fuelHistory: (url: string) => `fuel:history:${url}`,

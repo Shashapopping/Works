@@ -108,11 +108,17 @@ function ensureFolder(name, parentId, parentPath) {
 }
 
 /**
- * Filing chain: Reports\YYYY\MM-MonthName\Type
+ * Filing chain: Reports\YYYY\MM-MonthName\Type.
+ * Automation profiles are top-level: Automation.
  * @returns {{ folder: object, relativeDir: string }}
  */
 export function ensureFilingFolder({ type = 'Events', when = new Date() } = {}) {
   ensureDiskRoot();
+  if (safeSegment(type).toLowerCase() === 'automation') {
+    const automation = ensureFolder('Automation', null, null);
+    return { folder: automation, relativeDir: automation.path.split('\\').join(path.sep) };
+  }
+
   const date = when instanceof Date ? when : new Date(when);
   const reports = ensureFolder('Reports', null, null);
   const year = ensureFolder(String(date.getFullYear()), reports.id, reports.path);
@@ -200,8 +206,9 @@ export function archiveDocument({
 
 export function listDocumentTree() {
   ensureDiskRoot();
-  // Seed empty root so Explorer always has Reports
+  // Seed empty roots so Explorer always has Reports and Automation side-by-side.
   ensureFolder('Reports', null, null);
+  ensureFolder('Automation', null, null);
 
   const rows = getDb().prepare(`
     SELECT * FROM document_folders ORDER BY path ASC

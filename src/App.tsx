@@ -14,6 +14,7 @@ const DispatchPage = lazy(() => import('./pages/DispatchPage'));
 const TripsPage = lazy(() => import('./pages/TripsPage'));
 const AiInsightsPage = lazy(() => import('./pages/AiInsightsPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const ReportsAutomationPage = lazy(() => import('./pages/ReportsAutomationPage'));
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const DriverManagement = lazy(() => import('./pages/DriverManagement'));
 const CoachingPage = lazy(() => import('./pages/driver/CoachingPage'));
@@ -100,6 +101,7 @@ export default function App() {
                 <Route path="/aria" element={<AiInsightsPage />} />
 
                 <Route path="/reports" element={<ReportsPage />} />
+                <Route path="/reports/automation" element={<ReportsAutomationPage />} />
                 <Route path="/reports/documents" element={<DocumentsPage />} />
                 <Route path="/reports/*" element={<Navigate to="/reports" replace />} />
 

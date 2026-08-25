@@ -134,9 +134,11 @@ export function querySafetyEventAggregates({ from = null, to = null, assetIds = 
   };
 }
 
-export function queryRiskAggregates({ from = null, to = null, groupBy = 'driver' } = {}) {
+export function queryRiskAggregates({ from = null, to = null, groupBy = 'driver', assetIds = null } = {}) {
   const database = getDb();
   const { conditions, params } = rangeConditions(from, to);
+  const assetFilter = pushAssetIdFilter(conditions, params, assetIds);
+  if (assetFilter.empty) return [];
   conditions.push(`label IN (${SCORING_LABELS.map(() => '?').join(',')})`);
   params.push(...SCORING_LABELS);
   const osKeep = overspeedKeepSql();

@@ -18,6 +18,17 @@ export interface UserNotification {
   createdAt: string;
 }
 
+export interface DriverWarning {
+  id: string;
+  driverKey: string;
+  driverName: string;
+  comment: string;
+  disciplineBand: ConsequenceCategory | null;
+  issuedByUserId: string;
+  issuedByName: string;
+  createdAt: string;
+}
+
 async function parseJson(res: Response) {
   const data = await res.json().catch(() => ({})) as { error?: string };
   if (!res.ok) throw new Error(data.error || res.statusText || 'Request failed');
@@ -48,6 +59,16 @@ export async function markUserNotificationRead(id: string): Promise<void> {
 export async function markAllUserNotificationsRead(): Promise<void> {
   const res = await fetch('/api/notifications/read-all', authFetchInit({ method: 'POST' }));
   await parseJson(res);
+}
+
+export async function fetchDriverWarnings(driverKeys: string[] = []): Promise<DriverWarning[]> {
+  const keys = [...new Set(driverKeys.map(k => k.trim()).filter(Boolean))];
+  const qs = keys.length
+    ? `?driverKeys=${encodeURIComponent(keys.join(','))}`
+    : '';
+  const res = await fetch(`/api/coaching/warnings${qs}`, authFetchInit());
+  const data = await parseJson(res) as { warnings: DriverWarning[] };
+  return data.warnings || [];
 }
 
 export async function issueWrittenWarning(input: {

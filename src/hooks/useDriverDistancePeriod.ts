@@ -21,10 +21,14 @@ export function useDriverDistancePeriod(
 
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) {
-      setLoading(true);
       const cached = cachePeek<DriverDistanceSummary>(url);
-      if (cached) setData(cached);
-      else setData(null);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+      } else {
+        setData(null);
+        setLoading(true);
+      }
     }
     try {
       const next = await authCachedJson<DriverDistanceSummary>(url, authFetch, {

@@ -37,6 +37,7 @@ import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, BOOT
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
+import { filterDistanceAssetsByVehicles, filterTripDriversByVehicles } from '../lib/siteScope';
 
 export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
@@ -497,7 +498,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         async () => {
           const to = new Date().toISOString();
           const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=500`);
+          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
           if (!res.ok) return null;
           const payload = await res.json();
           return Array.isArray(payload) ? payload : payload?.entries ?? [];
@@ -873,6 +874,22 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     return m;
   }, [metadata, filteredVehicles, siteFilterActive]);
 
+  const effectiveDriverDistance = useMemo<DriverDistanceSummary | null>(() => {
+    if (!driverDistance || !siteFilterActive) return driverDistance;
+    const assets = filterDistanceAssetsByVehicles(driverDistance.assets || [], filteredVehicles);
+    const drivers = filterTripDriversByVehicles(driverDistance.drivers || [], filteredVehicles);
+    return {
+      ...driverDistance,
+      totalDistanceKm: assets.reduce((sum, asset) => sum + (asset.totalDistanceKm || 0), 0),
+      rawTripCount: assets.reduce((sum, asset) => sum + (asset.rawTripCount || 0), 0),
+      journeyCount: assets.reduce((sum, asset) => sum + (asset.journeyCount || 0), 0),
+      driverCount: drivers.length,
+      assetCount: assets.length,
+      assets,
+      drivers,
+    };
+  }, [driverDistance, filteredVehicles, siteFilterActive]);
+
   const { score: fleetSafetyScore, delta: fleetScoreDelta } = useMemo(
     () => computeFleetScore(
       safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0, byLabel: {} },
@@ -885,7 +902,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const insights = useMemo(() => deriveInsights(filteredEvents, filteredVehicles), [filteredEvents, filteredVehicles]);
   const maintenance = DEFAULT_MAINTENANCE;
   const trips = DEMO_TRIPS;
-  const totalDistanceKm = Math.round(driverDistance?.totalDistanceKm ?? 0);
+  const totalDistanceKm = Math.round(effectiveDriverDistance?.totalDistanceKm ?? 0);
 
   const redAlertCount = SAFEIQ_ENABLED
     ? notifications.filter(
@@ -931,8 +948,8 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     [filteredEvents],
   );
   const demoDriverDistance = useMemo(
-    () => sanitizeDriverDistance(driverDistance),
-    [driverDistance],
+    () => sanitizeDriverDistance(effectiveDriverDistance),
+    [effectiveDriverDistance],
   );
   const demoNotifications = useMemo(
     () => (DEMO_BRANDING ? notifications.map(sanitizeNotification) : notifications),
