@@ -1,5 +1,6 @@
 import type { FleetVehicle } from '../../context/FleetContext';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../../lib/placeAddress';
+import { statusDisplayLabel } from '../../lib/metricDefinitions';
 
 const GRID_COLS = 'minmax(72px,1fr) minmax(80px,1.2fr) minmax(90px,1.8fr) minmax(72px,1fr) minmax(90px,1.4fr) minmax(72px,1fr)';
 
@@ -95,7 +96,7 @@ export default function FleetCompactTable({ vehicles }: Props) {
                   style={{ backgroundColor: colors.bg, color: colors.text, borderColor: colors.border }}
                 >
                   <span className="bpl-fleet-status-dot" style={{ backgroundColor: colors.text }} />
-                  {v.status}
+                  {statusDisplayLabel(v.status)}
                 </span>
               </div>
               <div className="bpl-fleet-cell-loc" title={loc}>{loc}</div>

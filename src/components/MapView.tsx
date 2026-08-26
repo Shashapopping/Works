@@ -6,6 +6,7 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.markercluster';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelValue } from './data/DataBusy';
+import { statusDisplayLabel } from '../lib/metricDefinitions';
 
 interface Warning {
   eventId: string;
@@ -254,8 +255,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
 
     const filtered = vehicles.filter(v => {
       if (!v.position?.latitude || !v.position?.longitude) return false;
-      const matchesStatus = statusFilter === 'All' || v.status === statusFilter
-        || (statusFilter === 'Inactive' && v.status === 'Offline');
+      const matchesStatus = statusFilter === 'All' || v.status === statusFilter;
       const matchesSearch = searchTerm === '' ||
         v.regNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
         v.assetName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -318,7 +318,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
               background: #f1f5f9;
               color: #64748b;
               border: 1px solid #e2e8f0;
-            ">${vehicle.status}</span>
+            ">${statusDisplayLabel(vehicle.status)}</span>
           </div>
           <div style="font-size: 12px; color: #0f172a; margin-bottom: 4px;">${vehicle.assetName}</div>
           <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">${vehicle.transporter}</div>
@@ -352,8 +352,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
 
   const visibleCount = vehicles.filter(v => {
     if (!v.position?.latitude) return false;
-    const matchesStatus = statusFilter === 'All' || v.status === statusFilter
-      || (statusFilter === 'Inactive' && v.status === 'Offline');
+    const matchesStatus = statusFilter === 'All' || v.status === statusFilter;
     const matchesSearch = searchTerm === '' ||
       v.regNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
       v.assetName.toLowerCase().includes(searchTerm.toLowerCase());
@@ -393,7 +392,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
         {Object.entries(STATUS_COLORS).filter(([k]) => !['Warning'].includes(k)).map(([status, color]) => (
           <span key={status} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--cd-text-muted)' }}>
             <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: color, border: '1.5px solid #fff', boxShadow: '0 1px 3px rgba(0,0,0,0.2)', flexShrink: 0, display: 'inline-block' }}></span>
-            {status}
+            {statusDisplayLabel(status)}
           </span>
         ))}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--cd-text-muted)' }}>

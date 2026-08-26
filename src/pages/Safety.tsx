@@ -40,24 +40,33 @@ function shortDay(ms: number) {
   return new Date(ms).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' });
 }
 
-function weeklySafetyTrend(events: LogEntry[], scoreConfig: FleetScoreConfig) {
+// A "week" is the 7-day span ending `offsetWeeks` weeks ago (0 = the 7 days up to and including today).
+function weekWindow(offsetWeeks: number) {
   const todayStart = startOfLocalDay(new Date());
-  const currentStart = todayStart - 6 * DAY_MS;
-  const previousStart = currentStart - 7 * DAY_MS;
-  const end = todayStart + DAY_MS;
+  const end = todayStart - offsetWeeks * 7 * DAY_MS + DAY_MS;
+  const start = end - 7 * DAY_MS;
+  return { start, end };
+}
 
-  const rows = Array.from({ length: 7 }, (_, i) => {
-    const currentMs = currentStart + i * DAY_MS;
-    const previousMs = previousStart + i * DAY_MS;
-    return {
-      day: shortDay(currentMs),
-      previousDay: shortDay(previousMs),
-      currentIncidents: 0,
-      previousIncidents: 0,
-      currentPoints: 0,
-      previousPoints: 0,
-    };
-  });
+function weekOptionLabel(offsetWeeks: number) {
+  if (offsetWeeks === 0) return 'This week';
+  if (offsetWeeks === 1) return 'Last week';
+  const { start } = weekWindow(offsetWeeks);
+  return `Week of ${new Date(start).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`;
+}
+
+function weeklySafetyTrend(events: LogEntry[], scoreConfig: FleetScoreConfig, currentOffset: number, previousOffset: number) {
+  const currentWin = weekWindow(currentOffset);
+  const previousWin = weekWindow(previousOffset);
+
+  const rows = Array.from({ length: 7 }, (_, i) => ({
+    day: shortDay(currentWin.start + i * DAY_MS),
+    previousDay: shortDay(previousWin.start + i * DAY_MS),
+    currentIncidents: 0,
+    previousIncidents: 0,
+    currentPoints: 0,
+    previousPoints: 0,
+  }));
 
   for (const event of events) {
     if (event.type === 'panic') continue;
@@ -65,14 +74,14 @@ function weeklySafetyTrend(events: LogEntry[], scoreConfig: FleetScoreConfig) {
     const weight = eventWeight(label, scoreConfig);
     if (!label || weight <= 0) continue;
     const ts = new Date(event.eventTime || event.timestamp).getTime();
-    if (!Number.isFinite(ts) || ts < previousStart || ts >= end) continue;
+    if (!Number.isFinite(ts)) continue;
 
-    if (ts >= currentStart) {
-      const idx = Math.min(6, Math.floor((ts - currentStart) / DAY_MS));
+    if (ts >= currentWin.start && ts < currentWin.end) {
+      const idx = Math.min(6, Math.floor((ts - currentWin.start) / DAY_MS));
       rows[idx].currentIncidents += 1;
       rows[idx].currentPoints += weight;
-    } else {
-      const idx = Math.min(6, Math.floor((ts - previousStart) / DAY_MS));
+    } else if (ts >= previousWin.start && ts < previousWin.end) {
+      const idx = Math.min(6, Math.floor((ts - previousWin.start) / DAY_MS));
       rows[idx].previousIncidents += 1;
       rows[idx].previousPoints += weight;
     }
@@ -516,35 +525,64 @@ function SafetyRadar({ byLabel }: { byLabel?: Record<string, number> }) {
   );
 }
 
+// Events are only fetched for the last 14 days, so only these two weeks have real data.
+const WEEK_OPTIONS = [0, 1];
+
+function WeekSelect({ value, onChange }: { value: number; onChange: (offset: number) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      style={{
+        fontSize: 11, fontWeight: 600, color: 'var(--cd-text)',
+        background: 'var(--cd-surface)', border: '1px solid var(--cd-border)',
+        borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
+      }}
+    >
+      {WEEK_OPTIONS.map(offset => (
+        <option key={offset} value={offset}>{weekOptionLabel(offset)}</option>
+      ))}
+    </select>
+  );
+}
+
 function WeeklySafetyTrend({ events, scoreConfig, loading }: { events: LogEntry[]; scoreConfig: FleetScoreConfig; loading: boolean }) {
-  const trend = useMemo(() => weeklySafetyTrend(events, scoreConfig), [events, scoreConfig]);
-  const incidentDelta = trend.currentIncidents - trend.previousIncidents;
-  const pointsDelta = trend.currentPoints - trend.previousPoints;
-  const improving = pointsDelta <= 0;
+  const [currentOffset, setCurrentOffset] = useState(0);
+  const [previousOffset, setPreviousOffset] = useState(1);
+
+  const trend = useMemo(
+    () => weeklySafetyTrend(events, scoreConfig, currentOffset, previousOffset),
+    [events, scoreConfig, currentOffset, previousOffset],
+  );
+  const currentLabel = weekOptionLabel(currentOffset);
+  const previousLabel = weekOptionLabel(previousOffset);
 
   return (
     <div className="bpl-card" style={{ padding: '20px 22px', marginBottom: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 2 }}>
             Weekly Safety Trend
           </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>
-            Latest 7 days compared with the previous 7 days · weighted harm points
+          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <WeekSelect value={currentOffset} onChange={setCurrentOffset} />
+            <span>vs</span>
+            <WeekSelect value={previousOffset} onChange={setPreviousOffset} />
+            <span>· weighted harm points</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <div style={{ minWidth: 112, textAlign: 'right' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: improving ? '#16a34a' : '#CC0000', fontFamily: 'var(--cd-font-display)' }}>
-              {loading ? <SkelValue /> : `${pointsDelta >= 0 ? '+' : ''}${pointsDelta.toFixed(0)}`}
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#0078D4', fontFamily: 'var(--cd-font-display)' }}>
+              {loading ? <SkelValue /> : trend.currentPoints.toFixed(0)}
             </div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>harm points vs prior week</div>
+            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>harm points total · {currentLabel.toLowerCase()}</div>
           </div>
           <div style={{ minWidth: 112, textAlign: 'right' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: incidentDelta <= 0 ? '#16a34a' : '#e05c2a', fontFamily: 'var(--cd-font-display)' }}>
-              {loading ? <SkelValue /> : `${incidentDelta >= 0 ? '+' : ''}${incidentDelta}`}
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cd-text-muted)', fontFamily: 'var(--cd-font-display)' }}>
+              {loading ? <SkelValue /> : trend.previousPoints.toFixed(0)}
             </div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>incidents vs prior week</div>
+            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>harm points total · {previousLabel.toLowerCase()}</div>
           </div>
         </div>
       </div>
@@ -556,13 +594,13 @@ function WeeklySafetyTrend({ events, scoreConfig, loading }: { events: LogEntry[
           <YAxis tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
           <Tooltip
             contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 6, fontSize: 12 }}
-            formatter={(value: number, name: string) => [`${Number(value).toFixed(0)} pts`, name === 'currentPoints' ? 'Latest 7 days' : 'Previous 7 days']}
+            formatter={(value: number, name: string) => [`${Number(value).toFixed(0)} pts`, name === 'currentPoints' ? currentLabel : previousLabel]}
             labelFormatter={(label, payload) => {
               const row = payload?.[0]?.payload;
               return row?.previousDay ? `${label} vs ${row.previousDay}` : String(label);
             }}
           />
-          <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => value === 'currentPoints' ? 'Latest 7 days' : 'Previous 7 days'} />
+          <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => value === 'currentPoints' ? currentLabel : previousLabel} />
           <Line type="monotone" dataKey="currentPoints" stroke="#0078D4" strokeWidth={2.5} dot={{ r: 3 }} isAnimationActive={false} />
           <Line type="monotone" dataKey="previousPoints" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} isAnimationActive={false} />
         </LineChart>

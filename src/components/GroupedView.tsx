@@ -64,7 +64,7 @@ const STATUS: Record<StatusType, { color: string; bg: string; dot: string; label
   'Stationary':     { color: '#4D7FA0', bg: 'rgba(77,127,160,0.12)', dot: '#4D7FA0', label: 'Stationary' },
   'Parked':         { color: '#7C3AED', bg: 'rgba(124,58,237,0.12)', dot: '#7C3AED', label: 'Parked' },
   'Offline':        { color: '#6B7A8D', bg: 'rgba(107,122,141,0.1)', dot: '#6B7A8D', label: 'Offline' },
-  'Inactive':       { color: '#6878A0', bg: 'rgba(104,120,160,0.1)', dot: '#6878A0', label: 'Inactive' },
+  'Inactive':       { color: '#6878A0', bg: 'rgba(104,120,160,0.1)', dot: '#6878A0', label: 'Non-Operational' },
 };
 
 const STATUS_PRIORITY: Record<StatusType, number> = {
@@ -404,8 +404,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
     const hasSearch = q.length > 0;
 
     const filtered = vehicles.filter(v => {
-      if (statusFilter !== 'All' && v.status !== statusFilter
-        && !(statusFilter === 'Inactive' && v.status === 'Offline')) return false;
+      if (statusFilter !== 'All' && v.status !== statusFilter) return false;
       if (selectedGroup !== 'All' && getGroup(v.zone) !== selectedGroup) return false;
       if (!hasSearch && !vehicleHasResolvedPlace(v)) return false;
       if (!hasSearch) return true;

@@ -501,8 +501,8 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         CACHE_TTL.fleetEvents,
         async () => {
           const to = new Date().toISOString();
-          const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+          const from = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=2000`);
           if (!res.ok) return null;
           const payload = await res.json();
           return Array.isArray(payload) ? payload : payload?.entries ?? [];

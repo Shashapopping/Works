@@ -222,10 +222,17 @@ export default function StatusStatsRow({
         <div className="bpl-status-metrics-stack">
           <button
             type="button"
-            className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
-            style={{ borderTopColor: '#2563eb', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            className={`bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact${!navigateOnStatusClick && statusFilter === 'Inactive' ? ' active' : ''}`}
+            style={{
+              borderTopColor: '#2563eb', cursor: 'pointer', textAlign: 'left', width: '100%',
+              background: !navigateOnStatusClick && statusFilter === 'Inactive' ? '#2563eb10' : undefined,
+              outline: !navigateOnStatusClick && statusFilter === 'Inactive' ? '1.5px solid #2563eb40' : 'none',
+            }}
             title="Open non-operational fleet"
-            onClick={() => navigate('/fleet?status=Inactive')}
+            onClick={() => {
+              if (navigateOnStatusClick) { navigate('/fleet?status=Inactive'); return; }
+              onFilterChange('Inactive');
+            }}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
@@ -251,8 +258,8 @@ export default function StatusStatsRow({
             type="button"
             className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
             style={{ borderTopColor: '#f97316', cursor: 'pointer', textAlign: 'left', width: '100%' }}
-            title="Open quarry fuel consumption"
-            onClick={() => navigate('/fuel/consumption')}
+            title="Open quarry fuel monitoring"
+            onClick={() => navigate('/fuel/monitoring')}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">

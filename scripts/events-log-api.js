@@ -7,11 +7,17 @@ import path from 'path';
 import { getAllEvents } from './db.js';
 import { countMatchingEvents } from './event-aggregates.js';
 
+let vehicleLookupCache = { map: new Map(), mtimeMs: 0 };
+
+/** data.json is rewritten by the MiX poller every ~30s — cache the parsed
+ *  lookup by mtime instead of re-reading/re-parsing it on every request. */
 function vehicleLookup() {
-  const map = new Map();
+  const dataPath = path.join(process.cwd(), 'public', 'data.json');
   try {
-    const dataPath = path.join(process.cwd(), 'public', 'data.json');
-    if (!fs.existsSync(dataPath)) return map;
+    const stat = fs.statSync(dataPath);
+    if (stat.mtimeMs === vehicleLookupCache.mtimeMs) return vehicleLookupCache.map;
+
+    const map = new Map();
     const vehicles = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
     vehicles.forEach(v => {
       map.set(v.id?.toString(), {
@@ -21,8 +27,11 @@ function vehicleLookup() {
         position: v.position,
       });
     });
-  } catch { /* ignore */ }
-  return map;
+    vehicleLookupCache = { map, mtimeMs: stat.mtimeMs };
+    return map;
+  } catch {
+    return vehicleLookupCache.map;
+  }
 }
 
 function enrichEvent(entry, lookup) {

@@ -4,6 +4,7 @@ import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCac
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { SkelValue, SkelTable } from './data/DataBusy';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../lib/placeAddress';
+import { statusDisplayLabel } from '../lib/metricDefinitions';
 
 interface Warning {
   eventId: string;
@@ -287,8 +288,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
       anomaly.regNo.toLowerCase().includes(deferredSearchTerm.toLowerCase()) ||
       anomaly.assetName.toLowerCase().includes(deferredSearchTerm.toLowerCase()) ||
       anomaly.transporter.toLowerCase().includes(deferredSearchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'All' || anomaly.status === statusFilter
-      || (statusFilter === 'Inactive' && anomaly.status === 'Offline');
+    const matchesStatus = statusFilter === 'All' || anomaly.status === statusFilter;
     // Default list: wait until reverse-geocode fills a place name.
     // Search still surfaces unresolved assets (they sort to the bottom).
     if (!hasSearch && !vehicleHasResolvedPlace(anomaly as any)) return false;
@@ -394,7 +394,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
                 onClick={() => onFilterChange('All')}
                 style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', borderRadius: '10px', border: '1px solid var(--cd-border)', backgroundColor: 'var(--cd-surface-2)', color: 'var(--cd-text-muted)', cursor: 'pointer', fontSize: '13px', whiteSpace: 'nowrap' }}
               >
-                {isMobile ? `${statusFilter} ✕` : `Clear filter: ${statusFilter} ✕`}
+                {isMobile ? `${statusDisplayLabel(statusFilter)} ✕` : `Clear filter: ${statusDisplayLabel(statusFilter)} ✕`}
               </button>
             )}
 
@@ -459,7 +459,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
                         </span>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '3px 10px', borderRadius: '9999px', fontSize: '11px', fontWeight: '500', backgroundColor: colors.bg, color: colors.text, border: `1px solid ${colors.border}`, flexShrink: 0 }}>
                           <span style={{ width: '5px', height: '5px', borderRadius: '50%', backgroundColor: colors.text }}></span>
-                          {anomaly.status}
+                          {statusDisplayLabel(anomaly.status)}
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
@@ -522,7 +522,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
                       <div>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 12px', borderRadius: '9999px', fontSize: '12px', fontWeight: '500', backgroundColor: colors.bg, color: colors.text, border: `1px solid ${colors.border}` }}>
                           <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: colors.text }}></span>
-                          {anomaly.status}
+                          {statusDisplayLabel(anomaly.status)}
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>

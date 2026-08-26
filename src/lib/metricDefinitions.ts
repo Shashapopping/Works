@@ -34,3 +34,8 @@ export const STATUS_DEFINITIONS = {
 
 export type KpiDefinitionKey = keyof typeof KPI_DEFINITIONS;
 export type StatusDefinitionKey = keyof typeof STATUS_DEFINITIONS;
+
+/** Display label for a vehicle status — the 'Inactive' status value reads as "Non-Operational" everywhere in the UI. */
+export function statusDisplayLabel(status: string): string {
+  return status === 'Inactive' ? 'Non-Operational' : status;
+}

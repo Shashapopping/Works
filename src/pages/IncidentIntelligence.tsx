@@ -1,10 +1,9 @@
 import { useState, useMemo, useEffect, useDeferredValue, useRef, Fragment } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
-import { useFleet, authFetch } from '../context/FleetContext';
-import type { LogEntry, TripDriver } from '../context/FleetContext';
+import { useFleet } from '../context/FleetContext';
+import type { LogEntry } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
-import { sanitizeTripDriver } from '../lib/demoSanitize';
 import {
   buildDriverConsequenceCard,
   loadConsequenceOccurrences,
@@ -21,7 +20,8 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useTableSort } from '../hooks/useTableSort';
 import { isOverspeedLabel } from '../lib/overspeedFilter';
 import { filterTripDriversByVehicles, summarizeEventsByLabel } from '../lib/siteScope';
-import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
+import { defaultDriverCustomRange, tripStatsByDriverKey, type DriverPeriod } from '../lib/driverAssessment';
+import { usePeriodTripDrivers } from '../hooks/useAssessmentTripDrivers';
 
 type Tab = 'events' | 'by-driver' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -381,73 +381,34 @@ function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRang
 
 type TrackingSortKey = 'driver' | 'vehicle' | 'score';
 
-function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eventsBusy: boolean; vehicles: ReturnType<typeof useFleet>['vehicles'] }) {
-  const [tripDrivers, setTripDrivers] = useState<TripDriver[]>([]);
-  const [tripLoading, setTripLoading] = useState(true);
+function PatternsTab({
+  events,
+  eventsBusy,
+  vehicles,
+  selectedSites,
+  dateRange,
+}: {
+  events: LogEntry[];
+  eventsBusy: boolean;
+  vehicles: ReturnType<typeof useFleet>['vehicles'];
+  selectedSites: string[];
+  dateRange: DriverPeriod;
+}) {
+  const { tripDrivers, loading: tripLoading } = usePeriodTripDrivers(dateRange, defaultDriverCustomRange());
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const navigateTo = useNavigate();
   const busy = eventsBusy || tripLoading;
 
-  useEffect(() => {
-    let cancelled = false;
-    const urls = [
-      '/api/driver-distance?range=currentMonth&trips=0',
-      '/api/driver-distance?range=lastMonth&trips=0',
-    ];
-    const applyTripBatches = (batches: any[]) => {
-      const map = new Map<string, TripDriver>();
-      for (const data of batches) {
-        if (!data) continue;
-        for (const d of (data.drivers || []) as TripDriver[]) {
-          if (!isActiveDriver(d.driverName, d.driverId)) continue;
-          const key = d.driverId || d.driverName;
-          if (!key) continue;
-          const prev = map.get(key);
-          if (!prev) map.set(key, sanitizeTripDriver({ ...d, totalDrivingTimeSeconds: d.totalDrivingTimeSeconds || 0 }));
-          else {
-            prev.totalDistanceKm += d.totalDistanceKm;
-            prev.journeyCount += d.journeyCount;
-            prev.totalDrivingTimeSeconds = (prev.totalDrivingTimeSeconds || 0) + (d.totalDrivingTimeSeconds || 0);
-            prev.vehicles = Array.from(new Set([...prev.vehicles, ...d.vehicles]));
-          }
-        }
-      }
-      setTripDrivers(filterTripDriversByVehicles(Array.from(map.values()), vehicles));
-    };
-    const cached = urls.map(url => cachePeek<any>(url)).filter(Boolean);
-    if (cached.length) {
-      applyTripBatches(cached);
-      setTripLoading(false);
-    } else {
-      setTripLoading(true);
-    }
-    (async () => {
-      try {
-        const batches = [];
-        for (const url of urls) {
-          batches.push(await authCachedJson<any>(url, authFetch, {
-            ttlMs: CACHE_TTL.driverAssessment,
-          }));
-        }
-        if (!cancelled) applyTripBatches(batches);
-      } catch { /* keep empty */ }
-      finally {
-        if (!cancelled) setTripLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [vehicles]);
+  const scopedTripDrivers = useMemo(
+    () => selectedSites.length ? filterTripDriversByVehicles(tripDrivers, vehicles) : tripDrivers,
+    [selectedSites.length, tripDrivers, vehicles],
+  );
 
   const distanceByKey = useMemo(() => {
-    const m = new Map<string, number>();
-    tripDrivers.forEach(t => {
-      const key = (t.driverId && isActiveDriverId(t.driverId)) ? t.driverId : t.driverName;
-      m.set(key, (m.get(key) || 0) + (t.totalDistanceKm || 0));
-    });
-    return m;
-  }, [tripDrivers]);
+    return tripStatsByDriverKey(scopedTripDrivers);
+  }, [scopedTripDrivers]);
 
   const trackingRows = useMemo(() => {
     const byDriver = new Map<string, { key: string; name: string; events: LogEntry[] }>();
@@ -463,14 +424,15 @@ function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eve
     });
 
     // Also include trip drivers with distance even if no events in range (won't show — Green filtered out)
-    tripDrivers.forEach(t => {
+    scopedTripDrivers.forEach(t => {
       const key = (t.driverId && isActiveDriverId(t.driverId)) ? t.driverId : t.driverName;
       if (!byDriver.has(key)) byDriver.set(key, { key, name: t.driverName, events: [] });
     });
 
     return Array.from(byDriver.values())
       .map(row => {
-        const distanceKm = distanceByKey.get(row.key) || 0;
+        const trip = distanceByKey.get(row.key) || distanceByKey.get((row.name || '').trim());
+        const distanceKm = trip?.km || 0;
         const preliminary = buildDriverConsequenceCard({ events: row.events, distanceKm });
         const occurrenceIndex = nextOccurrenceIndex(occurrences, row.key, preliminary.category);
         const consequence = buildDriverConsequenceCard({
@@ -483,7 +445,7 @@ function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eve
       })
       .filter(r => r.consequence.category !== 'Green')
       .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore);
-  }, [events, tripDrivers, distanceByKey, occurrences]);
+  }, [events, scopedTripDrivers, distanceByKey, occurrences]);
 
   const goToCoaching = (driverKey: string) => {
     navigateTo(`/drivers/coaching?q=${encodeURIComponent(driverKey)}&open=${encodeURIComponent(driverKey)}`);
@@ -684,7 +646,7 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
     ? rangeParam
     : '7days';
   const [dateRange, setDateRange] = useState<DateRange>(initialDateRange);
-  const { events, eventsLoading, vehicles } = useFleet();
+  const { events, eventsLoading, vehicles, selectedSites } = useFleet();
 
   useEffect(() => {
     if (rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime') {
@@ -764,7 +726,15 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
 
       {tab === 'events' && <EventsTab dateRange={dateRange} highlightEventId={highlightEventId} initialSearch={querySearch} events={events} eventsLoading={eventsLoading} />}
       {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} events={events} eventsLoading={eventsLoading} />}
-      {tab === 'patterns' && <PatternsTab events={patternEvents} eventsBusy={eventsLoading} vehicles={vehicles} />}
+      {tab === 'patterns' && (
+        <PatternsTab
+          events={patternEvents}
+          eventsBusy={eventsLoading}
+          vehicles={vehicles}
+          selectedSites={selectedSites}
+          dateRange={dateRange}
+        />
+      )}
     </div>
   );
 }

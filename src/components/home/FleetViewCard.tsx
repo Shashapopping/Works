@@ -18,7 +18,6 @@ export default function FleetViewCard({ statusFilter }: Props) {
 
   const filtered = useMemo(() => {
     if (statusFilter === 'All') return vehicles;
-    if (statusFilter === 'Inactive') return vehicles.filter(v => v.status === 'Inactive' || v.status === 'Offline');
     return vehicles.filter(v => v.status === statusFilter);
   }, [vehicles, statusFilter]);
 
