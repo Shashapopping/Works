@@ -223,7 +223,6 @@ export async function patchUserApi(id: string, body: {
 export function permissionForPath(pathname: string): string | null {
   const map: Array<[string, string]> = [
     ['/settings/users', 'user-management'],
-    ['/consequence-management', 'settings'],
     ['/settings', 'settings'],
     ['/fuel/consumption', 'fuel-consumption'],
     ['/fuel/monitoring', 'fuel-monitoring'],

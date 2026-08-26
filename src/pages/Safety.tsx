@@ -8,7 +8,6 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   RadarChart, PolarGrid, PolarAngleAxis, Radar,
-  LineChart, Line, Legend,
 } from 'recharts';
 import { useFleet } from '../context/FleetContext';
 import type { DriverDistanceSummary, LogEntry } from '../context/FleetContext';
@@ -21,6 +20,7 @@ import {
   scoreBandLabel,
   ratePer100Km,
   totalSafetyPointsFromCensus,
+  hosSlicesFromMinutes,
   SCORE_DROP_PER_HARM_UNIT,
   eventWeight,
   type FleetScoreConfig,
@@ -30,62 +30,6 @@ import { SkelValue } from '../components/data/DataBusy';
 
 const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, config);
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function startOfLocalDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-function shortDay(ms: number) {
-  return new Date(ms).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' });
-}
-
-function weeklySafetyTrend(events: LogEntry[], scoreConfig: FleetScoreConfig) {
-  const todayStart = startOfLocalDay(new Date());
-  const currentStart = todayStart - 6 * DAY_MS;
-  const previousStart = currentStart - 7 * DAY_MS;
-  const end = todayStart + DAY_MS;
-
-  const rows = Array.from({ length: 7 }, (_, i) => {
-    const currentMs = currentStart + i * DAY_MS;
-    const previousMs = previousStart + i * DAY_MS;
-    return {
-      day: shortDay(currentMs),
-      previousDay: shortDay(previousMs),
-      currentIncidents: 0,
-      previousIncidents: 0,
-      currentPoints: 0,
-      previousPoints: 0,
-    };
-  });
-
-  for (const event of events) {
-    if (event.type === 'panic') continue;
-    const label = (event.label || '').trim();
-    const weight = eventWeight(label, scoreConfig);
-    if (!label || weight <= 0) continue;
-    const ts = new Date(event.eventTime || event.timestamp).getTime();
-    if (!Number.isFinite(ts) || ts < previousStart || ts >= end) continue;
-
-    if (ts >= currentStart) {
-      const idx = Math.min(6, Math.floor((ts - currentStart) / DAY_MS));
-      rows[idx].currentIncidents += 1;
-      rows[idx].currentPoints += weight;
-    } else {
-      const idx = Math.min(6, Math.floor((ts - previousStart) / DAY_MS));
-      rows[idx].previousIncidents += 1;
-      rows[idx].previousPoints += weight;
-    }
-  }
-
-  return {
-    rows,
-    currentIncidents: rows.reduce((sum, row) => sum + row.currentIncidents, 0),
-    previousIncidents: rows.reduce((sum, row) => sum + row.previousIncidents, 0),
-    currentPoints: rows.reduce((sum, row) => sum + row.currentPoints, 0),
-    previousPoints: rows.reduce((sum, row) => sum + row.previousPoints, 0),
-  };
-}
 
 function scopedSafetyExposureFromEvents(
   events: LogEntry[],
@@ -128,9 +72,10 @@ function scopedSafetyExposureFromEvents(
 }
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
-function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config, busy }: {
+function ScoreGauge({ score, delta, totalIncidents, weightedRate, hosSlices, onOpenExplainer, config, busy }: {
   score: number; delta: number; totalIncidents: number;
   weightedRate: number;
+  hosSlices: number;
   onOpenExplainer: () => void;
   config: FleetScoreConfig;
   busy?: boolean;
@@ -210,12 +155,12 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
 
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
             {[
-              { value: totalIncidents, label: 'incidents / 30d', title: undefined },
-              { value: weightedRate.toFixed(2), label: 'pts / 100 km', title: undefined },
-              { value: 'Soon', label: 'HOS slices', title: 'Coming soon' },
-              { value: SCORE_DROP_PER_HARM_UNIT, label: 'pts lost / unit', title: undefined },
+              { value: totalIncidents, label: 'incidents / 30d' },
+              { value: weightedRate.toFixed(2), label: 'pts / 100 km' },
+              { value: hosSlices, label: 'HOS slices' },
+              { value: SCORE_DROP_PER_HARM_UNIT, label: 'pts lost / unit' },
             ].map(m => (
-              <div key={m.label} title={m.title}>
+              <div key={m.label}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
                   {busy ? <SkelValue /> : m.value}
                 </div>
@@ -235,19 +180,17 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
           display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8,
         }}>
           {[
-            { label: 'Harsh Braking', weight: config.weights.harshBraking, color: '#e05c2a', title: undefined },
-            { label: 'Overspeeding', weight: config.weights.overspeeding, color: '#d97706', title: undefined },
-            { label: 'Harsh Accel.', weight: config.weights.harshAcceleration, color: '#f59e0b', title: undefined },
-            { label: 'Cornering', weight: config.weights.harshCornering, color: '#8b5cf6', title: undefined },
-            { label: 'HOS', weight: 'Soon', color: '#0d9488', title: 'Coming soon' },
+            { label: 'Harsh Braking', weight: config.weights.harshBraking, color: '#e05c2a' },
+            { label: 'Overspeeding', weight: config.weights.overspeeding, color: '#d97706' },
+            { label: 'Harsh Accel.', weight: config.weights.harshAcceleration, color: '#f59e0b' },
+            { label: 'Cornering', weight: config.weights.harshCornering, color: '#8b5cf6' },
+            { label: `HOS / ${config.hosSliceMinutes}m`, weight: config.hosPointsPer10Min, color: '#0d9488' },
           ].map(w => (
-            <div key={w.label} title={w.title} style={{
+            <div key={w.label} style={{
               background: `${w.color}12`, border: `1px solid ${w.color}30`,
               borderRadius: 6, padding: '6px 8px', textAlign: 'center',
             }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: w.color, fontFamily: 'var(--cd-font-display)' }}>
-                {w.label === 'HOS' ? w.weight : `+${w.weight}`}
-              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: w.color, fontFamily: 'var(--cd-font-display)' }}>+{w.weight}</div>
               <div style={{ fontSize: 9, color: 'var(--cd-text-muted)', marginTop: 2, lineHeight: 1.3 }}>{w.label}</div>
             </div>
           ))}
@@ -516,61 +459,6 @@ function SafetyRadar({ byLabel }: { byLabel?: Record<string, number> }) {
   );
 }
 
-function WeeklySafetyTrend({ events, scoreConfig, loading }: { events: LogEntry[]; scoreConfig: FleetScoreConfig; loading: boolean }) {
-  const trend = useMemo(() => weeklySafetyTrend(events, scoreConfig), [events, scoreConfig]);
-  const incidentDelta = trend.currentIncidents - trend.previousIncidents;
-  const pointsDelta = trend.currentPoints - trend.previousPoints;
-  const improving = pointsDelta <= 0;
-
-  return (
-    <div className="bpl-card" style={{ padding: '20px 22px', marginBottom: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 2 }}>
-            Weekly Safety Trend
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>
-            Latest 7 days compared with the previous 7 days · weighted harm points
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <div style={{ minWidth: 112, textAlign: 'right' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: improving ? '#16a34a' : '#CC0000', fontFamily: 'var(--cd-font-display)' }}>
-              {loading ? <SkelValue /> : `${pointsDelta >= 0 ? '+' : ''}${pointsDelta.toFixed(0)}`}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>harm points vs prior week</div>
-          </div>
-          <div style={{ minWidth: 112, textAlign: 'right' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: incidentDelta <= 0 ? '#16a34a' : '#e05c2a', fontFamily: 'var(--cd-font-display)' }}>
-              {loading ? <SkelValue /> : `${incidentDelta >= 0 ? '+' : ''}${incidentDelta}`}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>incidents vs prior week</div>
-          </div>
-        </div>
-      </div>
-
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={trend.rows} margin={{ top: 4, right: 18, bottom: 0, left: -12 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" vertical={false} />
-          <XAxis dataKey="day" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
-          <Tooltip
-            contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 6, fontSize: 12 }}
-            formatter={(value: number, name: string) => [`${Number(value).toFixed(0)} pts`, name === 'currentPoints' ? 'Latest 7 days' : 'Previous 7 days']}
-            labelFormatter={(label, payload) => {
-              const row = payload?.[0]?.payload;
-              return row?.previousDay ? `${label} vs ${row.previousDay}` : String(label);
-            }}
-          />
-          <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => value === 'currentPoints' ? 'Latest 7 days' : 'Previous 7 days'} />
-          <Line type="monotone" dataKey="currentPoints" stroke="#0078D4" strokeWidth={2.5} dot={{ r: 3 }} isAnimationActive={false} />
-          <Line type="monotone" dataKey="previousPoints" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
 // ─── Priority Actions ────────────────────────────────────────────────────────
 function PriorityActions({ byLabel, score, vehicleCount }: {
   byLabel?: Record<string, number>;
@@ -757,6 +645,7 @@ export default function Safety() {
   const totalIncidents = pageExposure?.incidentTotal ?? 0;
   const distanceKm = pageExposure?.distanceKm ?? 0;
   const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
+  const hosSlices = hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
   const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.total, distanceKm);
   const pageBusy = siteFiltered ? (eventsLoading || distanceLoading) : safetyExposureLoading;
@@ -779,6 +668,7 @@ export default function Safety() {
           delta={safetyDelta}
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
+          hosSlices={hosSlices}
           config={scoreConfig}
           busy={scoreBusy}
           onOpenExplainer={() => setExplainerOpen(true)}
@@ -786,8 +676,6 @@ export default function Safety() {
         <IncidentBreakdown byLabel={pageExposure?.byLabel} />
         <SafetyRadar byLabel={pageExposure?.byLabel} />
       </div>
-
-      <WeeklySafetyTrend events={events} scoreConfig={scoreConfig} loading={pageBusy} />
 
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
@@ -805,6 +693,8 @@ export default function Safety() {
           vehicleCount={vehicles.length}
           actualWeightedRate={weightedRate}
           distanceKm={distanceKm}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

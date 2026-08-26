@@ -8,39 +8,6 @@ import {
   Mountain, Package, Droplets, Settings, ChevronDown, Sun, Moon, LogOut, Camera,
 } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
-
-const PRIORITY_ROUTE_LOADERS: Record<string, () => Promise<unknown>> = {
-  '/drivers': () => import('../../pages/DriverManagement'),
-  '/drivers/coaching': () => import('../../pages/driver/CoachingPage'),
-  '/drivers/training': () => import('../../pages/driver/CoachingPage'),
-  '/drivers/certifications': () => import('../../pages/driver/CertificatesPage'),
-  '/incidents': () => import('../../pages/IncidentIntelligence'),
-  '/incidents/response': () => import('../../pages/IncidentIntelligence'),
-  '/safety': () => import('../../pages/Safety'),
-  '/fuel/monitoring': () => import('../../pages/FuelMonitoring'),
-  '/reports': () => import('../../pages/ReportsPage'),
-  '/reports/automation': () => import('../../pages/ReportsAutomationPage'),
-};
-const preloadedRoutes = new Set<string>();
-function preloadRoute(path: string) {
-  const load = PRIORITY_ROUTE_LOADERS[path];
-  if (!load || preloadedRoutes.has(path)) return;
-  preloadedRoutes.add(path);
-  void load().catch(() => preloadedRoutes.delete(path));
-}
-
-async function preloadRoutesSequentially(paths: string[]) {
-  for (const path of paths) {
-    const load = PRIORITY_ROUTE_LOADERS[path];
-    if (!load || preloadedRoutes.has(path)) continue;
-    preloadedRoutes.add(path);
-    try {
-      await load();
-    } catch {
-      preloadedRoutes.delete(path);
-    }
-  }
-}
 import { useAuth } from '../../context/AuthContext';
 import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
 import { brandLogoAlt, brandLogoSrc } from '../../lib/branding';
@@ -73,10 +40,9 @@ const NAV: NavGroup[] = [
     children: [
       { path: '/drivers', label: 'Drivers', icon: User },
       { path: '/drivers/coaching', label: 'Coaching & Training', icon: GraduationCap },
-      { path: '/consequence-management', label: 'Consequence/Fatigue Management', icon: Shield, locked: true },
       { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
       ...(FATIGUE_ENABLED ? [{ path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon }] : []),
-      { path: '/drivers/vision', label: 'Vision', icon: Camera, locked: true },
+      { path: '/drivers/vision', label: 'Vision', icon: Camera },
     ],
   },
   {
@@ -105,7 +71,7 @@ const NAV: NavGroup[] = [
     path: '/fuel', icon: Fuel, label: 'Fuel',
     children: [
       { path: '/fuel/monitoring', label: 'Monitoring', icon: Fuel },
-      { path: '/fuel/consumption', label: 'Consumption', icon: BarChart3, locked: true },
+      { path: '/fuel/consumption', label: 'Consumption', icon: BarChart3 },
     ],
   },
   {
@@ -201,12 +167,7 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
       setOpenGroup(null);
     } else {
       setOpenGroup(path);
-      const children = visibleNav.find(group => group.path === path)?.children ?? [];
-      void preloadRoutesSequentially(children.filter(child => !child.locked).map(child => child.path));
-      if (defaultChild) {
-        preloadRoute(defaultChild);
-        navigate(defaultChild);
-      }
+      if (defaultChild) navigate(defaultChild);
     }
   };
 
@@ -300,8 +261,6 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                 key={group.path}
                 to={group.path}
                 end
-                onPointerEnter={() => preloadRoute(group.path)}
-                onFocus={() => preloadRoute(group.path)}
                 onClick={onCloseMobile}
                 style={({ isActive: navActive }) => ({
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -337,7 +296,6 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             <div key={group.path} style={{ marginBottom: 2 }}>
               <div
                 onClick={() => toggleGroup(group.path, group.children![0].path)}
-                onPointerEnter={() => preloadRoute(group.children![0].path)}
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '8px 14px', cursor: 'pointer',
@@ -387,8 +345,6 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                       key={child.path}
                       to={child.path}
                       end
-                      onPointerEnter={() => preloadRoute(child.path)}
-                      onFocus={() => preloadRoute(child.path)}
                       onClick={onCloseMobile}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 8,

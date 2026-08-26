@@ -213,9 +213,6 @@ export interface DriverCertificate {
   issueDate: string;
   expiryDate: string;
   notes?: string;
-  documentSetTitle?: string;
-  sourceHeaders?: string[];
-  sourceRow?: Record<string, string>;
 }
 
 const CERTIFICATES_KEY = 'bpl_driver_certificates';

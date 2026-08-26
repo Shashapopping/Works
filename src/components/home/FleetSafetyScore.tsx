@@ -7,6 +7,7 @@ import {
   scoreBandLabel,
   ratePer100Km,
   totalSafetyPointsFromCensus,
+  hosSlicesFromMinutes,
 } from '../../lib/fleetSafetyScore';
 import ConsequenceExplainerModal from '../ConsequenceExplainerModal';
 import { SkelValue } from '../data/DataBusy';
@@ -23,9 +24,10 @@ export default function FleetSafetyScore() {
   const busy = eventsLoading || safetyExposureLoading;
 
   const distanceKm = safetyExposure?.distanceKm ?? 0;
+  const hosHeldMinutes = safetyExposure?.hosHeldMinutes ?? 0;
+  const hosSlices = hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
   const points = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.total, distanceKm);
-  const scoreImpact = Math.max(0, Math.round(weightedRate));
 
   return (
     <>
@@ -88,13 +90,16 @@ export default function FleetSafetyScore() {
                 <SkelValue wide />
               ) : (
                 <>
-                  <span><strong>{weightedRate.toFixed(1)}</strong> harm pts / 100 km</span>
+                  <span><strong>{weightedRate.toFixed(2)}</strong> /100 km</span>
                   <span className="bpl-safety-score-home-dot" />
-                  <span>{scoreImpact} pts off score</span>
+                  <span>0 harm = 100</span>
                   <span className="bpl-safety-score-home-dot" />
-                  <span>{Math.round(distanceKm).toLocaleString()} km tracked</span>
+                  <span>{hosSlices} HOS</span>
                 </>
               )}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+              0 harm/100 km = 100 · click for detail
             </div>
           </div>
         </button>
@@ -108,6 +113,8 @@ export default function FleetSafetyScore() {
           vehicleCount={metadata.totalVehicles}
           actualWeightedRate={weightedRate}
           distanceKm={distanceKm}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

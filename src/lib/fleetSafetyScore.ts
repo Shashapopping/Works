@@ -28,7 +28,7 @@ export interface FleetScoreWeights {
 export interface FleetScoreConfig {
   weights: FleetScoreWeights;
   /**
-   * @deprecated Inverse-formula target. Score is now 100 − 1 × rate.
+   * @deprecated Inverse-formula target. Score is now 100 − 5 × rate.
    */
   aimRatePer100Km?: number;
   /** Minutes a HOS breach must be held to mint one slice (default 10). */

@@ -2,14 +2,12 @@
  * Features locked behind the current package / org entitlement.
  * Pages wrapped in <FeatureGate featureId="..."> show the unavailable overlay.
  */
-export type LockedFeatureId = 'dispatch' | 'reports' | 'aria' | 'maintenance' | 'fuel-consumption' | 'vision';
+export type LockedFeatureId = 'dispatch' | 'reports' | 'aria' | 'maintenance';
 
 /** Feature IDs that are not part of the current package */
 export const LOCKED_FEATURES: ReadonlySet<LockedFeatureId> = new Set([
   'dispatch',
   'aria',
-  'fuel-consumption',
-  'vision',
 ]);
 
 export function isFeatureLocked(featureId?: string): boolean {

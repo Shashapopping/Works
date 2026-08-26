@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useDeferredValue, useRef, Fragment } from 'react';
-import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight } from 'lucide-react';
 import { useFleet, authFetch } from '../context/FleetContext';
 import type { LogEntry, TripDriver } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
@@ -425,12 +425,9 @@ function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eve
     }
     (async () => {
       try {
-        const batches = [];
-        for (const url of urls) {
-          batches.push(await authCachedJson<any>(url, authFetch, {
-            ttlMs: CACHE_TTL.driverAssessment,
-          }));
-        }
+        const batches = await Promise.all(urls.map(url => (
+          authCachedJson<any>(url, authFetch, { ttlMs: CACHE_TTL.driverAssessment })
+        )));
         if (!cancelled) applyTripBatches(batches);
       } catch { /* keep empty */ }
       finally {
@@ -514,7 +511,7 @@ function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eve
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <ClipboardCheck size={16} color="#0078D4" />
           <Link
-            to="/consequence-management"
+            to="/settings/thresholds#consequence-bands"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)',
@@ -527,7 +524,7 @@ function PatternsTab({ events, eventsBusy, vehicles }: { events: LogEntry[]; eve
           </Link>
         </div>
         <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', margin: 0 }}>
-          Amber / Yellow / Red drivers by Consequence/Fatigue Management score (penalty points ÷ km/100).
+          Amber / Yellow / Red drivers by Consequence Management score (penalty points ÷ km/100).
         </p>
       </div>
 

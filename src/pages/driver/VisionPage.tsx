@@ -11,7 +11,6 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useTableSort } from '../../hooks/useTableSort';
 import PageControls from '../../components/PageControls';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
-import FeatureGate from '../../components/FeatureGate';
 
 type VisionRow = FatigueDriverRow & { visionTotal: number };
 type SortKey = 'driverName' | 'distractionCount' | 'phoneDistractionCount' | 'visionTotal' | 'lastEventTime';
@@ -106,8 +105,7 @@ export default function VisionPage() {
   ];
 
   return (
-    <FeatureGate featureId="vision">
-      <div>
+    <div>
       <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
         <Camera size={18} color="#0891b2" />
         Driver Management — Vision <MockNamesBadge />
@@ -248,7 +246,6 @@ export default function VisionPage() {
           />
         </div>
       )}
-      </div>
-    </FeatureGate>
+    </div>
   );
 }

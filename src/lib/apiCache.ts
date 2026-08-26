@@ -14,22 +14,6 @@ const memory = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<unknown>>();
 const MAX_ENTRIES = 80;
 
-// These payloads can contain thousands of rows. sessionStorage is synchronous,
-// so serialising/parsing them during navigation stalls the browser main thread.
-const MEMORY_ONLY_PREFIXES = [
-  'fleet:data',
-  'fleet:events',
-  '/api/driver-distance',
-  'driver:period:',
-  'driver:assessment-distance',
-  'fuel:consumption:',
-  'fuel:history:',
-];
-
-function isMemoryOnlyKey(key: string) {
-  return MEMORY_ONLY_PREFIXES.some(prefix => key.startsWith(prefix));
-}
-
 export const CACHE_TTL = {
   fleetData: 20_000,
   fleetMeta: 20_000,
@@ -71,10 +55,6 @@ function trimMemory() {
 
 function readSession(key: string): CacheEntry | null {
   try {
-    if (isMemoryOnlyKey(key)) {
-      sessionStorage.removeItem(PREFIX + key);
-      return null;
-    }
     const raw = sessionStorage.getItem(PREFIX + key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CacheEntry;
@@ -87,10 +67,6 @@ function readSession(key: string): CacheEntry | null {
 
 function writeSession(key: string, entry: CacheEntry) {
   try {
-    if (isMemoryOnlyKey(key)) {
-      sessionStorage.removeItem(PREFIX + key);
-      return;
-    }
     sessionStorage.setItem(PREFIX + key, JSON.stringify(entry));
   } catch {
     /* quota / private mode — memory still works */
@@ -210,24 +186,8 @@ export async function authCachedJson<T>(
 
 /** Warm these shortly after login so Fuel / KPI / Vision open faster. */
 export const BOOT_PREFETCH_URLS = [
-  '/api/driver-distance?range=30d&trips=0',
-  '/api/driver-distance?range=currentMonth&trips=0',
-  '/api/driver-distance?range=lastMonth&trips=0',
   '/api/driver-distance?range=today&trips=0',
   '/api/driver-distance?range=7d&trips=0',
-  '/api/safety/summary?range=30d',
   '/api/fuel/consumption?period=week&trips=0',
   '/api/kpi?period=week&scope=quarry',
 ] as const;
-
-/** Warm heavy endpoints one at a time so opening a menu never creates a request burst. */
-export async function warmApiUrlsSequentially(
-  urls: readonly string[],
-  authFetch: (url: string, options?: RequestInit) => Promise<Response>,
-  pauseMs = 120,
-) {
-  for (const url of urls) {
-    await authCachedJson(url, authFetch).catch(() => null);
-    if (pauseMs > 0) await new Promise(resolve => window.setTimeout(resolve, pauseMs));
-  }
-}

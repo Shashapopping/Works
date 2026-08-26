@@ -132,7 +132,7 @@ function CoachingActions({ driver, onSaved }: { driver: QueueRow; onSaved: () =>
       </div>
       {mode === 'warning' && (
         <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 8, lineHeight: 1.45 }}>
-          Formal Consequence/Fatigue Management step for drivers in the <strong>{driver.consequence.categoryLabel}</strong> band.
+          Formal Consequence Management step for drivers in the <strong>{driver.consequence.categoryLabel}</strong> band.
           {categoryPlainDescription(driver.consequence.category as ConsequenceCategory)}
           {' '}Tag supervisors to email and notify them on their dashboard.
         </div>

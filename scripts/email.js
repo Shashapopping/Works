@@ -340,8 +340,7 @@ export async function sendReportExportEmail({
       attachments: [
         {
           filename: filename || 'report.csv',
-          content: contentBase64,
-          contentType: mime || undefined,
+          content: Buffer.from(contentBase64, 'base64'),
         },
       ],
     });

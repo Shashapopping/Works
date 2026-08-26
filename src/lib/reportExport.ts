@@ -27,6 +27,7 @@ export type ExportFormat = 'csv' | 'excel' | 'pdf';
 const EVENT_COLUMNS: { header: string; get: (e: LogEntry) => string; textForce?: boolean }[] = [
   { header: 'Asset Name', get: (e) => brandLabel(e.assetName) || 'N/A' },
   { header: 'Reg No', get: (e) => e.regNo || 'N/A', textForce: true },
+  { header: 'Site', get: (e) => brandLabel(e.site) || 'N/A' },
   { header: 'Transporter', get: (e) => brandLabel(e.transporter) || 'N/A' },
   { header: 'Driver', get: (e) => displayDriverName(e.driverName, 'N/A') },
   { header: 'Phone', get: (e) => scrubPhone(e.driverPhone), textForce: true },

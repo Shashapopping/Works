@@ -33,7 +33,7 @@ import {
   type FleetScoreConfig,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, BOOT_PREFETCH_URLS, warmApiUrlsSequentially } from '../lib/apiCache';
+import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, BOOT_PREFETCH_URLS } from '../lib/apiCache';
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
@@ -343,14 +343,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const [events, setEvents] = useState<LogEntry[]>(() =>
     cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents) ?? [],
   );
-  const [driverDistance, setDriverDistance] = useState<DriverDistanceSummary | null>(() =>
-    cachePeek<DriverDistanceSummary>('/api/driver-distance?range=24h&trips=0'),
-  );
+  const [driverDistance, setDriverDistance] = useState<DriverDistanceSummary | null>(null);
   const [vehiclesLoading, setVehiclesLoading] = useState(() => !cachePeek<Vehicle[]>(CACHE_KEYS.fleetData)?.length);
   const [eventsLoading, setEventsLoading] = useState(() => !(cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents)?.length));
-  const [distanceLoading, setDistanceLoading] = useState(() =>
-    !cachePeek<DriverDistanceSummary>('/api/driver-distance?range=24h&trips=0'),
-  );
+  const [distanceLoading, setDistanceLoading] = useState(true);
   const [safetyExposure, setSafetyExposure] = useState<FleetSafetyExposure | null>(null);
   const [safetyExposurePrev, setSafetyExposurePrev] = useState<FleetSafetyExposure | null>(null);
   const [safetyExposureLoading, setSafetyExposureLoading] = useState(true);
@@ -675,18 +671,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     const hasVisibleDistance = !!driverDistanceRef.current;
     if (!hasVisibleDistance) setDistanceLoading(true);
     try {
-      const url = `/api/driver-distance?range=${distanceRange}&trips=0`;
-      const next = await authCachedJson<DriverDistanceSummary>(url, authFetch, {
-        ttlMs: CACHE_TTL.pageRollup,
-      });
-      if (next) setDriverDistance(next);
+      const res = await authFetch(`/api/driver-distance?range=${distanceRange}&trips=0`);
+      if (res.ok) setDriverDistance(await res.json());
     } catch {}
     finally {
       if (!hasVisibleDistance) setDistanceLoading(false);
     }
   }, [distanceRange]);
 
-  const loadSafetyExposure = useCallback(async (force = false) => {
+  const loadSafetyExposure = useCallback(async () => {
     const hasVisibleExposure = !!safetyExposureRef.current;
     if (!hasVisibleExposure) setSafetyExposureLoading(true);
     try {
@@ -699,7 +692,6 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
             if (!res.ok) return null;
             return res.json();
           },
-          { force },
         ),
         cachedFetchJson<FleetSafetyExposure>(
           CACHE_KEYS.safetySummary('prev30d'),
@@ -709,7 +701,6 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
             if (!res.ok) return null;
             return res.json();
           },
-          { force },
         ),
       ]);
       if (cur) setSafetyExposure(cur);
@@ -768,7 +759,9 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     }
     const bootWarm = window.setTimeout(() => {
       const warm = () => {
-        void warmApiUrlsSequentially(BOOT_PREFETCH_URLS, authFetch);
+        for (const url of BOOT_PREFETCH_URLS) {
+          void authCachedJson(url, authFetch, { force: true });
+        }
       };
       if (document.visibilityState === 'visible') warm();
       else {

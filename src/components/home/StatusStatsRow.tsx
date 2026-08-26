@@ -8,12 +8,9 @@ import WidgetStatGraphic from './WidgetStatGraphic';
 import InfoTip from '../InfoTip';
 import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
-import {
-  SCORE_DROP_PER_HARM_UNIT,
-  ratePer100Km,
-  totalSafetyPointsFromCensus,
-} from '../../lib/fleetSafetyScore';
+import { useHosRecords } from '../../hooks/useHosRecords';
 import { SkelValue } from '../data/DataBusy';
+import { FATIGUE_ENABLED } from '../../config/fatigue';
 
 export type MetricPeriod = DistanceRange;
 
@@ -49,28 +46,9 @@ export default function StatusStatsRow({
   navigateOnStatusClick = false,
 }: Props) {
   const navigate = useNavigate();
-  const {
-    metadata,
-    totalDistanceKm,
-    distanceLoading,
-    vehiclesLoading,
-    safetyExposure,
-    safetyExposureLoading,
-    safetyScore,
-    scoreConfig,
-  } = useFleet();
+  const { metadata, totalDistanceKm, distanceLoading, vehiclesLoading, vehicles, selectedSites } = useFleet();
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(metricPeriod);
-  const harmPoints = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
-  const harmDistanceKm = safetyExposure?.distanceKm ?? 0;
-  const harmRate = ratePer100Km(harmPoints.total, harmDistanceKm);
-  const harmDistanceBlocks = harmDistanceKm > 0 ? harmDistanceKm / 100 : 0;
-  const formatMetric = (value: number, maxDecimals = 1) => value.toLocaleString(undefined, {
-    minimumFractionDigits: value < 10 ? 1 : 0,
-    maximumFractionDigits: maxDecimals,
-  });
-  const harmTip = harmDistanceKm > 0
-    ? `Total harm: IVMS ${formatMetric(harmPoints.ivms, 0)} + HOS/fatigue ${formatMetric(harmPoints.hos, 0)} = ${formatMetric(harmPoints.total, 0)} pts. ${formatMetric(harmPoints.total, 0)} divided by ${formatMetric(harmDistanceBlocks, 2)} hundred-km = ${formatMetric(harmRate, 2)} pts per 100 km. Score: 100 - ${formatMetric(SCORE_DROP_PER_HARM_UNIT * harmRate, 2)} = ${safetyScore}/100.`
-    : 'Distance is unavailable, so harm per 100 km cannot be calculated yet.';
+  const { records: hosRecords, loading: hosLoading } = useHosRecords();
 
   const quarryFuelLiters = useMemo(() => {
     if (tripFuelLiters > 0) return tripFuelLiters;
@@ -79,6 +57,22 @@ export default function StatusStatsRow({
     if (periodDrop > 0) return Math.round(periodDrop);
     return tripFuelLiters;
   }, [tripFuelLiters, fuelData]);
+
+  const scopedHosViolations = useMemo(() => {
+    if (selectedSites.length === 0) {
+      return hosRecords.filter(record => record.status === 'violation').length;
+    }
+    const allowedRegs = new Set(
+      vehicles
+        .map(v => (v.regNo || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    return hosRecords.filter(record => {
+      if (record.status !== 'violation') return false;
+      const reg = (record.vehicleReg || '').trim().toLowerCase();
+      return allowedRegs.size === 0 ? true : allowedRegs.has(reg);
+    }).length;
+  }, [hosRecords, selectedSites.length, vehicles]);
 
   const getValue = (key: typeof STATUS_STATS[number]['key']) => {
     if (key === 'totalVehicles') return metadata.totalVehicles;
@@ -183,36 +177,29 @@ export default function StatusStatsRow({
           <button
             type="button"
             className="bpl-card bpl-status-stat bpl-status-metric-card bpl-status-stat--metric-compact"
-            style={{ borderTopColor: '#CC0000', cursor: 'default', textAlign: 'left', width: '100%' }}
-            title="Total harm points per 100 km"
-            onClick={() => undefined}
+            style={{ borderTopColor: '#CC0000', cursor: FATIGUE_ENABLED ? 'pointer' : 'default', textAlign: 'left', width: '100%' }}
+            title="Open hours-of-service tracking"
+            onClick={() => {
+              if (!FATIGUE_ENABLED) return;
+              navigate('/drivers/fatigue');
+            }}
           >
             <div className="bpl-status-stat-inner">
               <div className="bpl-status-stat-copy">
                 <span className="bpl-status-stat-label-wrap">
                   <span className="bpl-status-stat-label bpl-status-stat-label--stacked">
-                    <span>Total</span>
-                    <span>Harm</span>
+                    <span>HOS</span>
+                    <span>Violations</span>
                   </span>
-                  <InfoTip text={harmTip} label="Total Harm" />
+                  <InfoTip text="Drivers with an active HOS breach: over 4h continuous (resets after 30+ min rest), over 8h continuous in a rolling 24h cycle, or missing ≥24h continuous rest in the last 7 days." label="HOS Violations" />
                 </span>
                 <div
                   className="bpl-status-stat-value"
-                  style={{ color: '#CC0000', animation: 'none' }}
-                  title="Total harm points per 100 km"
+                  style={{ color: '#CC0000', animation: !hosLoading && scopedHosViolations > 0 ? 'pulse 1.5s infinite' : 'none' }}
                 >
-                  {safetyExposureLoading ? <SkelValue /> : (
-                    <>
-                      {formatMetric(harmRate, 2)}
-                      <span className="bpl-status-metric-unit">pts</span>
-                    </>
-                  )}
+                  {hosLoading || vehiclesLoading ? <SkelValue /> : scopedHosViolations}
                 </div>
-                <div className="bpl-status-stat-sub">
-                  {safetyExposureLoading
-                    ? ''
-                    : `${formatMetric(harmPoints.total, 0)} pts / ${Math.round(harmDistanceKm).toLocaleString()} km`}
-                </div>
+                <div className="bpl-status-stat-sub">4h / 8h / weekly rest</div>
               </div>
               <WidgetStatGraphic color="#CC0000" icon={ShieldAlert} size="xs" />
             </div>

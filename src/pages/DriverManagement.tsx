@@ -78,15 +78,15 @@ function driverOfficialStatus(
   const hasWriteUp = !!latestWarning;
   if (category === 'Yellow' && !hasWriteUp) {
     return {
-      label: 'High risk - write-up pending',
-      action: 'Issue an official write-up in Coaching before marking this driver for suspension review.',
+      label: 'High risk - coaching record pending',
+      action: 'Create an official coaching record before escalating this driver for management review.',
       official: false,
     };
   }
   if (category === 'Red' && !hasWriteUp) {
     return {
-      label: 'Severe risk - write-up pending',
-      action: 'Issue an official write-up in Coaching before marking this driver as critical.',
+      label: 'Severe risk - coaching record pending',
+      action: 'Create an official coaching record before escalating this driver for management review.',
       official: false,
     };
   }
@@ -96,20 +96,20 @@ function driverOfficialStatus(
       : category === 'Amber'
         ? 'Needs coaching'
         : category === 'Yellow'
-          ? 'Suspension review'
-          : 'Critical',
+          ? 'High risk'
+          : 'Severe risk',
     action: category === 'Green'
-      ? 'No disciplinary action - eligible for monthly / quarterly rewards'
+      ? 'No action needed - eligible for monthly / quarterly rewards'
       : category === 'Amber'
-        ? 'Written Warning'
+        ? 'Coaching review'
         : category === 'Yellow'
-          ? 'Official write-up recorded - proceed with suspension review.'
-          : 'Official write-up recorded - proceed with critical review.',
+          ? 'Official coaching record found - proceed with management review.'
+          : 'Official coaching record found - proceed with management review.',
     official: hasWriteUp,
   };
 }
 
-function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
+function DriverCard({ driver, expanded, onToggle, stats }: {
   driver: DriverProfile;
   expanded: boolean;
   onToggle: () => void;
@@ -366,7 +366,7 @@ export default function DriverManagement() {
           )} <MockNamesBadge />
         </h1>
         <p className="bpl-page-subtitle">
-          Consequence/Fatigue Management scorecards — selected-period penalty points normalized per 100 km
+          Driver risk scorecards — selected-period safety events normalized per 100 km
           {scopeLabel && (
             <span style={{
               display: 'inline-flex',
@@ -403,7 +403,7 @@ export default function DriverManagement() {
         <div className="bpl-kpi-card" style={{ borderTop: '2px solid #d97706' }}>
           <div className="bpl-kpi-label">Needs Action</div>
           <div className="bpl-kpi-value" style={{ color: '#d97706' }}>{seedBusy ? <SkelValue /> : needsAction}</div>
-          <div className="bpl-kpi-sub">Needs coaching + official write-up review</div>
+          <div className="bpl-kpi-sub">Needs coaching or management review</div>
         </div>
         <div className="bpl-kpi-card" style={{ borderTop: '2px solid #16a34a' }}>
           <div className="bpl-kpi-label">Low Risk</div>

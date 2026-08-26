@@ -24,7 +24,6 @@ import { startJitteredInterval } from '../lib/pollSchedule';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
 import FuelRefuelChartPanel from '../components/FuelRefuelChartPanel';
 import { refuelRowKey } from '../lib/fuelSignal';
-import FeatureGate from '../components/FeatureGate';
 
 const COL_COUNT = 10;
 
@@ -401,8 +400,7 @@ export default function FuelConsumption() {
     : `${siteLabel} · ${vehicleCount} vehicle${vehicleCount === 1 ? '' : 's'} — period summary`;
 
   return (
-    <FeatureGate featureId="fuel-consumption">
-      <div>
+    <div>
       <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
         <Fuel size={18} color="#0078D4" />
         Fuel Consumption
@@ -610,7 +608,6 @@ export default function FuelConsumption() {
           </table>
         </div>
       </div>
-      </div>
-    </FeatureGate>
+    </div>
   );
 }
