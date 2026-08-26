@@ -157,7 +157,7 @@ function ThresholdSettings() {
   useEffect(() => { setForm(scoreConfig); }, [scoreConfig]);
 
   useEffect(() => {
-    if (location.hash !== '#consequence-bands') return;
+    if (location.hash !== '#consequence-bands' && location.pathname !== '/consequence-management') return;
     const el = document.getElementById('consequence-bands');
     if (!el) return;
     requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
@@ -191,7 +191,7 @@ function ThresholdSettings() {
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
           The score starts at <strong style={{ color: 'var(--cd-text)' }}>100</strong> (no harm).
-          Harm is counted per 100 km driven. Every 1 point of harm per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>5</strong> off the score.
+          Harm is counted per 100 km driven. Every 1 point of harm per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>1</strong> point off the score.
         </div>
         <div style={{
           display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16,
@@ -205,13 +205,15 @@ function ThresholdSettings() {
                 min={1}
                 max={60}
                 style={{ ...fieldStyle, width: 80 }}
-                value={form.hosSliceMinutes}
-                onChange={e => setForm(p => ({ ...p, hosSliceMinutes: Number(e.target.value) }))}
+                value=""
+                placeholder="Soon"
+                disabled
+                title="Coming soon"
               />
-              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>minutes held</span>
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }} title="Coming soon">minutes held</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              Default 10. Each full slice of a held HOS breach mints points.
+              HOS scoring configuration is coming soon.
             </div>
           </div>
           <div>
@@ -223,13 +225,15 @@ function ThresholdSettings() {
                 min={0}
                 max={20}
                 style={{ ...fieldStyle, width: 80 }}
-                value={form.hosPointsPer10Min}
-                onChange={e => setForm(p => ({ ...p, hosPointsPer10Min: Number(e.target.value) }))}
+                value=""
+                placeholder="Soon"
+                disabled
+                title="Coming soon"
               />
-              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>pts</span>
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }} title="Coming soon">pts</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              Default 1.5 (same band as overspeeding). 40 minutes over 4h continuous → 4 slices → 6 pts.
+              HOS point weighting is coming soon.
             </div>
           </div>
         </div>
@@ -237,15 +241,15 @@ function ThresholdSettings() {
           fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55,
           background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 8, padding: '10px 12px',
         }}>
-          <strong>The −5:</strong> 1 harm point per 100 km → lose 5 score points.
+          <strong>The score impact:</strong> 1 harm point per 100 km → lose 1 score point.
           <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
             No harm → <strong style={{ color: 'var(--cd-text)' }}>100</strong>.
-            {' '}4 harm points per 100 km → 100 − 20 = <strong style={{ color: 'var(--cd-text)' }}>80</strong> (Good Standing).
-            {' '}8 per 100 km → <strong style={{ color: 'var(--cd-text)' }}>60</strong>.
+            {' '}4 harm points per 100 km → 100 − 4 = <strong style={{ color: 'var(--cd-text)' }}>96</strong>.
+            {' '}20 per 100 km → <strong style={{ color: 'var(--cd-text)' }}>80</strong> before the fleet ceiling is applied.
             The score cannot go above 100 or below 0.
           </div>
           <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
-            HOS: driving past 4 hours without a 30-minute rest adds harm points (same as events, then divided by kilometres).
+            HOS presence is reserved here; scoring details are coming soon.
           </div>
         </div>
       </div>
@@ -255,8 +259,8 @@ function ThresholdSettings() {
           Fleet Safety Score — event weights
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.55 }}>
-          Each incident adds these points. Those points, plus HOS, are divided by kilometres (per 100 km).
-          That number is the rate. Then: start at 100, minus 5 for every 1 on the rate.
+          Each incident adds these points. HOS presence is reserved and will be completed later.
+          That number is the rate. Then: start at 100, minus 1 for every 1 on the rate.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           {[
@@ -315,7 +319,7 @@ function ThresholdSettings() {
 
       <div id="consequence-bands" className="bpl-card" style={{ padding: 24, scrollMarginTop: 88 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
-          Driver discipline bands (Consequence Management)
+          Driver discipline bands (Consequence/Fatigue Management)
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
           This is <strong style={{ color: 'var(--cd-text)' }}>not</strong> the Fleet Safety Score on Home.
@@ -1390,7 +1394,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const TAB_SUBTITLES: Record<Tab, string> = {
     general: 'Client name, timezone, currency, and display preferences',
-    thresholds: 'Fleet safety score weights, driver discipline bands, and Consequence Management',
+    thresholds: 'Fleet safety score weights, driver discipline bands, and Consequence/Fatigue Management',
     roles: 'Define roles and drag access permissions onto each one',
     users: 'Create accounts, assign roles, enable or disable access',
     dev: 'Developer tools and API connection status',

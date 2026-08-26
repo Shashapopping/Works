@@ -225,7 +225,7 @@ export default function Tankers() {
   });
 
   const recentIncidents = recent.filter(e => e.type !== 'panic').slice(0, 8);
-  const scoreTip = `Same Fleet Safety Score engine (100 − 5 × weighted IVMS+HOS harm per 100 km), scoped to bulk-tanker assets only. Uses tanker incidents, tanker kilometres, and tanker HOS for ${periodLabel} vs the prior window. Settings weights apply.`;
+  const scoreTip = `Same Fleet Safety Score engine (100 − 1 × weighted IVMS+HOS harm per 100 km), scoped to bulk-tanker assets only. Uses tanker incidents, tanker kilometres, and tanker HOS for ${periodLabel} vs the prior window. Settings weights apply.`;
 
   return (
     <div>

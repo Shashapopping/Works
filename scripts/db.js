@@ -120,9 +120,14 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_events_event_time ON events(event_time);
     CREATE INDEX IF NOT EXISTS idx_events_asset_id ON events(asset_id);
     CREATE INDEX IF NOT EXISTS idx_events_label ON events(label);
+    CREATE INDEX IF NOT EXISTS idx_events_driver_time ON events(driver_name, event_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_events_label_time ON events(label, event_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_events_asset_time ON events(asset_id, event_time DESC);
     CREATE INDEX IF NOT EXISTS idx_panic_timestamp ON panic(timestamp);
     CREATE INDEX IF NOT EXISTS idx_panic_event_time ON panic(event_time);
     CREATE INDEX IF NOT EXISTS idx_panic_asset_id ON panic(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_panic_driver_time ON panic(driver_name, event_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_panic_asset_time ON panic(asset_id, event_time DESC);
     CREATE INDEX IF NOT EXISTS idx_trips_end ON trips(trip_end);
     CREATE INDEX IF NOT EXISTS idx_trips_asset ON trips(asset_id);
     CREATE INDEX IF NOT EXISTS idx_trips_asset_end ON trips(asset_id, trip_end);
@@ -130,11 +135,14 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_trips_start_open ON trips(trip_start) WHERE trip_end IS NULL;
     CREATE INDEX IF NOT EXISTS idx_trips_asset_start_open ON trips(asset_id, trip_start) WHERE trip_end IS NULL;
     CREATE INDEX IF NOT EXISTS idx_trips_driver ON trips(driver_id);
+    CREATE INDEX IF NOT EXISTS idx_trips_driver_end ON trips(driver_id, trip_end DESC);
     CREATE INDEX IF NOT EXISTS idx_fuel_asset_ts ON fuel_history(asset_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_fuel_ts ON fuel_history(timestamp);
     CREATE INDEX IF NOT EXISTS idx_kpi_event_time ON kpi_events(event_time);
     CREATE INDEX IF NOT EXISTS idx_kpi_category ON kpi_events(category);
     CREATE INDEX IF NOT EXISTS idx_kpi_asset ON kpi_events(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_kpi_category_time ON kpi_events(category, event_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_kpi_asset_time ON kpi_events(asset_id, event_time DESC);
 
     CREATE TABLE IF NOT EXISTS roles (
       id TEXT PRIMARY KEY,

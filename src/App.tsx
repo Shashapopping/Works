@@ -63,6 +63,7 @@ export default function App() {
                 />
                 <Route path="/drivers/vision" element={<VisionPage />} />
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
+                <Route path="/consequence-management" element={<Settings tab="thresholds" />} />
 
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
                 <Route

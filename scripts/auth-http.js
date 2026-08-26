@@ -58,6 +58,9 @@ import {
 } from './documents.js';
 import fs from 'fs';
 
+const MAX_REPORT_EMAIL_ROWS = 100_000;
+const MAX_REPORT_ATTACHMENT_BASE64 = 80_000_000; // ~60MB raw attachment payload
+
 function actorCanManageOrg(user) {
   if (isOrganisationalUser(user)) return true;
   const orgCount = getDb().prepare(`
@@ -378,8 +381,12 @@ export async function handleAuthRequest(req, res) {
         sendJson(res, 400, { error: 'contentBase64 required' });
         return true;
       }
-      // Cap ~12MB base64 (~9MB file) to protect the 1GB droplet
-      if (contentBase64.length > 12_000_000) {
+      const eventCount = Number(body.eventCount);
+      if (Number.isFinite(eventCount) && eventCount > MAX_REPORT_EMAIL_ROWS) {
+        sendJson(res, 413, { error: `Report email is capped at ${MAX_REPORT_EMAIL_ROWS.toLocaleString()} rows` });
+        return true;
+      }
+      if (contentBase64.length > MAX_REPORT_ATTACHMENT_BASE64) {
         sendJson(res, 413, { error: 'Report attachment too large — try CSV or a shorter date range' });
         return true;
       }
