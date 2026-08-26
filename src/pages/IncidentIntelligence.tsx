@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect, useDeferredValue, useRef, Fragment } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
-import { useFleet } from '../context/FleetContext';
+import { authFetch, useFleet } from '../context/FleetContext';
 import type { LogEntry } from '../context/FleetContext';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 import { isKnownDriver, displayDriverName, isActiveDriver, isActiveDriverId } from '../lib/driverUtils';
 import {
   buildDriverConsequenceCard,
@@ -18,10 +19,10 @@ import MockNamesBadge from '../components/MockNamesBadge';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useTableSort } from '../hooks/useTableSort';
-import { isOverspeedLabel } from '../lib/overspeedFilter';
+import { filterOverspeedEvents, isOverspeedLabel } from '../lib/overspeedFilter';
 import { filterTripDriversByVehicles, summarizeEventsByLabel } from '../lib/siteScope';
-import { defaultDriverCustomRange, tripStatsByDriverKey, type DriverPeriod } from '../lib/driverAssessment';
-import { usePeriodTripDrivers } from '../hooks/useAssessmentTripDrivers';
+import { tripStatsByDriverKey } from '../lib/driverAssessment';
+import { useAssessmentTripDrivers } from '../hooks/useAssessmentTripDrivers';
 
 type Tab = 'events' | 'by-driver' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -386,15 +387,18 @@ function PatternsTab({
   eventsBusy,
   vehicles,
   selectedSites,
-  dateRange,
 }: {
   events: LogEntry[];
   eventsBusy: boolean;
   vehicles: ReturnType<typeof useFleet>['vehicles'];
   selectedSites: string[];
-  dateRange: DriverPeriod;
 }) {
-  const { tripDrivers, loading: tripLoading } = usePeriodTripDrivers(dateRange, defaultDriverCustomRange());
+  // Distance baseline stays a fixed current+last month window regardless of the
+  // selected tab range — tying it to the page's date filter (as a prior change
+  // briefly did) shrinks the km denominator for narrow ranges and pushes far
+  // more drivers out of "Green", turning this from a curated list into
+  // something close to a copy of the Event Explorer feed.
+  const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers();
   const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -646,7 +650,48 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
     ? rangeParam
     : '7days';
   const [dateRange, setDateRange] = useState<DateRange>(initialDateRange);
-  const { events, eventsLoading, vehicles, selectedSites } = useFleet();
+  const { vehicles, selectedSites } = useFleet();
+
+  // Incident Intelligence needs a complete, accurate event set for the selected
+  // range (Total Events / Event Explorer / By Driver all depend on true counts),
+  // so it fetches its own range-scoped data instead of the boot-time feed in
+  // FleetContext, which is intentionally capped for fast first paint.
+  const [rangeEvents, setRangeEvents] = useState<LogEntry[]>([]);
+  const [rangeEventsLoading, setRangeEventsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const { from, to } = isoIncidentRange(dateRange);
+    const url = `/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+
+    const applyPayload = (payload: unknown) => {
+      const rows = Array.isArray(payload) ? payload : (payload as { entries?: LogEntry[] })?.entries ?? [];
+      setRangeEvents(filterOverspeedEvents(rows as LogEntry[]));
+    };
+
+    const cached = cachePeek<unknown>(url);
+    if (cached != null) {
+      applyPayload(cached);
+      setRangeEventsLoading(false);
+    } else {
+      setRangeEventsLoading(true);
+    }
+
+    authCachedJson<unknown>(url, authFetch, { ttlMs: CACHE_TTL.fleetEvents })
+      .then(data => {
+        if (cancelled || data == null) return;
+        applyPayload(data);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRangeEventsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [dateRange]);
+
+  const events = rangeEvents;
+  const eventsLoading = rangeEventsLoading;
 
   useEffect(() => {
     if (rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime') {
@@ -732,7 +777,6 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
           eventsBusy={eventsLoading}
           vehicles={vehicles}
           selectedSites={selectedSites}
-          dateRange={dateRange}
         />
       )}
     </div>

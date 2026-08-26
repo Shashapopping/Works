@@ -502,7 +502,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         async () => {
           const to = new Date().toISOString();
           const from = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=2000`);
+          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
           if (!res.ok) return null;
           const payload = await res.json();
           return Array.isArray(payload) ? payload : payload?.entries ?? [];
