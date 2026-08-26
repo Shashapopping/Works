@@ -1337,6 +1337,8 @@
   gap: 6px;
   font-size: 12px;
   color: var(--cd-text-muted);
+  flex-wrap: wrap;
+  line-height: 1.25;
 }
 
 .bpl-safety-score-home-stats strong {

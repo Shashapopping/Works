@@ -80,7 +80,21 @@ const EVENT_COLORS: Record<string, string> = {
 
 /** Preview table only — full filtered set still used for download/email. */
 const EVENT_PREVIEW_LIMIT = 20;
+const REPORT_EMAIL_WARN_ROWS = 5_000;
+const REPORT_EMAIL_MAX_ROWS = 100_000;
 const EVENTS_REFRESH_MS = 30_000;
+
+function confirmLargeEmailReport(rowCount: number, format: ExportFormat) {
+  if (rowCount <= REPORT_EMAIL_WARN_ROWS) return true;
+  const rows = rowCount.toLocaleString();
+  const formatLabel = format.toUpperCase();
+  const sizeNote = rowCount >= 50_000
+    ? ' Very large reports are usually fastest as CSV.'
+    : '';
+  return window.confirm(
+    `This ${formatLabel} report contains ${rows} rows and may take a long time to generate and send.${sizeNote}\n\nContinue?`,
+  );
+}
 
 function reportSiteKeyFor(zone?: string | null) {
   const z = (zone || '').trim();
@@ -648,6 +662,10 @@ export default function ReportsPage() {
     reportType === 'events'
       ? eventCensusTotal > 0
       : !tabularPreviewLoading && (tabularPreview?.rowCount ?? 0) > 0;
+  const estimatedEmailRows =
+    reportType === 'events'
+      ? eventCensusTotal
+      : (tabularPreview?.rowCount ?? 0);
 
   const runGenerate = async () => {
     const { from, to } = getDateBounds(dateRange, fromDate, toDate);
@@ -727,12 +745,24 @@ export default function ReportsPage() {
       setEmailStatus('Please enter a recipient email address.');
       return;
     }
+    if (estimatedEmailRows > REPORT_EMAIL_MAX_ROWS) {
+      setEmailStatus(`This report has ${estimatedEmailRows.toLocaleString()} rows. Email reports are capped at ${REPORT_EMAIL_MAX_ROWS.toLocaleString()} rows.`);
+      return;
+    }
+    if (!confirmLargeEmailReport(estimatedEmailRows, exportFormat)) {
+      setEmailStatus('Email report cancelled.');
+      return;
+    }
     setEmailing(true);
     setEmailStatus(null);
     try {
       const tabular = await runGenerate();
       if (tabular.rowCount === 0) {
         setEmailStatus('No rows for this report type and filters.');
+        return;
+      }
+      if (tabular.rowCount > REPORT_EMAIL_MAX_ROWS) {
+        setEmailStatus(`This report has ${tabular.rowCount.toLocaleString()} rows. Email reports are capped at ${REPORT_EMAIL_MAX_ROWS.toLocaleString()} rows.`);
         return;
       }
       const { blob, filename, mime } = await buildTabularReportBlob(tabular, exportFormat);

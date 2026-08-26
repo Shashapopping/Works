@@ -70,8 +70,6 @@ export default function ConsequenceExplainerModal({
   vehicleCount,
   actualWeightedRate,
   distanceKm,
-  hosHeldMinutes,
-  hosSlices,
   scoreConfig = DEFAULT_FLEET_SCORE_CONFIG,
   consequenceConfig,
   onClose,
@@ -85,11 +83,11 @@ export default function ConsequenceExplainerModal({
   const goodAt = Math.round((100 - scoreConfig.bandGood) / drop);
 
   const fleetWeights = [
-    { label: 'Harsh Braking', weight: scoreConfig.weights.harshBraking, color: '#e05c2a' },
-    { label: 'Overspeeding', weight: scoreConfig.weights.overspeeding, color: '#d97706' },
-    { label: 'Harsh Accel.', weight: scoreConfig.weights.harshAcceleration, color: '#f59e0b' },
-    { label: 'Cornering', weight: scoreConfig.weights.harshCornering, color: '#8b5cf6' },
-    { label: `HOS / ${scoreConfig.hosSliceMinutes} min`, weight: scoreConfig.hosPointsPer10Min, color: '#0d9488' },
+    { label: 'Harsh Braking', weight: scoreConfig.weights.harshBraking, color: '#e05c2a', title: undefined },
+    { label: 'Overspeeding', weight: scoreConfig.weights.overspeeding, color: '#d97706', title: undefined },
+    { label: 'Harsh Accel.', weight: scoreConfig.weights.harshAcceleration, color: '#f59e0b', title: undefined },
+    { label: 'Cornering', weight: scoreConfig.weights.harshCornering, color: '#8b5cf6', title: undefined },
+    { label: 'HOS', weight: 'Soon', color: '#0d9488', title: 'Coming soon' },
   ];
 
   const fleetBands = [
@@ -227,7 +225,7 @@ export default function ConsequenceExplainerModal({
               <span style={{ fontSize: 13, color: 'var(--cd-text-muted)', fontWeight: 600 }}>pts per event</span>
             </div>
             <p style={{ fontSize: 13, color: 'var(--cd-text)', lineHeight: 1.45, margin: '10px 0 0' }}>
-              Consequence Management. Every scored event costs the same. Then divide by km so distance is fair.
+              Consequence/Fatigue Management. Every scored event costs the same. Then divide by km so distance is fair.
             </p>
             <div style={{
               marginTop: 10, fontSize: 13, fontWeight: 600, color: 'var(--cd-text)',
@@ -266,8 +264,8 @@ export default function ConsequenceExplainerModal({
                     fontSize: 11, fontWeight: 700, color: w.color,
                     background: `${w.color}14`, border: `1px solid ${w.color}33`,
                     borderRadius: 999, padding: '2px 8px',
-                  }}>
-                    {w.label} +{w.weight}
+                  }} title={w.title}>
+                    {w.label === 'HOS' ? `${w.label} ${w.weight}` : `${w.label} +${w.weight}`}
                   </span>
                 ))}
               </div>
@@ -310,9 +308,8 @@ export default function ConsequenceExplainerModal({
           }}>
             <span><strong style={{ color: 'var(--cd-text)' }}>{totalIncidents}</strong> incidents</span>
             <span><strong style={{ color: 'var(--cd-text)' }}>{km.toLocaleString()}</strong> km</span>
-            <span>
-              <strong style={{ color: 'var(--cd-text)' }}>{hosSlices ?? 0}</strong> HOS slices
-              {' '}({hosHeldMinutes ?? 0} min past 4h / {scoreConfig.hosSliceMinutes} min)
+            <span title="Coming soon">
+              <strong style={{ color: 'var(--cd-text-muted)' }}>Soon</strong> HOS slices
             </span>
             <span>{vehicleCount} vehicles</span>
           </div>
@@ -329,7 +326,7 @@ export default function ConsequenceExplainerModal({
             ))}
           </div>
           <p style={{ fontSize: 11, color: 'var(--cd-text-muted)', margin: '8px 0 8px', lineHeight: 1.4 }}>
-            HOS: driving past 4 hours without a 30-minute rest adds harm the same way events do, then it is divided by kilometres.
+            HOS presence is reserved in this scoring view; detailed HOS figures are coming soon.
           </p>
         </div>
 
@@ -399,7 +396,7 @@ export default function ConsequenceExplainerModal({
           </div>
           <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '8px 0 0', lineHeight: 1.5 }}>
             <strong style={{ color: 'var(--cd-text)' }}>Driver Management</strong> and{' '}
-            <strong style={{ color: 'var(--cd-text)' }}>Response Tracking</strong> use Consequence Management.
+            <strong style={{ color: 'var(--cd-text)' }}>Response Tracking</strong> use Consequence/Fatigue Management.
             Fleet Safety Score stays the overview on Home and Safety.
           </p>
         </div>
@@ -430,7 +427,7 @@ export default function ConsequenceExplainerModal({
             Response Tracking <ArrowRight size={13} />
           </Link>
           <Link
-            to="/settings/thresholds"
+            to="/consequence-management"
             onClick={onClose}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 36,

@@ -22,9 +22,6 @@ export function getDb() {
     // Retry briefly instead of instantly throwing SQLITE_BUSY.
     db.pragma('busy_timeout = 5000');
     initSchema();
-    // Warm / refresh planner stats for the newly added indexes.
-    db.pragma('analysis_limit = 400');
-    db.pragma('optimize');
   }
   return db;
 }

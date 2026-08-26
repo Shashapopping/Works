@@ -25,6 +25,7 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/drivers': { title: 'Driver Management', sub: '— profiles and safety scores' },
     '/drivers/coaching': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
     '/drivers/training': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
+    '/consequence-management': { title: 'Consequence/Fatigue Management', sub: '— driver discipline and fatigue bands' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
     '/trends': { title: 'Trends', sub: '— visual event insights & history' },
     '/incidents/response': { title: 'Incident Intelligence', sub: '— response tracking' },
