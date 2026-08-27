@@ -23,6 +23,8 @@ import { filterOverspeedEvents, isOverspeedLabel } from '../lib/overspeedFilter'
 import { filterTripDriversByVehicles, summarizeEventsByLabel } from '../lib/siteScope';
 import { tripStatsByDriverKey } from '../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../hooks/useAssessmentTripDrivers';
+import { COACHING_SCORE_THRESHOLD } from '../config/interventionRules';
+import { scoredEventsInWindow } from '../lib/driverInterventions';
 
 type Tab = 'events' | 'by-driver' | 'patterns';
 type DateRange = 'today' | '7days' | '30days' | 'alltime';
@@ -30,6 +32,8 @@ type EventFilter = 'All' | 'Harsh Braking' | 'Harsh Acceleration' | 'Overspeedin
 
 const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
 const EVENT_FILTERS: EventFilter[] = ['All', 'Harsh Braking', 'Harsh Acceleration', 'Overspeeding', 'Overspeed Tiered', 'Harsh Cornering'];
+const RESPONSE_TRACKING_EVENT_COUNT = 8;
+const RESPONSE_TRACKING_WINDOW_DAYS = 7;
 
 const EVENT_COLORS: Record<string, string> = {
   'Harsh Braking': '#0d9488',
@@ -445,11 +449,32 @@ function PatternsTab({
           occurrenceIndex,
         });
         const loggedCount = getOccurrenceCount(occurrences, row.key, consequence.category);
-        return { ...row, distanceKm, consequence, loggedCount };
+        const windowEventCount = scoredEventsInWindow(row.events, RESPONSE_TRACKING_WINDOW_DAYS);
+        return { ...row, distanceKm, consequence, loggedCount, windowEventCount };
       })
-      .filter(r => r.consequence.category !== 'Green')
+      .filter(r =>
+        r.consequence.displayScore <= COACHING_SCORE_THRESHOLD ||
+        r.windowEventCount > RESPONSE_TRACKING_EVENT_COUNT
+      )
       .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore);
   }, [events, scopedTripDrivers, distanceByKey, occurrences]);
+
+  const responseSummary = useMemo(() => {
+    return trackingRows.reduce((acc, row) => {
+      acc.total += row.consequence.counts.eventCount;
+      acc.harshBraking += row.consequence.counts.harshBraking;
+      acc.overspeeding += row.consequence.counts.overspeeding;
+      acc.harshAccel += row.consequence.counts.harshAccel;
+      return acc;
+    }, { total: 0, harshBraking: 0, overspeeding: 0, harshAccel: 0 });
+  }, [trackingRows]);
+
+  const responseKpis = [
+    { label: 'Total Events', value: responseSummary.total, color: 'var(--cd-text)' },
+    { label: 'Harsh Braking', value: responseSummary.harshBraking, color: '#CC0000' },
+    { label: 'Overspeeding', value: responseSummary.overspeeding, color: '#9333ea' },
+    { label: 'Harsh Accel.', value: responseSummary.harshAccel, color: '#0078D4' },
+  ];
 
   const goToCoaching = (driverKey: string) => {
     navigateTo(`/drivers/coaching?q=${encodeURIComponent(driverKey)}&open=${encodeURIComponent(driverKey)}`);
@@ -476,6 +501,17 @@ function PatternsTab({
 
   return (
     <div>
+      <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+        {responseKpis.map(s => (
+          <div key={s.label} className="bpl-kpi-card">
+            <div className="bpl-kpi-label">{s.label}</div>
+            <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
+              {busy ? <SkelValue wide /> : s.value.toLocaleString()}
+            </div>
+          </div>
+        ))}
+      </div>
+
       <div className="bpl-card" style={{ padding: 20, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <ClipboardCheck size={16} color="#0078D4" />
@@ -493,7 +529,7 @@ function PatternsTab({
           </Link>
         </div>
         <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', margin: 0 }}>
-          Amber / Yellow / Red drivers by Consequence/Fatigue Management score (penalty points ÷ km/100).
+          Drivers requiring response by score or recent scored-event frequency.
         </p>
       </div>
 
@@ -560,8 +596,10 @@ function PatternsTab({
                     </td>
                     <td style={{ fontWeight: 600 }}>{displayDriverName(row.name)}</td>
                     <td>
-                      <div>{Math.round(row.distanceKm).toLocaleString()} km</div>
-                      <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>{consequence.counts.eventCount} scored events</div>
+                        <div>{Math.round(row.distanceKm).toLocaleString()} km</div>
+                        <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
+                          {row.windowEventCount} recent scored events
+                        </div>
                     </td>
                     <td>
                       <span style={{ fontWeight: 700, color }}>{consequence.displayScore}</span>
@@ -757,17 +795,18 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
         </div>
       </div>
 
-      {/* Summary KPIs */}
-      <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-        {summaryKpis.map(s => (
-          <div key={s.label} className="bpl-kpi-card">
-            <div className="bpl-kpi-label">{s.label}</div>
-            <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
-              {eventsLoading ? <SkelValue wide /> : s.value.toLocaleString()}
+      {tab !== 'patterns' && (
+        <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+          {summaryKpis.map(s => (
+            <div key={s.label} className="bpl-kpi-card">
+              <div className="bpl-kpi-label">{s.label}</div>
+              <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
+                {eventsLoading ? <SkelValue wide /> : s.value.toLocaleString()}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {tab === 'events' && <EventsTab dateRange={dateRange} highlightEventId={highlightEventId} initialSearch={querySearch} events={events} eventsLoading={eventsLoading} />}
       {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} events={events} eventsLoading={eventsLoading} />}
