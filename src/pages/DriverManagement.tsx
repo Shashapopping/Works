@@ -4,7 +4,16 @@ import { Search, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
 import MockNamesBadge from '../components/MockNamesBadge';
-import { type ConsequenceCategory } from '../lib/consequenceScore';
+import {
+  CONSEQUENCE_CONFIG_EVENT,
+  CONSEQUENCE_CONFIG_KEY,
+  loadConsequenceConfig,
+  normalizeDriverScore,
+  categorizeDriverScore,
+  toDisplayScore100,
+  type ConsequenceCategory,
+  type ConsequenceScoreConfig,
+} from '../lib/consequenceScore';
 import { assessDrivers, eventsInDriverPeriod, type AssessedDriver, type DriverPeriod, defaultDriverCustomRange, periodCardStats, tripStatsByDriverKey } from '../lib/driverAssessment';
 import { usePeriodTripDrivers } from '../hooks/useAssessmentTripDrivers';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -17,9 +26,13 @@ import { filterTripDriversByVehicles } from '../lib/siteScope';
 import InfoTip from '../components/InfoTip';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 import { fetchDriverWarnings, type DriverWarning } from '../lib/coachingWarningsApi';
+import { useHosRecords } from '../hooks/useHosRecords';
+import { fmtHosMinutes, type HosRecord } from '../lib/hos';
+import { hosPointsFromHeldMinutes } from '../lib/fleetSafetyScore';
 
 type DateRange = DriverPeriod;
 type DriverProfile = AssessedDriver;
+const DRIVER_SCORE_PERIOD: DateRange = '30days';
 
 function fmtDistanceKm(km: number) {
   if (km <= 0) return '0';
@@ -37,6 +50,27 @@ function fmtHosHours(seconds: number, journeyCount: number) {
   return `${Math.round(h)}h`;
 }
 
+function fmtPoints(value: number) {
+  if (!Number.isFinite(value)) return '0';
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function hosHeldMinutesFromRecord(record?: HosRecord | null) {
+  if (!record) return 0;
+  const dailyRestWindow = record.dailyRestWindowMinutes || 1440;
+  const dailyRestElapsed = record.dailyRestElapsedMinutes ?? record.minutesSinceDailyRest ?? (7 * 24 * 60);
+  const weeklyRestWindow = record.weeklyRestWindowMinutes || (7 * 24 * 60);
+  const weeklyRestElapsed = record.weeklyRestElapsedMinutes
+    ?? (record.daysSinceWeeklyRest == null ? weeklyRestWindow : record.daysSinceWeeklyRest * 24 * 60);
+  return Math.max(0, record.violationDriveMinutes ?? 0)
+    + Math.max(0, dailyRestElapsed - dailyRestWindow)
+    + Math.max(0, weeklyRestElapsed - weeklyRestWindow);
+}
+
+function hosImpactPer100Km(hosPoints: number, distanceKm: number) {
+  return hosPoints > 0 ? Math.abs(normalizeDriverScore(-hosPoints, distanceKm)) : 0;
+}
+
 function scoreBarColor(category: ConsequenceCategory) {
   if (category === 'Green') return '#16a34a';
   if (category === 'Amber') return '#f59e0b';
@@ -44,14 +78,20 @@ function scoreBarColor(category: ConsequenceCategory) {
   return '#CC0000';
 }
 
-function ScoreBar({ score, category }: { score: number; category: ConsequenceCategory }) {
+function ScoreBar({ score, category }: {
+  score: number;
+  category: ConsequenceCategory;
+}) {
   const color = scoreBarColor(category);
+  const barWidth = Math.max(0, Math.min(100, score));
   return (
     <div className="dm-score">
       <div className="dm-score-track">
-        <div className="dm-score-fill" style={{ width: `${score}%`, background: color }} />
+        <div className="dm-score-fill" style={{ width: `${barWidth}%`, background: color }} />
       </div>
-      <span className="dm-score-n" style={{ color }}>{score}</span>
+      <span className="dm-score-copy">
+        <span className="dm-score-n" style={{ color }}>{fmtPoints(score)}</span>
+      </span>
     </div>
   );
 }
@@ -109,21 +149,29 @@ function driverOfficialStatus(
   };
 }
 
-function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
+function DriverCard({ driver, expanded, onToggle, stats, latestWarning, hosPoints, hosHeldMinutes, consequenceConfig }: {
   driver: DriverProfile;
   expanded: boolean;
   onToggle: () => void;
   stats: ReturnType<typeof periodCardStats>;
   latestWarning: DriverWarning | null;
+  hosPoints: number;
+  hosHeldMinutes: number;
+  consequenceConfig: ConsequenceScoreConfig;
 }) {
   const { consequence } = driver;
-  const color = consequence.categoryColor;
-  const officialStatus = driverOfficialStatus(consequence.category, latestWarning);
   const recentEvents = stats.events.slice(0, 10);
   const infractions = stats.eventCount;
   const distanceLabel = fmtDistanceKm(stats.km);
   const hosLabel = fmtHosHours(stats.drivingTimeSeconds, stats.journeyCount);
   const hosHasData = stats.drivingTimeSeconds > 0 || stats.journeyCount > 0;
+  const scoreDistanceKm = driver.distanceKm;
+  const hosScoreImpact = hosImpactPer100Km(hosPoints, scoreDistanceKm);
+  const finalDriverScore = consequence.driverScore - hosScoreImpact;
+  const finalDisplayScore = toDisplayScore100(finalDriverScore);
+  const finalCategory = categorizeDriverScore(finalDriverScore, consequenceConfig);
+  const color = scoreBarColor(finalCategory);
+  const officialStatus = driverOfficialStatus(finalCategory, latestWarning);
 
   const phone = driver.phone && driver.phone !== 'N/A'
     ? (DEMO_BRANDING ? demoPhoneLabel(driver.phone) : driver.phone)
@@ -160,7 +208,7 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
           <div className="dm-stat-lbl">HOS</div>
         </div>
 
-        <ScoreBar score={consequence.displayScore} category={consequence.category} />
+        <ScoreBar score={finalDisplayScore} category={finalCategory} />
 
         <div className="dm-tail">
           <span className="dm-band">{officialStatus.label}</span>
@@ -184,7 +232,7 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
               </span>
             </div>
           )}
-          {!latestWarning && (consequence.category === 'Yellow' || consequence.category === 'Red') && (
+          {!latestWarning && (finalCategory === 'Yellow' || finalCategory === 'Red') && (
             <div className="dm-reco" style={{ marginTop: 8 }}>
               <span className="dm-reco-kicker">Official status</span>
               <span className="dm-reco-text">No written warning record found in Response Tracking / Coaching.</span>
@@ -202,7 +250,10 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
               { label: 'Penalty', value: consequence.penaltyPoints },
               { label: 'Distance', value: `${Math.round(stats.km).toLocaleString()} km` },
               { label: 'HOS', value: hosHasData ? `${(stats.drivingTimeSeconds / 3600).toFixed(1)}h` : '—', tip: HOS_WINDOW_TIP },
-              { label: 'Per 100 km', value: consequence.driverScore.toFixed(1) },
+              ...(hosPoints > 0
+                ? [{ label: 'HOS points', value: `-${fmtPoints(hosPoints)} pts | -${fmtPoints(hosScoreImpact)} /100km`, tip: `${fmtPoints(hosPoints)} raw HOS points from ${fmtHosMinutes(hosHeldMinutes)} held over HOS limits; scaled by ${fmtDistanceKm(scoreDistanceKm)} monthly km` }]
+                : []),
+              { label: 'Per 100 km', value: finalDriverScore.toFixed(1) },
             ].map(s => (
               <div key={s.label} className="dm-fact" title={s.tip}>
                 <span className="dm-fact-val">{s.value}</span>
@@ -277,9 +328,12 @@ export default function DriverManagement() {
   const [customRange, setCustomRange] = useState(defaultDriverCustomRange);
   const [expandedDrivers, setExpandedDrivers] = useState<Set<string>>(new Set());
   const { tripDrivers: periodTrips, loading: periodTripLoading } = usePeriodTripDrivers(dateRange, customRange);
-  const { events, eventsLoading, vehicles, selectedSites, siteOptions, siteNameOptions } = useFleet();
+  const { tripDrivers: scoreTrips, loading: scoreTripLoading } = usePeriodTripDrivers(DRIVER_SCORE_PERIOD);
+  const { events, eventsLoading, vehicles, selectedSites, siteOptions, siteNameOptions, scoreConfig } = useFleet();
+  const { records: hosRaw } = useHosRecords();
   const [driverWarnings, setDriverWarnings] = useState<Map<string, DriverWarning>>(new Map());
-  const seedBusy = eventsLoading || periodTripLoading;
+  const [consequenceConfig, setConsequenceConfig] = useState<ConsequenceScoreConfig>(() => loadConsequenceConfig());
+  const seedBusy = eventsLoading || periodTripLoading || scoreTripLoading;
   const siteFiltered = selectedSites.length > 0;
 
   const scopeLabel = useMemo(() => {
@@ -292,9 +346,14 @@ export default function DriverManagement() {
     [periodTrips, siteFiltered, vehicles],
   );
 
+  const scopedScoreTrips = useMemo(
+    () => siteFiltered ? filterTripDriversByVehicles(scoreTrips, vehicles) : scoreTrips,
+    [scoreTrips, siteFiltered, vehicles],
+  );
+
   const scoreEvents = useMemo(
-    () => eventsInDriverPeriod(events, dateRange, customRange),
-    [customRange, dateRange, events],
+    () => eventsInDriverPeriod(events, DRIVER_SCORE_PERIOD),
+    [events],
   );
 
   useEffect(() => {
@@ -304,11 +363,44 @@ export default function DriverManagement() {
     setExpandedDrivers(new Set([q]));
   }, []);
 
+  useEffect(() => {
+    const onConfig = (event: Event) => {
+      setConsequenceConfig((event as CustomEvent<ConsequenceScoreConfig>).detail ?? loadConsequenceConfig());
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === CONSEQUENCE_CONFIG_KEY) setConsequenceConfig(loadConsequenceConfig());
+    };
+    window.addEventListener(CONSEQUENCE_CONFIG_EVENT, onConfig);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(CONSEQUENCE_CONFIG_EVENT, onConfig);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
   const drivers: DriverProfile[] = useMemo(
-    () => assessDrivers(scoreEvents, scopedPeriodTrips),
-    [scoreEvents, scopedPeriodTrips],
+    () => assessDrivers(scoreEvents, scopedScoreTrips, consequenceConfig),
+    [consequenceConfig, scoreEvents, scopedScoreTrips],
   );
   const periodTripMap = useMemo(() => tripStatsByDriverKey(scopedPeriodTrips), [scopedPeriodTrips]);
+  const hosPointsByDriverKey = useMemo(() => {
+    const map = new Map<string, { points: number; heldMinutes: number }>();
+    const add = (key: string | null | undefined, heldMinutes: number) => {
+      const k = (key || '').trim();
+      if (!k || map.has(k)) return;
+      map.set(k, {
+        points: hosPointsFromHeldMinutes(heldMinutes, scoreConfig),
+        heldMinutes,
+      });
+    };
+    hosRaw.forEach(record => {
+      const heldMinutes = hosHeldMinutesFromRecord(record);
+      if (heldMinutes <= 0) return;
+      add(record.id, heldMinutes);
+      add(record.driverName, heldMinutes);
+    });
+    return map;
+  }, [hosRaw, scoreConfig]);
   const driverWarningKeys = useMemo(
     () => Array.from(new Set(drivers.map(d => d.key).filter(Boolean))).sort(),
     [drivers],
@@ -337,9 +429,31 @@ export default function DriverManagement() {
 
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
+  const finalOutcomeByDriverKey = useMemo(() => {
+    const map = new Map<string, { category: ConsequenceCategory; driverScore: number; displayScore: number }>();
+    drivers.forEach(d => {
+      const hos = hosPointsByDriverKey.get(d.key) || hosPointsByDriverKey.get((d.name || '').trim());
+      const driverScore = d.consequence.driverScore - hosImpactPer100Km(hos?.points ?? 0, d.distanceKm);
+      map.set(d.key, {
+        category: categorizeDriverScore(driverScore, consequenceConfig),
+        driverScore,
+        displayScore: toDisplayScore100(driverScore),
+      });
+    });
+    return map;
+  }, [consequenceConfig, drivers, hosPointsByDriverKey]);
+  const rankedDrivers = useMemo(
+    () => drivers.slice().sort((a, b) => {
+      const ao = finalOutcomeByDriverKey.get(a.key);
+      const bo = finalOutcomeByDriverKey.get(b.key);
+      return (ao?.displayScore ?? a.consequence.displayScore) - (bo?.displayScore ?? b.consequence.displayScore)
+        || (ao?.driverScore ?? a.consequence.driverScore) - (bo?.driverScore ?? b.consequence.driverScore);
+    }),
+    [drivers, finalOutcomeByDriverKey],
+  );
   const visible = deferredSearch
-    ? drivers.filter(d => d.name.toLowerCase().includes(deferredSearch.toLowerCase()) || d.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
-    : drivers;
+    ? rankedDrivers.filter(d => d.name.toLowerCase().includes(deferredSearch.toLowerCase()) || d.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
+    : rankedDrivers;
 
   const pagination = useClientPagination(visible, 50, deferredSearch);
 
@@ -349,9 +463,9 @@ export default function DriverManagement() {
     return n;
   });
 
-  const redCount = drivers.filter(d => d.consequence.category === 'Red').length;
-  const needsAction = drivers.filter(d => d.consequence.category !== 'Green').length;
-  const greenCount = drivers.filter(d => d.consequence.category === 'Green').length;
+  const redCount = drivers.filter(d => finalOutcomeByDriverKey.get(d.key)?.category === 'Red').length;
+  const needsAction = drivers.filter(d => (finalOutcomeByDriverKey.get(d.key)?.category ?? d.consequence.category) !== 'Green').length;
+  const greenCount = drivers.filter(d => (finalOutcomeByDriverKey.get(d.key)?.category ?? d.consequence.category) === 'Green').length;
 
   return (
     <div className="dm-page">
@@ -472,14 +586,22 @@ export default function DriverManagement() {
             <span />
           </div>
           {pagination.pageRows.map(d => (
-            <DriverCard
-              key={d.key}
-              driver={d}
-              expanded={expandedDrivers.has(d.name) || expandedDrivers.has(d.key)}
-              onToggle={() => toggle(d.name)}
-              stats={periodCardStats(d, dateRange, customRange, periodTripMap)}
-              latestWarning={driverWarnings.get(d.key) ?? null}
-            />
+            (() => {
+              const hos = hosPointsByDriverKey.get(d.key) || hosPointsByDriverKey.get((d.name || '').trim());
+              return (
+                <DriverCard
+                  key={d.key}
+                  driver={d}
+                  expanded={expandedDrivers.has(d.name) || expandedDrivers.has(d.key)}
+                  onToggle={() => toggle(d.name)}
+                  stats={periodCardStats(d, dateRange, customRange, periodTripMap, consequenceConfig)}
+                  latestWarning={driverWarnings.get(d.key) ?? null}
+                  hosPoints={hos?.points ?? 0}
+                  hosHeldMinutes={hos?.heldMinutes ?? 0}
+                  consequenceConfig={consequenceConfig}
+                />
+              );
+            })()
           ))}
         </div>
       )}

@@ -193,29 +193,10 @@ export function categorizeDriverScore(
 
 export function toDisplayScore100(
   driverScore: number,
-  config: ConsequenceScoreConfig = loadConsequenceConfig(),
+  _config: ConsequenceScoreConfig = loadConsequenceConfig(),
 ): number {
-  const { amberStart, yellowStart, redStart } = config;
-  if (driverScore >= 0) return 100;
-  if (driverScore > amberStart) {
-    const t = amberStart === 0 ? 0 : driverScore / amberStart;
-    return Math.round(100 - t * 15);
-  }
-  if (driverScore > yellowStart) {
-    const span = yellowStart - amberStart;
-    const t = span === 0 ? 0 : (driverScore - amberStart) / span;
-    return Math.round(84 + t * (70 - 84));
-  }
-  if (driverScore > redStart) {
-    const span = redStart - yellowStart;
-    const t = span === 0 ? 0 : (driverScore - yellowStart) / span;
-    return Math.round(69 + t * (50 - 69));
-  }
-  const floor = redStart * 2;
-  if (driverScore >= redStart) return 49;
-  const span = floor - redStart;
-  const t = span === 0 ? 1 : (driverScore - redStart) / span;
-  return Math.max(0, Math.round(49 + t * (0 - 49)));
+  if (!Number.isFinite(driverScore)) return 0;
+  return Number(Math.max(0, Math.min(100, 100 + driverScore)).toFixed(1));
 }
 
 export function recommendedConsequence(

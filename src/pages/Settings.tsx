@@ -24,6 +24,7 @@ import {
   ApiError,
   createUserApi,
   fetchRoles,
+  fetchTransporters,
   fetchUsers,
   patchUserApi,
   putRoles,
@@ -205,15 +206,13 @@ function ThresholdSettings() {
                 min={1}
                 max={60}
                 style={{ ...fieldStyle, width: 80 }}
-                value=""
-                placeholder="Soon"
-                disabled
-                title="Coming soon"
+                value={form.hosSliceMinutes}
+                onChange={e => setForm(p => ({ ...p, hosSliceMinutes: Number(e.target.value) }))}
               />
-              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }} title="Coming soon">minutes held</span>
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>minutes held</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              HOS scoring configuration is coming soon.
+              Every full slice of held HOS breach time adds safety harm points.
             </div>
           </div>
           <div>
@@ -225,15 +224,13 @@ function ThresholdSettings() {
                 min={0}
                 max={20}
                 style={{ ...fieldStyle, width: 80 }}
-                value=""
-                placeholder="Soon"
-                disabled
-                title="Coming soon"
+                value={form.hosPointsPer10Min}
+                onChange={e => setForm(p => ({ ...p, hosPointsPer10Min: Number(e.target.value) }))}
               />
-              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }} title="Coming soon">pts</span>
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>pts</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              HOS point weighting is coming soon.
+              Current HOS rate: +{form.hosPointsPer10Min} pts per {form.hosSliceMinutes} minutes held.
             </div>
           </div>
         </div>
@@ -249,7 +246,7 @@ function ThresholdSettings() {
             The score cannot go above 100 or below 0.
           </div>
           <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
-            HOS presence is reserved here; scoring details are coming soon.
+            HOS/fatigue harm is counted as full held-time slices: breach minutes ÷ {form.hosSliceMinutes}, rounded down, then × {form.hosPointsPer10Min} pts.
           </div>
         </div>
       </div>
@@ -259,7 +256,7 @@ function ThresholdSettings() {
           Fleet Safety Score — event weights
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.55 }}>
-          Each incident adds these points. HOS presence is reserved and will be completed later.
+          Each incident adds these points. HOS adds points from the slice rule above.
           That number is the rate. Then: start at 100, minus 1 for every 1 on the rate.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -991,7 +988,8 @@ function UserSettings() {
   const [seats, setSeats] = useState<SeatInfo>({ used: 0, limit: 3, remaining: 3 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [form, setForm] = useState({ name: '', email: '', password: '', roleId: 'view-only' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', roleId: 'view-only', transporter: '' });
+  const [transporterOptions, setTransporterOptions] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [createdTemp, setCreatedTemp] = useState<{ email: string; password: string; emailSent?: boolean; emailError?: string | null } | null>(null);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
@@ -1020,6 +1018,22 @@ function UserSettings() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    if (form.roleId !== 'transporter') return;
+    let cancelled = false;
+    fetchTransporters()
+      .then(list => {
+        if (!cancelled) {
+          setTransporterOptions(list);
+          if (list.length) {
+            setForm(p => (p.transporter ? p : { ...p, transporter: list[0] }));
+          }
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [form.roleId]);
+
   const atLimit = seats.used >= seats.limit;
 
   const onCreate = async (e: React.FormEvent) => {
@@ -1032,14 +1046,18 @@ function UserSettings() {
     setCreatedTemp(null);
     setCreating(true);
     try {
-      const result = await createUserApi(form);
+      const payload = {
+        ...form,
+        transporter: form.roleId === 'transporter' ? form.transporter : undefined,
+      };
+      const result = await createUserApi(payload);
       setCreatedTemp({
         email: form.email,
         password: form.password,
         emailSent: !!(result.user as AuthUser & { emailSent?: boolean }).emailSent,
         emailError: (result.user as AuthUser & { emailError?: string | null }).emailError ?? null,
       });
-      setForm({ name: '', email: '', password: '', roleId: form.roleId || 'view-only' });
+      setForm({ name: '', email: '', password: '', roleId: form.roleId || 'view-only', transporter: '' });
       if (result.seats) setSeats(result.seats);
       await reload();
     } catch (err) {
@@ -1149,10 +1167,26 @@ function UserSettings() {
           </div>
           <div>
             <label style={labelStyle}>Role</label>
-            <select style={fieldStyle} value={form.roleId} onChange={e => setForm(p => ({ ...p, roleId: e.target.value }))}>
+            <select style={fieldStyle} value={form.roleId} onChange={e => setForm(p => ({ ...p, roleId: e.target.value, transporter: '' }))}>
               {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
+          {form.roleId === 'transporter' && (
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={labelStyle}>Transporter site</label>
+              <select
+                style={fieldStyle}
+                required
+                value={form.transporter}
+                onChange={e => setForm(p => ({ ...p, transporter: e.target.value }))}
+              >
+                {transporterOptions.length === 0 && <option value="">Loading transporters…</option>}
+                {transporterOptions.map(name => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
               type={atLimit ? 'button' : 'submit'}
@@ -1186,7 +1220,10 @@ function UserSettings() {
             }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)' }}>{u.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{u.email}</div>
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>
+                  {u.email}
+                  {u.transporter ? ` · ${u.transporter}` : ''}
+                </div>
               </div>
               <select
                 style={{ ...fieldStyle, padding: '6px 10px' }}

@@ -25,7 +25,8 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/drivers': { title: 'Driver Management', sub: '— profiles and safety scores' },
     '/drivers/coaching': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
     '/drivers/training': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
-    '/consequence-management': { title: 'Consequence/Fatigue Management', sub: '— driver discipline and fatigue bands' },
+    '/drivers/fatigue': { title: 'Fatigue Management', sub: '— hours-of-service limits' },
+    '/consequence-management': { title: 'Settings', sub: '— driver discipline bands' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
     '/trends': { title: 'Trends', sub: '— visual event insights & history' },
     '/incidents/response': { title: 'Incident Intelligence', sub: '— response tracking' },
@@ -282,7 +283,15 @@ export default function AppShell() {
                 <Menu size={18} />
               </button>
             )}
-            <span style={{ fontSize: 15, fontWeight: 500, color: '#fff' }}>{title}</span>
+            <span style={{ fontSize: 15, fontWeight: 500, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
+              {user?.transporter && (
+                <>
+                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.transporter}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.25)', fontWeight: 400 }}>·</span>
+                </>
+              )}
+              {title}
+            </span>
             {!isMobile && <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>{sub}</span>}
             <div style={{ width: 1, height: 22, background: 'rgba(255,255,255,0.1)', margin: '0 4px' }} />
             <SiteSelector />

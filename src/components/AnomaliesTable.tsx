@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef, useDeferredValue } from 'react';
+import { useState, useEffect, useRef, useDeferredValue, useMemo } from 'react';
 import { Search, ChevronLeft, ChevronRight, WifiOff, AlertTriangle } from 'lucide-react';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { SkelValue, SkelTable } from './data/DataBusy';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../lib/placeAddress';
 import { statusDisplayLabel } from '../lib/metricDefinitions';
+import { useFleet } from '../context/FleetContext';
+import { makeScopedVehicleIdSet } from '../lib/siteScope';
 
 interface Warning {
   eventId: string;
@@ -129,6 +131,9 @@ function displayPlaceLabel(anomaly: Anomaly): string {
 }
 
 export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch }: Props) {
+  // Same site-scoped fleet the status cards use — table must match those counts.
+  const { vehicles: scopedFleet, selectedSites } = useFleet();
+
   const [anomalies, setAnomalies] = useState<Anomaly[]>(() => {
     const cached = cachePeek<Anomaly[]>(CACHE_KEYS.fleetData);
     return cached ?? [];
@@ -145,6 +150,18 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
   const acknowledgedIds = useRef<Set<string>>(new Set());
   const anomaliesRef = useRef<Anomaly[]>([]);
   const warningTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const siteScopedAnomalies = useMemo(() => {
+    if (!scopedFleet.length) {
+      // Site filter active with zero matches → empty (matches cards).
+      // All-sites before context hydrates → keep local list briefly.
+      return selectedSites.length > 0 ? [] : anomalies;
+    }
+    const ids = makeScopedVehicleIdSet(scopedFleet);
+    return anomalies.filter(a => ids.has(String(a.id)));
+  }, [anomalies, scopedFleet, selectedSites]);
+
+  const siteScopeKey = selectedSites.join('|');
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth <= 768);
@@ -268,7 +285,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
     ));
   };
 
-  const sortedAnomalies = [...anomalies].sort((a, b) => {
+  const sortedAnomalies = [...siteScopedAnomalies].sort((a, b) => {
     const aResolved = vehicleHasResolvedPlace(a as any);
     const bResolved = vehicleHasResolvedPlace(b as any);
     if (aResolved !== bResolved) return aResolved ? -1 : 1;
@@ -300,7 +317,7 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
   const endIndex = startIndex + ITEMS_PER_PAGE;
   const currentPageItems = filteredAnomalies.slice(startIndex, endIndex);
 
-  useEffect(() => { setCurrentPage(1); }, [deferredSearchTerm, statusFilter]);
+  useEffect(() => { setCurrentPage(1); }, [deferredSearchTerm, statusFilter, siteScopeKey]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -358,13 +375,13 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
 
           <div style={{ padding: isMobile ? '16px' : '24px', borderBottom: '1px solid var(--cd-border)' }}>
             <h2 style={{ fontSize: isMobile ? '18px' : '26px', fontWeight: '600', color: 'var(--cd-text)', marginBottom: '4px', fontFamily: 'var(--cd-font-display)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              Fleet Status ({loading ? <SkelValue /> : `${anomalies.length} vehicles`})
+              Fleet Status ({loading ? <SkelValue /> : `${siteScopedAnomalies.length} vehicles`})
             </h2>
             <p style={{ fontSize: isMobile ? '14px' : '17px', color: 'var(--cd-text-muted)' }}>
               {loading ? (
                 <SkelValue wide />
               ) : (
-                <>Fleet — Showing {filteredAnomalies.length === anomalies.length ? `${startIndex + 1}–${Math.min(endIndex, filteredAnomalies.length)} of ${filteredAnomalies.length}` : `${filteredAnomalies.length} of ${anomalies.length}`}</>
+                <>Fleet — Showing {filteredAnomalies.length === siteScopedAnomalies.length ? `${startIndex + 1}–${Math.min(endIndex, filteredAnomalies.length)} of ${filteredAnomalies.length}` : `${filteredAnomalies.length} of ${siteScopedAnomalies.length}`}</>
               )}
             </p>
             {!isStale && (

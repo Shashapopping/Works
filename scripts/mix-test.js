@@ -23,6 +23,7 @@ import {
   countTripsInRange,
   loadTripRollupsByAsset,
   loadTripRollupsByDriver,
+  loadTripDriverAssets,
   loadLastDriverIdByAsset,
   insertFuelReadings,
   insertKpiEvents,
@@ -1432,9 +1433,20 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
     const assetRows = loadTripRollupsByAsset(fromIso, toIso);
     const driverRows = loadTripRollupsByDriver(fromIso, toIso);
     const lastDrivers = loadLastDriverIdByAsset(fromIso, toIso);
+    const driverAssets = loadTripDriverAssets(fromIso, toIso);
     const lastDriverByAsset = new Map(
       lastDrivers.map(r => [String(r.assetId), r.driverId != null ? String(r.driverId) : '']),
     );
+    const vehiclesByDriver = new Map();
+    for (const row of driverAssets) {
+      const driverId = row.driverId != null ? String(row.driverId) : '';
+      const assetId = row.assetId != null ? String(row.assetId) : '';
+      if (!driverId || !assetId) continue;
+      const reg = vehicleLookup.get(assetId)?.RegistrationNumber;
+      if (!reg || reg === 'N/A') continue;
+      if (!vehiclesByDriver.has(driverId)) vehiclesByDriver.set(driverId, new Set());
+      vehiclesByDriver.get(driverId).add(reg);
+    }
     const tripCount = countTripsInRange(fromIso, toIso);
 
     const assets = assetRows
@@ -1478,7 +1490,7 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
           totalDistanceKm: Number((Number(row.totalDistanceKm) || 0).toFixed(2)),
           journeyCount,
           totalDrivingTimeSeconds,
-          vehicles: [],
+          vehicles: driverId ? Array.from(vehiclesByDriver.get(driverId) || []) : [],
         };
       })
       .filter(d => d.totalDistanceKm > 0)
@@ -1724,6 +1736,64 @@ function daysSinceQualifyingRest(trips, windowStart, windowEnd, requiredMin) {
 }
 
 /**
+ * Minutes since the most recent >=requiredMin continuous rest ended.
+ * 0 = currently in a qualifying rest. null = no qualifying rest in the window.
+ */
+function minutesSinceQualifyingRest(trips, windowStart, windowEnd, requiredMin) {
+  const requiredMs = Math.max(0, requiredMin) * 60000;
+  const end = Math.max(windowStart, windowEnd);
+  const sorted = [...(trips || [])].sort((a, b) => a.startMs - b.startMs);
+  const gaps = [];
+  if (!sorted.length) {
+    gaps.push({ start: windowStart, end });
+  } else {
+    gaps.push({ start: windowStart, end: sorted[0].startMs });
+    for (let i = 1; i < sorted.length; i++) {
+      gaps.push({ start: sorted[i - 1].endMs, end: sorted[i].startMs });
+    }
+    gaps.push({ start: sorted[sorted.length - 1].endMs, end });
+  }
+
+  let lastQualifyingEnd = null;
+  for (const g of gaps) {
+    if (g.end - g.start >= requiredMs) lastQualifyingEnd = g.end;
+  }
+  if (lastQualifyingEnd == null) return null;
+  if (lastQualifyingEnd >= end - 1000) return 0;
+  return Math.max(0, Math.round((end - lastQualifyingEnd) / 60000));
+}
+
+/**
+ * Most recent qualifying rest block inside the lookback.
+ * If the gap is longer than required, show the last required-length slice.
+ */
+function qualifyingRestWindow(trips, windowStart, windowEnd, requiredMin) {
+  const requiredMs = Math.max(0, requiredMin) * 60000;
+  const end = Math.max(windowStart, windowEnd);
+  const sorted = [...(trips || [])].sort((a, b) => a.startMs - b.startMs);
+  const gaps = [];
+  if (!sorted.length) {
+    gaps.push({ start: windowStart, end });
+  } else {
+    gaps.push({ start: windowStart, end: sorted[0].startMs });
+    for (let i = 1; i < sorted.length; i++) {
+      gaps.push({ start: sorted[i - 1].endMs, end: sorted[i].startMs });
+    }
+    gaps.push({ start: sorted[sorted.length - 1].endMs, end });
+  }
+
+  let last = null;
+  for (const g of gaps) {
+    if (g.end - g.start < requiredMs) continue;
+    last = {
+      start: Math.max(windowStart, g.end - requiredMs),
+      end: g.end,
+    };
+  }
+  return last;
+}
+
+/**
  * MiX often leaves trips open overnight: DrivingTime ≈ wall clock, tiny km.
  * That is not continuous driving — cap HOS drive credit by plausible speed.
  * When DrivingTime is missing/0, do NOT fall back to full wall span for parked
@@ -1814,7 +1884,7 @@ function clipTripsToWindow(trips, windowStart, windowEnd) {
 /**
  * Hours-of-Service rules (Africa/Lagos day):
  * 1) 4h continuous driving → ≥30 min rest resets the block
- * 2) 8h continuous driving within a rolling 24h cycle
+ * 2) ≥8h continuous rest required inside each rolling 24h cycle
  * 3) ≥24h continuous rest within a rolling 7-day week
  */
 export function getHosRecords(dayStr) {
@@ -1835,11 +1905,15 @@ export function getHosRecords(dayStr) {
 
   const DRIVE_LIMIT_MIN = 240;       // 4 hours continuous
   const CYCLE_8H_LIMIT_MIN = 480;    // 8 hours continuous in 24h cycle
+  const DAILY_REST_MIN = 8 * 60;     // 8 hours continuous rest
+  const DAILY_REST_WINDOW_MIN = 24 * 60;
   const WEEKLY_REST_MIN = 24 * 60;   // 24 hours continuous rest in a week
+  const WEEKLY_REST_WINDOW_MIN = 7 * 24 * 60;
   const DUTY_LIMIT_MIN = 720;        // 12 hours (display only)
   const REST_GAP_MIN = 30;           // a >=30m gap counts as a rest / break
   const WARN_MIN = 210;              // "approaching 4h" (within 30 min of the limit)
   const CYCLE_8H_WARN_MIN = 450;     // approaching 8h continuous in 24h
+  const DAILY_REST_WARN_MIN = 20 * 60;
 
   const nowMs = Date.now();
   const LAGOS_OFFSET_MS = 60 * 60 * 1000; // UTC+1
@@ -1919,16 +1993,29 @@ export function getHosRecords(dayStr) {
     const maxContinuous24h = Math.max(cycleAnalysis.maxContinuousMin, cycleAnalysis.currentBlockMin);
     const cycle8hBreaches = cycleAnalysis.breaches;
     const cycle8hViolation = maxContinuous24h >= CYCLE_8H_LIMIT_MIN || cycle8hBreaches > 0;
+    const minutesSinceDailyRest = minutesSinceQualifyingRest(
+      weekTrips, weekStart, windowEnd, DAILY_REST_MIN,
+    );
+    const dailyRestElapsedMinutes = minutesSinceDailyRest ?? Math.round((windowEnd - weekStart) / 60000);
+    const dailyRestViolation = minutesSinceDailyRest == null || minutesSinceDailyRest >= DAILY_REST_WINDOW_MIN;
+    const dailyRestWarning = !dailyRestViolation && minutesSinceDailyRest >= DAILY_REST_WARN_MIN;
 
     const longestRestWeekMinutes = longestRestGapMinutes(weekTrips, weekStart, windowEnd);
     const weeklyRestOk = longestRestWeekMinutes >= WEEKLY_REST_MIN;
+    const minutesSinceWeeklyRest = minutesSinceQualifyingRest(
+      weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
+    );
+    const weeklyRestWindow = qualifyingRestWindow(
+      weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
+    );
+    const weeklyRestElapsedMinutes = minutesSinceWeeklyRest ?? WEEKLY_REST_WINDOW_MIN;
     const daysSinceWeeklyRest = daysSinceQualifyingRest(
       weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
     );
 
     const rulesBreached = [];
     if (continuousMin >= DRIVE_LIMIT_MIN || breaches > 0) rulesBreached.push('4h_continuous');
-    if (cycle8hViolation) rulesBreached.push('8h_24h');
+    if (dailyRestViolation) rulesBreached.push('8h_24h');
     if (!weeklyRestOk) rulesBreached.push('weekly_rest');
 
     // Skip drivers with no day activity and no extended-rule breach (keeps table focused).
@@ -1936,7 +2023,7 @@ export function getHosRecords(dayStr) {
 
     let status = 'compliant';
     if (rulesBreached.length > 0) status = 'violation';
-    else if (continuousMin >= WARN_MIN || maxContinuous24h >= CYCLE_8H_WARN_MIN) status = 'warning';
+    else if (continuousMin >= WARN_MIN || dailyRestWarning) status = 'warning';
 
     const restMinutesRemaining = isToday ? Math.max(0, DRIVE_LIMIT_MIN - currentBlockMin) : 0;
     const restDueAt = isToday && restMinutesRemaining > 0
@@ -1966,10 +2053,22 @@ export function getHosRecords(dayStr) {
       cycle8hBreaches,
       cycle8hViolation,
       cycle8hLimitMinutes: CYCLE_8H_LIMIT_MIN,
+      minutesSinceDailyRest,
+      dailyRestElapsedMinutes,
+      dailyRestRequiredMinutes: DAILY_REST_MIN,
+      dailyRestWindowMinutes: DAILY_REST_WINDOW_MIN,
+      dailyRestViolation,
       longestRestWeekMinutes,
       weeklyRestRequiredMinutes: WEEKLY_REST_MIN,
+      weeklyRestWindowMinutes: WEEKLY_REST_WINDOW_MIN,
       weeklyRestOk,
+      minutesSinceWeeklyRest,
+      weeklyRestElapsedMinutes,
       daysSinceWeeklyRest,
+      weeklyRestLookbackStart: new Date(weekStart).toISOString(),
+      weeklyRestLookbackEnd: new Date(windowEnd).toISOString(),
+      weeklyRestStart: weeklyRestWindow ? new Date(weeklyRestWindow.start).toISOString() : null,
+      weeklyRestEnd: weeklyRestWindow ? new Date(weeklyRestWindow.end).toISOString() : null,
       rulesBreached,
       breaches,
       violationDriveMinutes,
@@ -1999,7 +2098,10 @@ export function getHosRecords(dayStr) {
       continuous4hMinutes: DRIVE_LIMIT_MIN,
       restGapMinutes: REST_GAP_MIN,
       continuous8hIn24hMinutes: CYCLE_8H_LIMIT_MIN,
+      dailyRestMinutes: DAILY_REST_MIN,
+      dailyRestWindowMinutes: DAILY_REST_WINDOW_MIN,
       weeklyRestMinutes: WEEKLY_REST_MIN,
+      weeklyRestWindowMinutes: WEEKLY_REST_WINDOW_MIN,
     },
     records,
   };

@@ -6,11 +6,24 @@ import fs from 'fs';
 import path from 'path';
 import { getDb } from './db.js';
 import { querySafetyEventAggregates } from './event-aggregates.js';
-import { sendAutomatedReportEmail, isEmailConfigured } from './email.js';
-import { archiveDocument } from './documents.js';
+import { sendAutomatedReportEmail, sendReportExportEmail, isEmailConfigured } from './email.js';
+import { archiveDocument, archiveOrReplaceAutomationProfile } from './documents.js';
+import { buildAutomationExport } from './build-automation-export.js';
+import {
+  automationOfflineCandidates,
+  classifyConnectivity,
+  diffRepeatOffenders,
+  enrichOfflineVehicle,
+  formatOfflineDuration,
+  normalizeConnectivityEventType,
+  NO_RECENT_COMMUNICATION,
+  parseOfflineSnapshot,
+  trackingWindowHoursFromReportConfig,
+  vehicleDisplayLabel,
+} from './connectivity-events.js';
 
 export const REPORT_PACKS = [
-  { id: 'offline_2h', label: 'Offline 2+ hours', hint: 'Vehicles offline or inactive for at least two hours' },
+  { id: 'offline_2h', label: 'Offline assets', hint: 'Not receiving GPS (excludes Non-Operational). Repeat offenders flagged across sends.' },
   { id: 'safety_events', label: 'Safety & incidents', hint: 'Event counts and top labels for the period' },
   { id: 'fleet_summary', label: 'Fleet summary', hint: 'Live fleet status snapshot with period incident total' },
 ];
@@ -53,6 +66,7 @@ function rowToAutomation(row) {
     lastSentAt: row.last_sent_at,
     nextSendAt: row.next_send_at,
     lastError: row.last_error,
+    lastOfflineSnapshot: parseOfflineSnapshot(row.last_offline_snapshot),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -84,6 +98,23 @@ function zonedParts(date, timeZone) {
 
 function lastDayOfMonth(year, month1to12) {
   return new Date(Date.UTC(year, month1to12, 0)).getUTCDate();
+}
+
+const NIGHT_BATCH_DELIVERY_HOUR = 6;
+const NIGHT_WINDOW_START_HOUR = 19;
+
+function isNightSendHour(sendHour) {
+  return sendHour >= NIGHT_WINDOW_START_HOUR || sendHour < NIGHT_BATCH_DELIVERY_HOUR;
+}
+
+function matchesScheduleDay(parts, frequency, dayOfWeek, dayOfMonth) {
+  if (frequency === 'daily') return true;
+  if (frequency === 'weekly') return parts.weekday === dayOfWeek;
+  if (frequency === 'monthly') {
+    if (dayOfMonth === 0) return parts.day === lastDayOfMonth(parts.year, parts.month);
+    return parts.day === dayOfMonth;
+  }
+  return true;
 }
 
 function getTimeZoneOffsetMs(date, timeZone) {
@@ -215,29 +246,35 @@ function computeNextSendAt({
   dayOfWeek = 1,
   dayOfMonth = 1,
   timezone = 'Africa/Lagos',
+  nightBatch = false,
   from = new Date(),
 }) {
+  const useNightBatch = frequency === 'hourly' && nightBatch;
+
   if (frequency === 'hourly') {
-    const next = new Date(from.getTime() + 60 * 60 * 1000);
-    next.setUTCMinutes(0, 0, 0);
-    if (next <= from) next.setUTCHours(next.getUTCHours() + 1);
-    return next.toISOString();
+    for (let m = 1; m <= 25 * 60; m++) {
+      const t = new Date(from.getTime() + m * 60_000);
+      const p = zonedParts(t, timezone);
+      if (p.minute !== 0) continue;
+      if (useNightBatch && isNightSendHour(p.hour)) continue;
+      return t.toISOString();
+    }
+    return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
   }
 
-  // Scan forward up to 40 days in 30-min steps for the next matching local slot
-  const start = new Date(from.getTime() + 60_000);
-  for (let i = 0; i < 40 * 48; i++) {
-    const candidate = new Date(start.getTime() + i * 30 * 60_000);
-    const p = zonedParts(candidate, timezone);
-    if (p.hour !== sendHour || p.minute > 29) continue;
-    if (frequency === 'weekly' && p.weekday !== dayOfWeek) continue;
-    if (frequency === 'monthly') {
-      if (dayOfMonth === 0) {
-        const last = lastDayOfMonth(p.year, p.month);
-        if (p.day !== last) continue;
-      } else if (p.day !== dayOfMonth) continue;
-    }
-    return candidate.toISOString();
+  for (let d = 0; d < 60; d++) {
+    const probe = new Date(from.getTime() + d * 86400000);
+    const parts = zonedParts(probe, timezone);
+    if (!matchesScheduleDay(parts, frequency, dayOfWeek, dayOfMonth)) continue;
+
+    const candidate = new Date(localToUtcIso({
+      year: parts.year,
+      month: parts.month,
+      day: parts.day,
+      hour: sendHour,
+      minute: 0,
+    }, timezone));
+    if (candidate > from) return candidate.toISOString();
   }
   return new Date(from.getTime() + 86400000).toISOString();
 }
@@ -261,31 +298,84 @@ function loadVehicles() {
   }
 }
 
-function offlineForTwoHours(now = new Date()) {
-  const cutoffMs = now.getTime() - 2 * 60 * 60 * 1000;
-  return loadVehicles()
-    .filter(v => ['Offline', 'Inactive'].includes(String(v.status || '')))
-    .map(v => {
-      const lastSeenMs = new Date(v.date || v.lastUpdate || 0).getTime();
-      return {
-        ...v,
-        lastSeenMs,
-        offlineHours: Number.isFinite(lastSeenMs)
-          ? Math.max(0, (now.getTime() - lastSeenMs) / 3_600_000)
-          : null,
-      };
-    })
-    .filter(v => v.offlineHours == null || v.lastSeenMs <= cutoffMs)
-    .sort((a, b) => (b.offlineHours ?? 0) - (a.offlineHours ?? 0));
+function buildConnectivityPackSections(vehicles, now, previousSnapshot, { eventType = '', windowHours = 24 } = {}) {
+  const ts = now instanceof Date ? now : new Date(now);
+  const windowH = Math.max(1, windowHours);
+  const enriched = automationOfflineCandidates(vehicles, ts, windowH).map(v => enrichOfflineVehicle(v, ts, windowH));
+  const candidateIds = enriched.map(v => v.id).filter(Boolean);
+  const prevIds = previousSnapshot?.assetIds || [];
+  const repeatIdSet = new Set(diffRepeatOffenders(prevIds, candidateIds));
+
+  const sections = [];
+  const wantsOffline = eventType === 'Offline' || eventType === '';
+  const wantsNonOp = eventType === 'Non-Operational';
+  const wantsNoRecentCommunication = normalizeConnectivityEventType(eventType) === NO_RECENT_COMMUNICATION;
+
+  if (wantsNoRecentCommunication) {
+    const noTel = vehicles
+      .filter(v => classifyConnectivity(v, { windowHours: windowH, now: ts.getTime() }) === NO_RECENT_COMMUNICATION)
+      .map(v => enrichOfflineVehicle(v, ts, windowH));
+    sections.push({
+      id: 'no_recent_communication',
+      title: 'No recent communication (no GPS in tracking window)',
+      total: noTel.length,
+      rows: noTel.slice(0, 20).map(v => ({
+        label: vehicleDisplayLabel(v),
+        count: formatOfflineDuration(v.offlineHours),
+      })),
+    });
+  }
+
+  if (wantsOffline && !wantsNonOp && !wantsNoRecentCommunication) {
+    const offlineRows = enriched.filter(v => v.bucket === 'Offline');
+    sections.push({
+      id: 'offline',
+      title: 'Offline (no GPS, excluding Non-Operational)',
+      total: offlineRows.length,
+      rows: offlineRows.slice(0, 20).map(v => ({
+        label: vehicleDisplayLabel(v),
+        count: `${formatOfflineDuration(v.offlineHours)}${repeatIdSet.has(v.id) ? ' · Repeat offender' : ''}`,
+      })),
+    });
+    const repeatRows = enriched.filter(v => repeatIdSet.has(v.id));
+    if (repeatRows.length > 0) {
+      sections.push({
+        id: 'repeat_offenders',
+        title: 'Repeat offenders (still offline since last send)',
+        total: repeatRows.length,
+        rows: repeatRows.slice(0, 20).map(v => ({
+          label: vehicleDisplayLabel(v),
+          count: formatOfflineDuration(v.offlineHours),
+        })),
+      });
+    }
+  }
+
+  if (wantsNonOp) {
+    const nonOp = vehicles
+      .filter(v => classifyConnectivity(v, { windowHours: windowH, now: ts.getTime() }) === 'Non-Operational')
+      .map(v => enrichOfflineVehicle(v, ts, windowH));
+    sections.push({
+      id: 'non_operational',
+      title: 'Non-Operational (30d+ no GPS)',
+      total: nonOp.length,
+      rows: nonOp.slice(0, 20).map(v => ({
+        label: vehicleDisplayLabel(v),
+        count: formatOfflineDuration(v.offlineHours),
+      })),
+    });
+  }
+
+  const shouldSnapshot = wantsOffline && !wantsNonOp && !wantsNoTelemetry;
+  return {
+    sections,
+    offlineSnapshot: shouldSnapshot
+      ? { assetIds: candidateIds, sentAt: ts.toISOString() }
+      : null,
+  };
 }
 
-function formatOfflineDuration(hours) {
-  if (hours == null) return 'unknown';
-  if (hours < 24) return `${Math.floor(hours)}h`;
-  return `${Math.floor(hours / 24)}d ${Math.floor(hours % 24)}h`;
-}
-
-function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportConfig = null, title = null, format = 'csv' }) {
+function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportConfig = null, title = null, format = 'csv', previousSnapshot = null } = {}) {
   const { from, to } = reportingWindowBounds(reportConfig, {
     frequency,
     dayOfMonth,
@@ -301,6 +391,7 @@ function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportC
   const safetyTotal = safetyLabels.reduce((n, label) => n + (byLabel[label] || 0), 0);
 
   const sections = [];
+  let offlineSnapshot = null;
   if (reportConfig) {
     sections.push({
       id: 'report_profile',
@@ -308,7 +399,7 @@ function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportC
       total: null,
       rows: [
         { label: 'Report type', count: reportConfig.reportType || 'events' },
-        { label: 'Reporting window', count: reportingWindowLabel(reportConfig) },
+        { label: 'Tracking window', count: reportingWindowLabel(reportConfig) },
         { label: 'Search', count: reportConfig.search || 'None' },
         { label: 'Site', count: reportConfig.site || 'All sites' },
         { label: 'Event type', count: reportConfig.eventType || 'All event types' },
@@ -317,17 +408,21 @@ function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportC
       ],
     });
   }
-  if (packs.includes('offline_2h')) {
-    const offlineVehicles = offlineForTwoHours(now);
-    sections.push({
-      id: 'offline_2h',
-      title: 'Vehicles offline 2+ hours',
-      total: offlineVehicles.length,
-      rows: offlineVehicles.slice(0, 20).map(v => ({
-        label: `${v.regNo || v.RegistrationNumber || 'Unknown'} · ${v.site || v.transporter || 'Unknown site'}`,
-        count: `${formatOfflineDuration(v.offlineHours)} · ${v.status || 'Offline'}`,
-      })),
-    });
+  if (packs.includes('offline_2h') || reportConfig?.eventType === 'Offline' || reportConfig?.eventType === 'Non-Operational' || normalizeConnectivityEventType(reportConfig?.eventType || '') === NO_RECENT_COMMUNICATION) {
+    const vehicles = loadVehicles();
+    const rawEventType = packs.includes('offline_2h') ? 'Offline' : (reportConfig?.eventType || '');
+    const eventType = rawEventType;
+    const windowHours = trackingWindowHoursFromReportConfig(reportConfig || {});
+    const { sections: connSections, offlineSnapshot: connOfflineSnapshot } = buildConnectivityPackSections(
+      vehicles,
+      now,
+      previousSnapshot,
+      { eventType, windowHours },
+    );
+    sections.push(...connSections);
+    if (connOfflineSnapshot) {
+      offlineSnapshot = connOfflineSnapshot;
+    }
   }
   if (packs.includes('safety_events')) {
     sections.push({
@@ -353,7 +448,7 @@ function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportC
     });
   }
 
-  return { from, to, frequency, sections, eventCensusCount: safetyTotal };
+  return { from, to, frequency, sections, eventCensusCount: safetyTotal, offlineSnapshot };
 }
 
 function safeReportTitle(input) {
@@ -380,11 +475,12 @@ function normalizeReportConfig(config = {}) {
     siteKeys: Array.isArray(config.siteKeys)
       ? config.siteKeys.map(s => String(s || '').trim()).filter(Boolean)
       : [],
-    eventType: String(config.eventType || ''),
+    eventType: normalizeConnectivityEventType(String(config.eventType || '')),
     view,
     reportType,
     tripGroupBy: config.tripGroupBy === 'driver' ? 'driver' : 'asset',
     format: normalizeReportFormat(config.format),
+    nightBatch: !!config.nightBatch,
   };
 }
 
@@ -406,12 +502,11 @@ function archiveAutomationProfile(userId, automation) {
       nextSendAt: automation.nextSendAt,
       savedAt: nowIso(),
     };
-    return archiveDocument({
-      filename: `${safeReportTitle(automation.title).replace(/[\\/:*?"<>|]+/g, '-')}.automation.json`,
+    return archiveOrReplaceAutomationProfile({
+      automationId: automation.id,
+      filename: `${automation.id}.automation.json`,
       mime: 'application/json',
       buffer: Buffer.from(JSON.stringify(payload, null, 2), 'utf8'),
-      type: 'Automation',
-      source: 'automation-profile',
       meta: { automationId: automation.id, title: automation.title },
       createdBy: userId,
     });
@@ -455,6 +550,7 @@ export function createAutomation(userId, input, userEmail) {
     dayOfWeek,
     dayOfMonth,
     timezone,
+    nightBatch: input.frequency === 'hourly' && reportConfig?.nightBatch,
   });
 
   getDb().prepare(`
@@ -486,6 +582,22 @@ export function createAutomation(userId, input, userEmail) {
   return automation;
 }
 
+function scheduleFieldsChanged(input, existing) {
+  if (input.frequency !== undefined && input.frequency !== existing.frequency) return true;
+  if (input.sendHour !== undefined && input.sendHour !== existing.sendHour) return true;
+  if (input.dayOfWeek !== undefined && input.dayOfWeek !== existing.dayOfWeek) return true;
+  if (input.dayOfMonth !== undefined && input.dayOfMonth !== existing.dayOfMonth) return true;
+  if (input.timezone !== undefined && input.timezone !== existing.timezone) return true;
+  if (input.enabled !== undefined && !!input.enabled !== !!existing.enabled) return true;
+  const nextFrequency = input.frequency ?? existing.frequency;
+  if (nextFrequency === 'hourly' && input.reportConfig !== undefined) {
+    const prevNight = !!existing.reportConfig?.nightBatch;
+    const nextNight = !!normalizeReportConfig(input.reportConfig)?.nightBatch;
+    if (prevNight !== nextNight) return true;
+  }
+  return false;
+}
+
 export function updateAutomation(id, userId, input, userEmail) {
   const existing = getAutomationForUser(id, userId);
   if (!existing) {
@@ -511,9 +623,20 @@ export function updateAutomation(id, userId, input, userEmail) {
 
   validateInput({ frequency, packs, recipients });
 
-  const nextSendAt = enabled
-    ? computeNextSendAt({ frequency, sendHour, dayOfWeek, dayOfMonth, timezone })
-    : existing.nextSendAt;
+  const scheduleChanged = scheduleFieldsChanged(input, existing);
+
+  const nextSendAt = !enabled
+    ? existing.nextSendAt
+    : scheduleChanged || !existing.nextSendAt
+      ? computeNextSendAt({
+        frequency,
+        sendHour,
+        dayOfWeek,
+        dayOfMonth,
+        timezone,
+        nightBatch: frequency === 'hourly' && reportConfig?.nightBatch,
+      })
+      : existing.nextSendAt;
 
   getDb().prepare(`
     UPDATE report_automations SET
@@ -562,6 +685,8 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
   }
 
   const sendAt = new Date();
+  const row = getDb().prepare('SELECT last_offline_snapshot FROM report_automations WHERE id = ?').get(id);
+  const previousSnapshot = parseOfflineSnapshot(row?.last_offline_snapshot);
   const payload = buildPackPayload(auto.packs, {
     frequency: auto.frequency,
     dayOfMonth: auto.dayOfMonth ?? 1,
@@ -570,14 +695,37 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
     reportConfig: auto.reportConfig,
     title: auto.title,
     format: auto.format,
+    previousSnapshot,
   });
-  const result = await sendAutomatedReportEmail({
-    to: auto.recipients,
-    frequency: auto.frequency,
-    packs: auto.reportConfig ? [auto.title || auto.reportConfig.reportType] : auto.packs,
-    payload,
-    test,
+
+  const exportFile = buildAutomationExport({
+    reportConfig: auto.reportConfig,
+    title: auto.title,
+    format: auto.format,
+    previousSnapshot,
+    now: sendAt,
   });
+
+  let result;
+  if (exportFile) {
+    result = await sendReportExportEmail({
+      to: auto.recipients,
+      filename: exportFile.filename,
+      mime: exportFile.mime,
+      contentBase64: exportFile.contentBase64,
+      reportTitle: `${test ? '[Test] ' : ''}${auto.title || 'Fleet report'}`,
+      meta: exportFile.meta,
+      eventCount: exportFile.rowCount,
+    });
+  } else {
+    result = await sendAutomatedReportEmail({
+      to: auto.recipients,
+      frequency: auto.frequency,
+      packs: auto.reportConfig ? [auto.title || auto.reportConfig.reportType] : auto.packs,
+      payload,
+      test,
+    });
+  }
 
   const now = sendAt.toISOString();
   if (result.sent) {
@@ -587,20 +735,22 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
       dayOfWeek: auto.dayOfWeek ?? 1,
       dayOfMonth: auto.dayOfMonth ?? 1,
       timezone: auto.timezone,
+      nightBatch: auto.frequency === 'hourly' && auto.reportConfig?.nightBatch,
       from: sendAt,
     });
     getDb().prepare(`
       UPDATE report_automations
-      SET last_sent_at = ?, next_send_at = ?, last_error = NULL, updated_at = ?
+      SET last_sent_at = ?, next_send_at = ?, last_error = NULL, updated_at = ?,
+          last_offline_snapshot = COALESCE(?, last_offline_snapshot)
       WHERE id = ?
-    `).run(now, nextSendAt, now, id);
+    `).run(now, nextSendAt, now, payload.offlineSnapshot ? JSON.stringify(payload.offlineSnapshot) : null, id);
   } else {
     getDb().prepare(`
       UPDATE report_automations SET last_error = ?, updated_at = ? WHERE id = ?
     `).run(result.error || 'Send failed', now, id);
   }
 
-  return { ...result, automation: getAutomationForUser(id, userId) };
+  return { ...result, automation: getAutomationForUser(id, userId), rowCount: exportFile?.rowCount ?? null };
 }
 
 function dueAutomations(now = new Date()) {

@@ -282,6 +282,7 @@ function initSchema() {
   if (!userCols.includes('is_organisational')) {
     db.exec(`ALTER TABLE users ADD COLUMN is_organisational INTEGER NOT NULL DEFAULT 0`);
   }
+  ensureColumn('users', 'transporter', 'TEXT');
   const eventCols = db.prepare(`PRAGMA table_info(events)`).all().map(c => c.name);
   if (!eventCols.includes('speed')) {
     db.exec(`ALTER TABLE events ADD COLUMN speed REAL`);
@@ -302,6 +303,7 @@ function initSchema() {
   ensureColumn('report_automations', 'title', 'TEXT');
   ensureColumn('report_automations', 'report_config', 'TEXT');
   ensureColumn('report_automations', 'format', "TEXT NOT NULL DEFAULT 'csv'");
+  ensureColumn('report_automations', 'last_offline_snapshot', 'TEXT');
 
   // Keep known BPL / bootstrap accounts organisational (idempotent)
   db.prepare(`
@@ -909,6 +911,22 @@ export function loadTripRollupsByDriver(fromIso, toIso) {
     FROM trips
     ${where}
     GROUP BY driver_id
+  `).all(...params);
+}
+
+/** Distinct driver ↔ asset pairs (for site-scope vehicle matching on trips=0 path). */
+export function loadTripDriverAssets(fromIso, toIso) {
+  const database = getDb();
+  const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  conditions.push(`driver_id IS NOT NULL`);
+  conditions.push(`driver_id != ''`);
+  conditions.push(`asset_id IS NOT NULL`);
+  conditions.push(`asset_id != ''`);
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  return database.prepare(`
+    SELECT DISTINCT driver_id AS driverId, asset_id AS assetId
+    FROM trips
+    ${where}
   `).all(...params);
 }
 

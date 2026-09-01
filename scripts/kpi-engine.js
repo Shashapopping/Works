@@ -70,6 +70,7 @@ function loadVehicles(cwd) {
       map.set(v.id?.toString(), {
         regNo: v.regNo || v.id,
         assetName: v.assetName || '',
+        transporter: (v.transporter || v.site || '').trim(),
         zone: (v.zone || '').toUpperCase(),
         assetClass: classifyAsset(v.regNo, v.assetName),
       });
@@ -307,6 +308,7 @@ function computeKpiFresh({ cwd = process.cwd(), period = 'week', from, to, scope
         assetId,
         regNo: info.regNo || assetId,
         assetName: info.assetName || '',
+        transporter: info.transporter || '',
         zone: info.zone || '',
         assetClass: info.assetClass || 'other',
         engineHours: 0,

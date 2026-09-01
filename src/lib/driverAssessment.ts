@@ -6,7 +6,7 @@
 import type { LogEntry, TripDriver } from '../context/FleetContext';
 import { isActiveDriver, isActiveDriverId } from './driverUtils';
 import { sanitizeTripDriver } from './demoSanitize';
-import { buildDriverConsequenceCard, countPenaltyEvents, type ConsequenceCard } from './consequenceScore';
+import { buildDriverConsequenceCard, countPenaltyEvents, type ConsequenceCard, type ConsequenceScoreConfig } from './consequenceScore';
 import { calendarPeriodBounds, customRangeToIsoBounds, toLocalDateValue } from './dateRange';
 
 export const HIDDEN_ASSESSMENT_LABELS = [
@@ -91,7 +91,11 @@ export function mergeAssessmentTripDrivers(batches: TripDriver[][]): TripDriver[
 }
 
 /** All-time consequence score — same derivation as Driver Management. */
-export function assessDrivers(events: LogEntry[], tripDrivers: TripDriver[]): AssessedDriver[] {
+export function assessDrivers(
+  events: LogEntry[],
+  tripDrivers: TripDriver[],
+  config?: ConsequenceScoreConfig,
+): AssessedDriver[] {
   const map = new Map<string, ReturnType<typeof emptyProfile>>();
   const distanceByKey = new Map<string, number>();
   const drivingByKey = new Map<string, number>();
@@ -153,6 +157,7 @@ export function assessDrivers(events: LogEntry[], tripDrivers: TripDriver[]): As
       const consequence = buildDriverConsequenceCard({
         events: d.events,
         distanceKm,
+        config,
       });
       return {
         ...d,
@@ -300,9 +305,10 @@ export function periodCardStats(
   period: DriverPeriod,
   custom: { from: string; to: string } | undefined,
   periodTrips: Map<string, { km: number; drivingTimeSeconds: number; journeyCount: number }>,
+  config?: ConsequenceScoreConfig,
 ) {
   const windowed = eventsInDriverPeriod(driver.events, period, custom);
-  const counts = countPenaltyEvents(windowed);
+  const counts = countPenaltyEvents(windowed, config);
   const trip = periodTrips.get(driver.key)
     || periodTrips.get((driver.name || '').trim());
   return {

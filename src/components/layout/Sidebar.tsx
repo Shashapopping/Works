@@ -14,6 +14,7 @@ const PRIORITY_ROUTE_LOADERS: Record<string, () => Promise<unknown>> = {
   '/drivers/coaching': () => import('../../pages/driver/CoachingPage'),
   '/drivers/training': () => import('../../pages/driver/CoachingPage'),
   '/drivers/certifications': () => import('../../pages/driver/CertificatesPage'),
+  '/drivers/fatigue': () => import('../../pages/driver/FatigueManagementPage'),
   '/incidents': () => import('../../pages/IncidentIntelligence'),
   '/incidents/response': () => import('../../pages/IncidentIntelligence'),
   '/safety': () => import('../../pages/Safety'),
@@ -73,7 +74,6 @@ const NAV: NavGroup[] = [
     children: [
       { path: '/drivers', label: 'Drivers', icon: User },
       { path: '/drivers/coaching', label: 'Coaching & Training', icon: GraduationCap },
-      { path: '/consequence-management', label: 'Consequence/Fatigue Management', icon: Shield, locked: true },
       { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
       ...(FATIGUE_ENABLED ? [{ path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon }] : []),
       { path: '/drivers/vision', label: 'Vision', icon: Camera, locked: true },

@@ -10,6 +10,7 @@ export interface KpiAssetRow {
   assetId: string;
   regNo: string;
   assetName: string;
+  transporter?: string;
   zone: string;
   assetClass: 'dumpTruck' | 'excavator' | 'other';
   engineHours: number;

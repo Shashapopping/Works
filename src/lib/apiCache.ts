@@ -22,6 +22,7 @@ const MEMORY_ONLY_PREFIXES = [
   '/api/driver-distance',
   'driver:period:',
   'driver:assessment-distance',
+  'hos:',
   'fuel:consumption:',
   'fuel:history:',
 ];

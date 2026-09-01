@@ -13,6 +13,8 @@ import {
 } from '../lib/consequenceScore';
 import {
   SCORE_DROP_PER_HARM_UNIT,
+  hosPointsFromHeldMinutes,
+  hosSlicesFromMinutes,
   scoreBandColor,
   scoreBandLabel,
   type FleetScoreConfig,
@@ -70,6 +72,8 @@ export default function ConsequenceExplainerModal({
   vehicleCount,
   actualWeightedRate,
   distanceKm,
+  hosHeldMinutes = 0,
+  hosSlices,
   scoreConfig = DEFAULT_FLEET_SCORE_CONFIG,
   consequenceConfig,
   onClose,
@@ -81,13 +85,16 @@ export default function ConsequenceExplainerModal({
   const km = Math.round(distanceKm ?? 0);
   const drop = SCORE_DROP_PER_HARM_UNIT;
   const goodAt = Math.round((100 - scoreConfig.bandGood) / drop);
+  const activeHosSlices = hosSlices ?? hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
+  const hosPoints = hosPointsFromHeldMinutes(hosHeldMinutes, scoreConfig);
+  const hosWeightLabel = `+${scoreConfig.hosPointsPer10Min} / ${scoreConfig.hosSliceMinutes} min`;
 
   const fleetWeights = [
     { label: 'Harsh Braking', weight: scoreConfig.weights.harshBraking, color: '#e05c2a', title: undefined },
     { label: 'Overspeeding', weight: scoreConfig.weights.overspeeding, color: '#d97706', title: undefined },
     { label: 'Harsh Accel.', weight: scoreConfig.weights.harshAcceleration, color: '#f59e0b', title: undefined },
     { label: 'Cornering', weight: scoreConfig.weights.harshCornering, color: '#8b5cf6', title: undefined },
-    { label: 'HOS', weight: 'Soon', color: '#0d9488', title: 'Coming soon' },
+    { label: 'HOS', weight: hosWeightLabel, color: '#0d9488', title: undefined },
   ];
 
   const fleetBands = [
@@ -308,8 +315,8 @@ export default function ConsequenceExplainerModal({
           }}>
             <span><strong style={{ color: 'var(--cd-text)' }}>{totalIncidents}</strong> incidents</span>
             <span><strong style={{ color: 'var(--cd-text)' }}>{km.toLocaleString()}</strong> km</span>
-            <span title="Coming soon">
-              <strong style={{ color: 'var(--cd-text-muted)' }}>Soon</strong> HOS slices
+            <span>
+              <strong style={{ color: 'var(--cd-text)' }}>{activeHosSlices.toLocaleString()}</strong> HOS slices
             </span>
             <span>{vehicleCount} vehicles</span>
           </div>
@@ -326,7 +333,7 @@ export default function ConsequenceExplainerModal({
             ))}
           </div>
           <p style={{ fontSize: 11, color: 'var(--cd-text-muted)', margin: '8px 0 8px', lineHeight: 1.4 }}>
-            HOS presence is reserved in this scoring view; detailed HOS figures are coming soon.
+            HOS/fatigue adds {hosWeightLabel} from held over-limit minutes; current HOS impact is {hosPoints.toLocaleString(undefined, { maximumFractionDigits: 1 })} pts.
           </p>
         </div>
 

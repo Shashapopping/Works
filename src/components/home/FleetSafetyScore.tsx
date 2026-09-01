@@ -108,6 +108,8 @@ export default function FleetSafetyScore() {
           vehicleCount={metadata.totalVehicles}
           actualWeightedRate={weightedRate}
           distanceKm={distanceKm}
+          hosHeldMinutes={safetyExposure?.hosHeldMinutes ?? 0}
+          hosSlices={safetyExposure?.hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

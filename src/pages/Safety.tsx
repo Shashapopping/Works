@@ -23,6 +23,7 @@ import {
   totalSafetyPointsFromCensus,
   SCORE_DROP_PER_HARM_UNIT,
   eventWeight,
+  hosSlicesFromMinutes,
   type FleetScoreConfig,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
@@ -137,9 +138,21 @@ function scopedSafetyExposureFromEvents(
 }
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
-function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config, busy }: {
+function ScoreGauge({
+  score,
+  delta,
+  totalIncidents,
+  weightedRate,
+  hosHeldMinutes,
+  hosSlices,
+  onOpenExplainer,
+  config,
+  busy,
+}: {
   score: number; delta: number; totalIncidents: number;
   weightedRate: number;
+  hosHeldMinutes: number;
+  hosSlices?: number;
   onOpenExplainer: () => void;
   config: FleetScoreConfig;
   busy?: boolean;
@@ -155,6 +168,8 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
     : 'Far from zero harm per 100 km — immediate intervention advised';
 
   const circumference = 2 * Math.PI * 48;
+  const activeHosSlices = hosSlices ?? hosSlicesFromMinutes(hosHeldMinutes, config);
+  const hosWeightLabel = `+${config.hosPointsPer10Min} / ${config.hosSliceMinutes} min`;
 
   return (
     <button
@@ -221,7 +236,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
             {[
               { value: totalIncidents, label: 'incidents / 30d', title: undefined },
               { value: weightedRate.toFixed(2), label: 'pts / 100 km', title: undefined },
-              { value: 'Soon', label: 'HOS slices', title: 'Coming soon' },
+              { value: activeHosSlices, label: 'HOS slices', title: undefined },
               { value: SCORE_DROP_PER_HARM_UNIT, label: 'pts lost / unit', title: undefined },
             ].map(m => (
               <div key={m.label} title={m.title}>
@@ -248,7 +263,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
             { label: 'Overspeeding', weight: config.weights.overspeeding, color: '#d97706', title: undefined },
             { label: 'Harsh Accel.', weight: config.weights.harshAcceleration, color: '#f59e0b', title: undefined },
             { label: 'Cornering', weight: config.weights.harshCornering, color: '#8b5cf6', title: undefined },
-            { label: 'HOS', weight: 'Soon', color: '#0d9488', title: 'Coming soon' },
+            { label: 'HOS', weight: hosWeightLabel, color: '#0d9488', title: undefined },
           ].map(w => (
             <div key={w.label} title={w.title} style={{
               background: `${w.color}12`, border: `1px solid ${w.color}30`,
@@ -817,6 +832,8 @@ export default function Safety() {
           delta={safetyDelta}
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={pageExposure?.hosSlices}
           config={scoreConfig}
           busy={scoreBusy}
           onOpenExplainer={() => setExplainerOpen(true)}
@@ -843,6 +860,8 @@ export default function Safety() {
           vehicleCount={vehicles.length}
           actualWeightedRate={weightedRate}
           distanceKm={distanceKm}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={pageExposure?.hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

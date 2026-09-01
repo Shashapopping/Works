@@ -8,9 +8,12 @@ import {
   type DriverPeriod,
 } from '../lib/driverAssessment';
 
+/** v2: trips=0 drivers include vehicles[] for site filtering. */
+const ASSESSMENT_TRIPS_CACHE = `${CACHE_KEYS.driverAssessment}:v2`;
+
 async function loadAssessmentTrips(): Promise<TripDriver[] | null> {
   return cachedFetchJson<TripDriver[]>(
-    CACHE_KEYS.driverAssessment,
+    ASSESSMENT_TRIPS_CACHE,
     CACHE_TTL.driverAssessment,
     async () => {
       const [cur, last] = await Promise.all([
@@ -31,7 +34,7 @@ async function loadPeriodTrips(period: DriverPeriod, custom: { from: string; to:
   const spec = periodDistanceSpec(period, custom);
   if (spec.kind === 'assessment') return loadAssessmentTrips();
   return cachedFetchJson<TripDriver[]>(
-    `driver:period:${spec.url}`,
+    `driver:period:v2:${spec.url}`,
     CACHE_TTL.driverAssessment,
     async () => {
       const data = await authCachedJson<any>(spec.url, authFetch, { ttlMs: CACHE_TTL.driverAssessment });
@@ -42,13 +45,13 @@ async function loadPeriodTrips(period: DriverPeriod, custom: { from: string; to:
 
 export function useAssessmentTripDrivers() {
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
-    () => cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment) ?? [],
+    () => cachePeek<TripDriver[]>(ASSESSMENT_TRIPS_CACHE) ?? [],
   );
-  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment)?.length);
+  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(ASSESSMENT_TRIPS_CACHE)?.length);
 
   useEffect(() => {
     let cancelled = false;
-    const cached = cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment);
+    const cached = cachePeek<TripDriver[]>(ASSESSMENT_TRIPS_CACHE);
     if (cached?.length) {
       setTripDrivers(cached);
       setLoading(false);
@@ -72,7 +75,7 @@ export function useAssessmentTripDrivers() {
 
 export function usePeriodTripDrivers(period: DriverPeriod, custom: { from: string; to: string }) {
   const spec = periodDistanceSpec(period, custom);
-  const cacheKey = spec.kind === 'assessment' ? CACHE_KEYS.driverAssessment : `driver:period:${spec.url}`;
+  const cacheKey = spec.kind === 'assessment' ? ASSESSMENT_TRIPS_CACHE : `driver:period:v2:${spec.url}`;
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
     () => cachePeek<TripDriver[]>(cacheKey) ?? [],
   );
@@ -81,7 +84,7 @@ export function usePeriodTripDrivers(period: DriverPeriod, custom: { from: strin
   useEffect(() => {
     let cancelled = false;
     const nextSpec = periodDistanceSpec(period, custom);
-    const key = nextSpec.kind === 'assessment' ? CACHE_KEYS.driverAssessment : `driver:period:${nextSpec.url}`;
+    const key = nextSpec.kind === 'assessment' ? ASSESSMENT_TRIPS_CACHE : `driver:period:v2:${nextSpec.url}`;
     const cached = cachePeek<TripDriver[]>(key);
     if (cached?.length) {
       setTripDrivers(cached);

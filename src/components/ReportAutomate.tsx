@@ -4,6 +4,26 @@ import { useAuth } from '../context/AuthContext';
 import { useFleet } from '../context/FleetContext';
 import { authFetchInit } from '../lib/authApi';
 import { REPORT_TYPE_OPTIONS, reportTypeLabel, type ReportType } from '../lib/reportTypes';
+import { reportSearchPlaceholder } from '../lib/reports/reportSearch';
+import {
+  countConnectivityFromGps,
+  isConnectivityEventType,
+  normalizeConnectivityEventType,
+} from '../lib/reports/connectivityCounts';
+import { buildCadenceScheduleSummary } from '../lib/reports/automationSchedule';
+import {
+  buildEventTypeCounts,
+  formatEventTypeOptionLabel,
+  REPORT_EVENT_TYPE_CATALOG,
+  reportEventTypeDef,
+} from '../lib/reports/eventTypeCatalog';
+import {
+  TRACKING_WINDOW_HELPER,
+  trackingWindowFilterHint,
+  trackingWindowLabel,
+  trackingWindowTitleLabel,
+  trackingWindowHours,
+} from '../lib/reports/trackingWindow';
 import type { ExportFormat } from '../lib/reportExport';
 import SiteScopeDropdown from './SiteScopeDropdown';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
@@ -30,6 +50,7 @@ type ReportConfig = {
   reportType: ReportType;
   tripGroupBy: 'asset' | 'driver';
   format: ExportFormat;
+  nightBatch?: boolean;
 };
 
 interface Automation {
@@ -57,13 +78,7 @@ interface ReportAutomateProps {
   defaultPacks?: string[];
 }
 
-const EVENT_TYPES = [
-  'Harsh Braking',
-  'Harsh Acceleration',
-  'Overspeeding',
-  'Overspeed Tiered',
-  'Harsh Cornering',
-];
+const EVENT_TYPES = REPORT_EVENT_TYPE_CATALOG.map(o => o.id);
 
 const WEEKDAYS = [
   { v: 1, label: 'Mon' },
@@ -87,6 +102,7 @@ const DEFAULT_CONFIG: ReportConfig = {
   reportType: 'events',
   tripGroupBy: 'asset',
   format: 'csv',
+  nightBatch: false,
 };
 
 function fmtWhen(iso: string | null) {
@@ -135,20 +151,17 @@ function normalizeConfigForUi(config: Partial<ReportConfig> = {}): ReportConfig 
     search: String(config.search || ''),
     site: String(config.site || ''),
     siteKeys: Array.isArray(config.siteKeys) ? config.siteKeys : [],
-    eventType: String(config.eventType || ''),
+    eventType: normalizeConnectivityEventType(String(config.eventType || '')),
     view: config.view === 'trends' ? 'trends' : 'events',
     reportType: config.reportType || DEFAULT_CONFIG.reportType,
     tripGroupBy: config.tripGroupBy === 'driver' ? 'driver' : 'asset',
     format: config.format || DEFAULT_CONFIG.format,
+    nightBatch: !!config.nightBatch,
   };
 }
 
 function reportingWindowLabel(config: ReportConfig) {
-  if (config.windowMode === 'last24h') return 'Last 24 hours';
-  const value = normalizeLookbackValue(config.lookbackValue);
-  const unit = normalizeLookbackUnit(config.lookbackUnit);
-  const singular = value === 1 ? unit.replace(/s$/, '') : unit;
-  return `Last ${value} ${singular}`;
+  return trackingWindowTitleLabel(config);
 }
 
 function buildReportTitle(config: ReportConfig, siteLabel = config.site || 'All sites') {
@@ -186,7 +199,7 @@ export default function ReportAutomate({
   defaultPacks = [],
 }: ReportAutomateProps = {}) {
   const { user } = useAuth();
-  const { siteOptions, siteNameOptions } = useFleet();
+  const { siteOptions, siteNameOptions, vehicles, events: fleetEvents } = useFleet();
   const [open, setOpen] = useState(defaultOpen || embedded);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -210,6 +223,13 @@ export default function ReportAutomate({
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [monthlyPeriodMode, setMonthlyPeriodMode] = useState<MonthlyPeriodMode>('end');
   const [dayOfMonth, setDayOfMonth] = useState(0);
+  const [nightBatch, setNightBatch] = useState(false);
+  const [scheduleTick, setScheduleTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setScheduleTick(t => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const selectedSiteLabel = useMemo(
     () => selectedSiteScopeLabel(config.siteKeys, siteOptions, siteNameOptions, 'All sites') ?? 'All sites',
@@ -217,6 +237,51 @@ export default function ReportAutomate({
   );
   const reportTitle = useMemo(() => buildReportTitle(config, selectedSiteLabel), [config, selectedSiteLabel]);
   const selectedAutomation = automations.find(a => a.id === selectedAutomationId) || null;
+
+  const trackingWindowHoursValue = useMemo(
+    () => trackingWindowHours(config),
+    [config.windowMode, config.lookbackValue, config.lookbackUnit],
+  );
+
+  const eventTypeCounts = useMemo(() => {
+    const ivms: Record<string, number> = {};
+    for (const e of fleetEvents) {
+      const label = e.label?.trim();
+      if (!label) continue;
+      ivms[label] = (ivms[label] || 0) + 1;
+    }
+    return buildEventTypeCounts(ivms, vehicles, trackingWindowHoursValue);
+  }, [fleetEvents, vehicles, trackingWindowHoursValue]);
+
+  const connectivityAssetCount = useMemo(() => {
+    if (!isConnectivityEventType(config.eventType)) return null;
+    return countConnectivityFromGps(vehicles, config.eventType, trackingWindowHoursValue);
+  }, [config.eventType, vehicles, trackingWindowHoursValue]);
+
+  const cadenceSummary = useMemo(() => {
+    void scheduleTick;
+    const eventLabel = config.eventType || 'All event types';
+    return buildCadenceScheduleSummary({
+      frequency,
+      sendHour,
+      dayOfWeek,
+      dayOfMonth,
+      nightBatch: frequency === 'hourly' ? nightBatch : false,
+      eventLabel,
+      trackingWindowPhrase: trackingWindowLabel(config),
+      reportTypeLabel: reportTypeLabel(config.reportType),
+      assetCount: connectivityAssetCount,
+    });
+  }, [
+    scheduleTick,
+    frequency,
+    sendHour,
+    dayOfWeek,
+    dayOfMonth,
+    config,
+    connectivityAssetCount,
+    nightBatch,
+  ]);
 
   const setConfigValue = <K extends keyof ReportConfig>(key: K, value: ReportConfig[K]) => {
     setConfig(prev => ({ ...prev, [key]: value }));
@@ -273,7 +338,11 @@ export default function ReportAutomate({
     setSelectedAutomationId(id);
     const a = automations.find(item => item.id === id);
     if (!a) return;
-    if (a.reportConfig) setConfig(normalizeConfigForUi({ ...a.reportConfig, format: a.format || a.reportConfig.format || 'csv' }));
+    if (a.reportConfig) {
+      const normalized = normalizeConfigForUi({ ...a.reportConfig, format: a.format || a.reportConfig.format || 'csv' });
+      setConfig(normalized);
+      setNightBatch(a.frequency === 'hourly' && !!normalized.nightBatch);
+    }
     setFrequency(a.frequency);
     setRecipients(a.recipients.join(', '));
     setSendHour(a.sendHour ?? 7);
@@ -282,36 +351,49 @@ export default function ReportAutomate({
     setMonthlyPeriodMode(a.dayOfMonth === 0 ? 'end' : a.dayOfMonth === 1 ? 'beginning' : 'custom');
   };
 
+  useEffect(() => {
+    if (!embedded || selectedAutomationId || automations.length !== 1) return;
+    loadAutomationForEdit(automations[0].id);
+  }, [embedded, automations, selectedAutomationId]);
+
   const save = async () => {
     setSaving(true);
     setMessage(null);
     setError(null);
+    const recipientList = recipients.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
     const payload = {
       title: reportTitle,
       frequency,
-      reportConfig: { ...config, format: config.format },
+      reportConfig: { ...config, format: config.format, nightBatch: frequency === 'hourly' ? nightBatch : false },
       format: config.format,
-      recipients: recipients.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean),
+      recipients: recipientList,
       sendHour,
       dayOfWeek,
       dayOfMonth,
       timezone: 'Africa/Lagos',
     };
+    const existingId = selectedAutomationId
+      || automations.find(a => a.title === reportTitle)?.id
+      || '';
     try {
       const res = await automateFetch(
-        selectedAutomationId ? `/api/reports/automate/${selectedAutomationId}` : '/api/reports/automate',
+        existingId ? `/api/reports/automate/${existingId}` : '/api/reports/automate',
         {
-          method: selectedAutomationId ? 'PATCH' : 'POST',
+          method: existingId ? 'PATCH' : 'POST',
           body: JSON.stringify(payload),
         },
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not save');
-      if (selectedAutomationId) {
-        setAutomations(prev => prev.map(a => (a.id === selectedAutomationId ? data.automation : a)));
+      if (existingId) {
+        setAutomations(prev => prev.map(a => (a.id === existingId ? data.automation : a)));
+        setSelectedAutomationId(existingId);
       } else {
         setAutomations(prev => [data.automation, ...prev]);
         setSelectedAutomationId(data.automation.id);
+      }
+      if (data.automation?.recipients?.length) {
+        setRecipients(data.automation.recipients.join(', '));
       }
       setMessage('Automation profile saved and filed in Documents.');
       setOpen(true);
@@ -351,6 +433,13 @@ export default function ReportAutomate({
     setMessage(null);
     setError(null);
     try {
+      const recipientList = recipients.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+      const saved = automations.find(a => a.id === id);
+      const savedRecipients = (saved?.recipients || []).map(r => r.toLowerCase()).sort().join(',');
+      const pendingRecipients = recipientList.map(r => r.toLowerCase()).sort().join(',');
+      if (recipientList.length > 0 && pendingRecipients !== savedRecipients) {
+        await patch(id, { recipients: recipientList });
+      }
       const res = await automateFetch(`/api/reports/automate/${id}/send`, {
         method: 'POST',
         body: JSON.stringify({ test: true }),
@@ -358,7 +447,8 @@ export default function ReportAutomate({
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.sent) throw new Error(data.error || 'Send failed');
       if (data.automation) setAutomations(prev => prev.map(a => (a.id === id ? data.automation : a)));
-      setMessage('Test report sent.');
+      const rowNote = data.rowCount != null ? ` (${data.rowCount.toLocaleString()} rows)` : '';
+      setMessage(`Test report sent${rowNote}. Check your inbox and spam folder.`);
     } catch (e: any) {
       setError(e?.message || 'Send failed');
     } finally {
@@ -422,7 +512,7 @@ export default function ReportAutomate({
               </div>
 
               <div className="bpl-automate-section">
-                <div className="bpl-automate-label">Reporting window</div>
+                <div className="bpl-automate-label">Tracking window</div>
                 <div className="bpl-automate-seg">
                   {([
                     ['last24h', 'Last 24 hours'],
@@ -433,7 +523,8 @@ export default function ReportAutomate({
                     </button>
                   ))}
                 </div>
-                <div className="bpl-automate-hint">This controls the data window every time the automation runs. Cadence only controls when it sends.</div>
+                <div className="bpl-automate-hint">{TRACKING_WINDOW_HELPER}</div>
+                <div className="bpl-automate-hint">{trackingWindowFilterHint(config.reportType)}</div>
               </div>
 
               {config.windowMode === 'customLookback' && (
@@ -462,7 +553,7 @@ export default function ReportAutomate({
 
               <div className="bpl-automate-section">
                 <div className="bpl-automate-label">Search</div>
-                <input className="bpl-automate-input" value={config.search} onChange={e => setConfigValue('search', e.target.value)} placeholder="Driver, asset, transporter, address..." />
+                <input className="bpl-automate-input" value={config.search} onChange={e => setConfigValue('search', e.target.value)} placeholder={reportSearchPlaceholder(config.reportType)} />
               </div>
 
               <div className="bpl-automate-row">
@@ -480,9 +571,33 @@ export default function ReportAutomate({
                 <div className="bpl-automate-section" style={{ flex: 1 }}>
                   <div className="bpl-automate-label">Event type</div>
                   <select className="bpl-automate-input" value={config.eventType} onChange={e => setConfigValue('eventType', e.target.value)}>
-                    <option value="">All event types</option>
-                    {EVENT_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                    <option value="">All event types — IVMS and connectivity</option>
+                    <optgroup label="IVMS events">
+                      {REPORT_EVENT_TYPE_CATALOG.filter(d => d.group === 'ivms').map(def => (
+                        <option key={def.id} value={def.id}>
+                          {formatEventTypeOptionLabel(def.id, eventTypeCounts[def.id])}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Connectivity (GPS snapshot)">
+                      {REPORT_EVENT_TYPE_CATALOG.filter(d => d.group === 'connectivity').map(def => (
+                        <option key={def.id} value={def.id}>
+                          {formatEventTypeOptionLabel(def.id, eventTypeCounts[def.id])}
+                        </option>
+                      ))}
+                    </optgroup>
                   </select>
+                  {config.eventType && reportEventTypeDef(config.eventType)?.hint && (
+                    <div className="bpl-automate-hint">
+                      {reportEventTypeDef(config.eventType)!.hint}
+                      {config.eventType === 'Offline' && (
+                        <> Repeat offenders are assets still offline since the previous send.</>
+                      )}
+                      {eventTypeCounts[config.eventType] != null && (
+                        <> · <strong>{eventTypeCounts[config.eventType].toLocaleString()}</strong> in feed now</>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -519,7 +634,15 @@ export default function ReportAutomate({
                 <div className="bpl-automate-label">Cadence</div>
                 <div className="bpl-automate-seg">
                   {(['hourly', 'daily', 'weekly', 'monthly'] as const).map(key => (
-                    <button key={key} type="button" className={frequency === key ? 'on' : ''} onClick={() => setFrequency(key)}>
+                    <button
+                      key={key}
+                      type="button"
+                      className={frequency === key ? 'on' : ''}
+                      onClick={() => {
+                        setFrequency(key);
+                        if (key !== 'hourly') setNightBatch(false);
+                      }}
+                    >
                       {key[0].toUpperCase() + key.slice(1)}
                     </button>
                   ))}
@@ -570,10 +693,37 @@ export default function ReportAutomate({
                 </div>
               )}
 
+              {frequency === 'hourly' && (
+                <label className="bpl-automate-night-batch">
+                  <input
+                    type="checkbox"
+                    checked={nightBatch}
+                    onChange={e => setNightBatch(e.target.checked)}
+                  />
+                  <span className="bpl-automate-night-batch-copy">
+                    <strong>Batch night window to 6:00 AM</strong>
+                    <em>
+                      Hourly runs between 7:00 PM and 6:00 AM Lagos are held and delivered together at 6:00 AM.
+                    </em>
+                  </span>
+                </label>
+              )}
+
+              <div className="bpl-automate-section">
+                <div className="bpl-automate-schedule-preview" role="status">
+                  {cadenceSummary}
+                </div>
+                {selectedAutomation?.nextSendAt && (
+                  <div className="bpl-automate-hint">
+                    Saved schedule next send: {fmtWhen(selectedAutomation.nextSendAt)} (server).
+                  </div>
+                )}
+              </div>
+
               <div className="bpl-automate-section">
                 <div className="bpl-automate-label">Recipients</div>
                 <input className="bpl-automate-input" placeholder={defaultRecipient || 'you@company.com'} value={recipients} onChange={e => setRecipients(e.target.value)} />
-                <div className="bpl-automate-hint">Comma-separated. Defaults to your account email.</div>
+                <div className="bpl-automate-hint">Comma-separated. Defaults to your account email. Scheduled and test sends use saved recipients — update automation after changing this field.</div>
               </div>
 
               <button type="button" className="bpl-automate-primary" disabled={saving} onClick={() => void save()}>

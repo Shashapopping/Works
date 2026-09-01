@@ -27,6 +27,8 @@ export interface ReportBuildContext {
   toIso: string | null;
   /** Trip report: nest under assets or drivers */
   tripGroupBy?: TripReportGroupBy;
+  /** Fleet refs for transporter / status search */
+  vehicles?: import('./reportSearch').ReportVehicleRef[];
 }
 
 async function fetchDistanceSummary(fromIso: string | null, toIso: string | null, includeJourneys: boolean) {
@@ -69,6 +71,7 @@ export async function generateTabularReport(ctx: ReportBuildContext): Promise<Ta
       reportTitle: typeTitle,
       meta: ctx.meta,
       search: ctx.search,
+      vehicles: ctx.vehicles,
     });
   }
 
@@ -82,6 +85,7 @@ export async function generateTabularReport(ctx: ReportBuildContext): Promise<Ta
       meta: `${ctx.meta}  ·  Grouped by ${groupBy === 'driver' ? 'driver' : 'asset'}`,
       search: ctx.search,
       groupBy,
+      vehicles: ctx.vehicles,
     });
   }
 

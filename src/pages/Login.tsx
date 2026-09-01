@@ -1,17 +1,23 @@
 import { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { fetchOAuthProviders, startGoogleOAuth } from '../lib/authApi';
+import { fetchOAuthProviders, fetchTransporters, startGoogleOAuth } from '../lib/authApi';
 import { brandLogoAlt, brandLogoSrc, productName } from '../lib/branding';
-import { Lock, Check } from 'lucide-react';
+import { Lock, Check, Building2, Truck, ChevronLeft } from 'lucide-react';
+
+type LoginPortal = 'admin' | 'transporter';
 
 export default function Login() {
   const { user, loading, login, changePassword } = useAuth();
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from || '/';
 
+  const [portal, setPortal] = useState<LoginPortal | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [selectedTransporter, setSelectedTransporter] = useState('');
+  const [transporters, setTransporters] = useState<string[]>([]);
+  const [transportersLoading, setTransportersLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -26,6 +32,26 @@ export default function Login() {
     const oauthErr = params.get('msg');
     if (params.get('oauth') && oauthErr) setError(oauthErr);
   }, []);
+
+  useEffect(() => {
+    if (portal !== 'transporter') return;
+    let cancelled = false;
+    setTransportersLoading(true);
+    fetchTransporters()
+      .then(list => {
+        if (!cancelled) {
+          setTransporters(list);
+          if (list.length && !selectedTransporter) setSelectedTransporter(list[0]);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load transporter list');
+      })
+      .finally(() => {
+        if (!cancelled) setTransportersLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [portal]);
 
   if (loading) {
     return (
@@ -53,9 +79,17 @@ export default function Login() {
   const onLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (portal === 'transporter' && !selectedTransporter) {
+      setError('Select your transporter');
+      return;
+    }
     setBusy(true);
     try {
-      await login(email.trim(), password);
+      await login(
+        email.trim(),
+        password,
+        portal === 'transporter' ? selectedTransporter : undefined,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -86,6 +120,22 @@ export default function Login() {
 
   const mustChange = !!user?.mustChangePassword;
 
+  const portalCardStyle = (active: boolean): React.CSSProperties => ({
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: '16px 14px',
+    borderRadius: 10,
+    cursor: 'pointer',
+    textAlign: 'left',
+    background: active ? 'rgba(0,120,212,0.14)' : 'var(--cd-surface-2)',
+    border: active ? '1px solid rgba(0,120,212,0.55)' : '1px solid var(--cd-border)',
+    color: 'var(--cd-text)',
+    transition: 'border-color 0.15s, background 0.15s',
+  });
+
   return (
     <div style={{
       minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -93,9 +143,10 @@ export default function Login() {
       padding: 24,
     }}>
       <div style={{
-        width: '100%', maxWidth: 400, background: 'var(--cd-surface)',
+        width: '100%', maxWidth: portal === null ? 480 : 400, background: 'var(--cd-surface)',
         border: '1px solid var(--cd-border)', borderRadius: 14, padding: 28,
         boxShadow: '0 20px 50px rgba(0,0,0,0.35)',
+        transition: 'max-width 0.2s ease',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
           {brandLogoSrc() ? (
@@ -119,7 +170,9 @@ export default function Login() {
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)' }}>
               {productName()}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>Sign in to continue</div>
+            <div style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
+              {mustChange ? 'Set your password' : portal === null ? 'Choose how to sign in' : 'Sign in to continue'}
+            </div>
           </div>
         </div>
 
@@ -170,8 +223,77 @@ export default function Login() {
               {busy ? 'Saving…' : <><Check size={14} /> Save and continue</>}
             </button>
           </form>
+        ) : portal === null ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 20 }}>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button
+                type="button"
+                onClick={() => { setPortal('admin'); setError(''); }}
+                style={portalCardStyle(false)}
+              >
+                <Building2 size={22} style={{ color: 'var(--bpl-blue, #0078D4)' }} />
+                <span style={{ fontSize: 14, fontWeight: 700 }}>HBM Admin</span>
+                <span style={{ fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.45 }}>
+                  Platform administrators and internal staff
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setPortal('transporter'); setError(''); }}
+                style={portalCardStyle(false)}
+              >
+                <Truck size={22} style={{ color: 'var(--bpl-blue, #0078D4)' }} />
+                <span style={{ fontSize: 14, fontWeight: 700 }}>Transporter</span>
+                <span style={{ fontSize: 12, color: 'var(--cd-text-muted)', lineHeight: 1.45 }}>
+                  External transporter partners — scoped to your fleet only
+                </span>
+              </button>
+            </div>
+            {error && <div style={{ fontSize: 12, color: '#dc2626' }}>{error}</div>}
+          </div>
         ) : (
           <form onSubmit={onLogin} style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 20 }}>
+            <button
+              type="button"
+              onClick={() => { setPortal(null); setError(''); }}
+              style={{
+                alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 6,
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: 'var(--cd-text-muted)', fontSize: 12, fontWeight: 600, padding: 0,
+              }}
+            >
+              <ChevronLeft size={14} />
+              Back
+            </button>
+
+            <div style={{
+              fontSize: 12, fontWeight: 700, color: 'var(--cd-text-muted)',
+              textTransform: 'uppercase', letterSpacing: '0.06em',
+            }}>
+              {portal === 'admin' ? 'HBM Admin' : 'Transporter'}
+            </div>
+
+            {portal === 'transporter' && (
+              <div>
+                <label style={labelStyle}>Transporter</label>
+                <select
+                  style={{ ...fieldStyle, cursor: 'pointer' }}
+                  value={selectedTransporter}
+                  onChange={e => setSelectedTransporter(e.target.value)}
+                  disabled={transportersLoading || transporters.length === 0}
+                  required
+                >
+                  {transportersLoading && <option value="">Loading transporters…</option>}
+                  {!transportersLoading && transporters.length === 0 && (
+                    <option value="">No transporters found</option>
+                  )}
+                  {transporters.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label style={labelStyle}>Email</label>
               <input
@@ -199,7 +321,7 @@ export default function Login() {
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
 
-            {googleEnabled && (
+            {portal === 'admin' && googleEnabled && (
               <>
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10,

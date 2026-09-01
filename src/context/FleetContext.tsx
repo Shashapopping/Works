@@ -38,6 +38,7 @@ import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
 import { filterDistanceAssetsByVehicles, filterTripDriversByVehicles } from '../lib/siteScope';
+import { useAuth } from './AuthContext';
 
 export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
@@ -292,6 +293,9 @@ interface FleetContextType {
   siteOptions: { key: string; label: string; count: number }[];
   /** Distinct `site` values (transporter/depot names within a zone) derived from live data, with asset counts. */
   siteNameOptions: { key: string; label: string; count: number }[];
+  /** True when the signed-in user is scoped to one transporter site. */
+  siteLock: boolean;
+  lockedTransporter: string | null;
 }
 
 /** @deprecated kept for any leftover imports — empty selectedSites means all */
@@ -329,6 +333,9 @@ const defaultMeta: Metadata = {
 const FleetContext = createContext<FleetContextType>({} as FleetContextType);
 
 export function FleetProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const lockedTransporter = user?.transporter?.trim() || null;
+  const siteLock = !!lockedTransporter;
   const [metadata, setMetadata] = useState<Metadata>(() =>
     cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? defaultMeta,
   );
@@ -415,10 +422,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setSelectedSites = useCallback((sites: string[]) => {
+    if (siteLock && lockedTransporter) {
+      persistSites([lockedTransporter]);
+      return;
+    }
     persistSites(sites);
-  }, [persistSites]);
+  }, [persistSites, siteLock, lockedTransporter]);
 
   const toggleSite = useCallback((siteKey: string) => {
+    if (siteLock) return;
     setSelectedSitesState(prev => {
       const next = prev.includes(siteKey)
         ? prev.filter(s => s !== siteKey)
@@ -430,6 +442,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (lockedTransporter) persistSites([lockedTransporter]);
+  }, [lockedTransporter, persistSites]);
 
   const updateScoreConfig = useCallback((config: FleetScoreConfig) => {
     setScoreConfig(saveFleetScoreConfig(config));
@@ -849,7 +865,11 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const filteredVehicles = useMemo(() => {
     if (!siteFilterActive) return vehicles;
     const allowed = new Set(selectedSites);
-    return vehicles.filter(v => allowed.has(siteKeyFor(v.zone)) || allowed.has((v.site || '').trim()));
+    return vehicles.filter(v =>
+      allowed.has(siteKeyFor(v.zone))
+      || allowed.has((v.site || '').trim())
+      || allowed.has((v.transporter || '').trim()),
+    );
   }, [vehicles, selectedSites, siteFilterActive]);
 
   const filteredEvents = useMemo(() => {
@@ -990,6 +1010,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
       selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
+      siteLock, lockedTransporter,
     }}>
       {children}
     </FleetContext.Provider>

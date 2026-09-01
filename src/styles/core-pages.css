@@ -430,6 +430,116 @@
   white-space: nowrap;
 }
 
+.bpl-fatigue-week-calendar-cell {
+  min-width: 210px;
+}
+
+.bpl-fatigue-week-calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(22px, 1fr));
+  gap: 3px;
+  min-width: 190px;
+}
+
+.bpl-fatigue-week-day {
+  position: relative;
+  height: 24px;
+  overflow: hidden;
+  border-radius: 5px;
+  border: 1px solid rgba(100, 116, 139, 0.22);
+  background: var(--cd-surface-2);
+}
+
+.bpl-fatigue-week-calendar.is-missed .bpl-fatigue-week-day {
+  border-color: rgba(204, 0, 0, 0.35);
+  background: rgba(204, 0, 0, 0.12);
+}
+
+.bpl-fatigue-week-rest {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  background: rgba(22, 163, 74, 0.72);
+}
+
+.bpl-fatigue-week-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--cd-text-muted);
+  line-height: 1;
+}
+
+.bpl-fatigue-week-calendar.is-missed .bpl-fatigue-week-label {
+  color: #7f1d1d;
+}
+
+.bpl-fatigue-week-caption {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cd-text-muted);
+  text-align: right;
+}
+
+.bpl-fatigue-week-caption.is-missed {
+  color: #CC0000;
+}
+
+.bpl-fatigue-hos-points-cell {
+  min-width: 136px;
+}
+
+.bpl-fatigue-hos-points-head {
+  min-width: 150px;
+}
+
+.bpl-fatigue-hos-head-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.bpl-fatigue-hos-day-select {
+  width: 112px;
+  min-height: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--cd-border);
+  border-radius: 6px;
+  background: var(--cd-surface);
+  color: var(--cd-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bpl-fatigue-hos-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #7f1d1d;
+  background: rgba(127, 29, 29, 0.07);
+  border: 1px solid rgba(127, 29, 29, 0.16);
+  border-radius: 6px;
+  padding: 2px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.bpl-fatigue-hos-chip.is-empty {
+  color: var(--cd-text-muted);
+  background: var(--cd-surface-2);
+  border-color: var(--cd-border);
+}
+
 .bpl-fatigue-kpi {
   cursor: pointer;
   text-align: left;
@@ -1384,6 +1494,43 @@
   color: #fff;
 }
 
+.bpl-reports-check-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.bpl-reports-check-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: inherit;
+  line-height: 1.3;
+}
+
+.bpl-reports-check-count {
+  font-weight: 600;
+  color: var(--cd-text-muted);
+}
+
+.bpl-reports-check-hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--cd-text-muted);
+  opacity: 0.85;
+  line-height: 1.25;
+}
+
+.bpl-reports-ms-scroll .bpl-reports-check {
+  align-items: flex-start;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.bpl-reports-ms-scroll .bpl-reports-check-box {
+  margin-top: 2px;
+}
+
 .bpl-reports-download-section {
   margin-top: 4px;
   padding-top: 14px;
@@ -1789,6 +1936,61 @@
   margin-top: 6px;
   font-size: 11px;
   color: var(--cd-text-muted);
+}
+
+.bpl-automate-schedule-preview {
+  margin-top: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #0078D4 28%, var(--cd-border));
+  background: color-mix(in srgb, #0078D4 8%, var(--cd-surface));
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--cd-text);
+}
+
+:root[data-theme="dark"] .bpl-automate-schedule-preview,
+.dark .bpl-automate-schedule-preview {
+  background: color-mix(in srgb, #0078D4 14%, var(--cd-surface));
+  border-color: color-mix(in srgb, #0078D4 35%, var(--cd-border));
+}
+
+.bpl-automate-night-batch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--cd-border);
+  background: var(--cd-surface-2);
+  cursor: pointer;
+}
+
+.bpl-automate-night-batch input {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: #0078D4;
+}
+
+.bpl-automate-night-batch-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.bpl-automate-night-batch-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cd-text);
+}
+
+.bpl-automate-night-batch-copy em {
+  font-size: 11px;
+  font-style: normal;
+  color: var(--cd-text-muted);
+  line-height: 1.35;
 }
 
 .bpl-automate-primary {
@@ -2770,6 +2972,22 @@
   font-variant-numeric: tabular-nums;
   min-width: 22px;
   text-align: right;
+}
+
+.dm-score-copy {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 44px;
+}
+
+.dm-score-hos {
+  font-size: 9px;
+  font-weight: 700;
+  color: #7f1d1d;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 
 .dm-tail {

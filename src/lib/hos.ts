@@ -3,7 +3,7 @@
  *
  * Rules:
  * 1) 4 hours continuous driving requires a ≥30-minute rest (parked gap between trips).
- * 2) 8 hours continuous driving within a rolling 24-hour cycle.
+ * 2) 8 hours continuous rest required inside each rolling 24-hour cycle.
  * 3) ≥24 hours continuous rest within a rolling 7-day week.
  * "Today" = since 00:00 Africa/Lagos — trip drive time is clipped to that day
  * (overnight trips do not dump yesterday’s hours into today).
@@ -36,12 +36,30 @@ export interface HosRecord {
   cycle8hBreaches?: number;
   cycle8hViolation?: boolean;
   cycle8hLimitMinutes?: number;
+  /** Minutes since the last >=8h continuous rest ended; 0 = currently in one; null = none found in the lookback. */
+  minutesSinceDailyRest?: number | null;
+  /** Display fallback when no >=8h rest is found in the lookback. */
+  dailyRestElapsedMinutes?: number;
+  dailyRestRequiredMinutes?: number;
+  dailyRestWindowMinutes?: number;
+  dailyRestViolation?: boolean;
   /** Longest off-duty gap in the rolling 7-day week. */
   longestRestWeekMinutes?: number;
   weeklyRestRequiredMinutes?: number;
+  weeklyRestWindowMinutes?: number;
   weeklyRestOk?: boolean;
+  /** Minutes since the last >=24h continuous rest ended; 0 = currently in one; null = none found in the lookback. */
+  minutesSinceWeeklyRest?: number | null;
+  /** Display fallback when no >=24h rest is found in the lookback. */
+  weeklyRestElapsedMinutes?: number;
   /** Days since last ≥24h continuous rest ended; 0 = in one now; null = none in window. */
   daysSinceWeeklyRest?: number | null;
+  /** Rolling 7-day weekly-rest lookback window. */
+  weeklyRestLookbackStart?: string;
+  weeklyRestLookbackEnd?: string;
+  /** Last qualifying 24h continuous off-duty rest inside the lookback window. */
+  weeklyRestStart?: string | null;
+  weeklyRestEnd?: string | null;
   rulesBreached?: HosRuleId[];
   breaches: number;
   violationDriveMinutes: number;
@@ -65,7 +83,10 @@ export interface HosResponse {
     continuous4hMinutes: number;
     restGapMinutes: number;
     continuous8hIn24hMinutes: number;
+    dailyRestMinutes?: number;
+    dailyRestWindowMinutes?: number;
     weeklyRestMinutes: number;
+    weeklyRestWindowMinutes?: number;
   };
   records: HosRecord[];
 }
@@ -86,7 +107,7 @@ export function hosRuleLabels(rules: HosRuleId[] | undefined): string[] {
   if (!rules?.length) return [];
   return rules.map(r => {
     if (r === '4h_continuous') return '4h continuous';
-    if (r === '8h_24h') return '8h in 24h';
+    if (r === '8h_24h') return 'Daily rest';
     if (r === 'weekly_rest') return 'No 24h weekly rest';
     return r;
   });
