@@ -21,6 +21,15 @@ import {
   trackingWindowHoursFromReportConfig,
   vehicleDisplayLabel,
 } from './connectivity-events.js';
+import {
+  clearPendingConnectivityTriggers,
+  GPS_SILENCE_TRIGGER_HOURS,
+  GPS_SILENCE_TRIGGER_LABEL,
+  initializeConnectivityTriggerState,
+  isTriggerModeConfig,
+  listPendingConnectivityTriggers,
+  pendingConnectivityTriggerCount,
+} from './connectivity-triggers.js';
 
 export const REPORT_PACKS = [
   { id: 'offline_2h', label: 'Offline assets', hint: 'Not receiving GPS (excludes Non-Operational). Repeat offenders flagged across sends.' },
@@ -67,6 +76,7 @@ function rowToAutomation(row) {
     nextSendAt: row.next_send_at,
     lastError: row.last_error,
     lastOfflineSnapshot: parseOfflineSnapshot(row.last_offline_snapshot),
+    pendingTriggerCount: pendingConnectivityTriggerCount(row.id),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -366,7 +376,7 @@ function buildConnectivityPackSections(vehicles, now, previousSnapshot, { eventT
     });
   }
 
-  const shouldSnapshot = wantsOffline && !wantsNonOp && !wantsNoTelemetry;
+  const shouldSnapshot = wantsOffline && !wantsNonOp && !wantsNoRecentCommunication;
   return {
     sections,
     offlineSnapshot: shouldSnapshot
@@ -451,6 +461,35 @@ function buildPackPayload(packs, { frequency, dayOfMonth, timezone, now, reportC
   return { from, to, frequency, sections, eventCensusCount: safetyTotal, offlineSnapshot };
 }
 
+function buildTriggerPackPayload(auto, triggerRows, now) {
+  return {
+    from: auto.lastSentAt,
+    to: now.toISOString(),
+    frequency: auto.frequency,
+    sections: [{
+      id: 'connectivity_trigger_pending',
+      title: GPS_SILENCE_TRIGGER_LABEL,
+      total: triggerRows.length,
+      rows: triggerRows.slice(0, 20).map(row => {
+        let vehicle = {};
+        try {
+          vehicle = row.vehicle_json ? JSON.parse(row.vehicle_json) : {};
+        } catch {
+          vehicle = {};
+        }
+        const regNo = vehicle.regNo || vehicle.RegistrationNumber || row.asset_id || 'Unknown';
+        const site = vehicle.site || vehicle.zone || vehicle.transporter || 'Unknown site';
+        return {
+          label: `${regNo} · ${site}`,
+          count: `${GPS_SILENCE_TRIGGER_HOURS}h silence reached`,
+        };
+      }),
+    }],
+    eventCensusCount: triggerRows.length,
+    offlineSnapshot: null,
+  };
+}
+
 function safeReportTitle(input) {
   const text = String(input || '').trim();
   return text.slice(0, 180) || 'Scheduled fleet report';
@@ -464,18 +503,22 @@ function normalizeReportFormat(format) {
 function normalizeReportConfig(config = {}) {
   if (!config || typeof config !== 'object') return null;
   const window = normalizeReportingWindow(config);
+  const eventType = normalizeConnectivityEventType(String(config.eventType || ''));
+  const isGpsSilenceTrigger = eventType === NO_RECENT_COMMUNICATION;
   const reportType = ['events', 'driver_scorecard', 'trips', 'asset_utilization'].includes(config.reportType)
     ? config.reportType
     : 'events';
   const view = ['events', 'trends'].includes(config.view) ? config.view : 'events';
   return {
-    ...window,
+    ...(isGpsSilenceTrigger
+      ? { windowMode: 'customLookback', lookbackValue: GPS_SILENCE_TRIGGER_HOURS, lookbackUnit: 'hours' }
+      : window),
     search: String(config.search || '').slice(0, 200),
     site: String(config.site || ''),
     siteKeys: Array.isArray(config.siteKeys)
       ? config.siteKeys.map(s => String(s || '').trim()).filter(Boolean)
       : [],
-    eventType: normalizeConnectivityEventType(String(config.eventType || '')),
+    eventType,
     view,
     reportType,
     tripGroupBy: config.tripGroupBy === 'driver' ? 'driver' : 'asset',
@@ -578,6 +621,9 @@ export function createAutomation(userId, input, userEmail) {
   );
 
   const automation = getAutomationForUser(id, userId);
+  if (isTriggerModeConfig(automation?.reportConfig)) {
+    initializeConnectivityTriggerState(automation.id, automation.reportConfig, loadVehicles());
+  }
   archiveAutomationProfile(userId, automation);
   return automation;
 }
@@ -596,6 +642,17 @@ function scheduleFieldsChanged(input, existing) {
     if (prevNight !== nextNight) return true;
   }
   return false;
+}
+
+function triggerSettingsChanged(prev = {}, next = {}) {
+  if (isTriggerModeConfig(prev) !== isTriggerModeConfig(next)) return true;
+  if (!isTriggerModeConfig(next)) return false;
+  if (trackingWindowHoursFromReportConfig(prev) !== trackingWindowHoursFromReportConfig(next)) return true;
+  if (normalizeConnectivityEventType(prev.eventType || '') !== normalizeConnectivityEventType(next.eventType || '')) return true;
+  if (String(prev.search || '') !== String(next.search || '')) return true;
+  const prevSites = JSON.stringify([...(prev.siteKeys || [])].map(String).sort());
+  const nextSites = JSON.stringify([...(next.siteKeys || [])].map(String).sort());
+  return prevSites !== nextSites;
 }
 
 export function updateAutomation(id, userId, input, userEmail) {
@@ -663,6 +720,9 @@ export function updateAutomation(id, userId, input, userEmail) {
   );
 
   const automation = getAutomationForUser(id, userId);
+  if (input.reportConfig !== undefined && triggerSettingsChanged(existing.reportConfig, automation?.reportConfig)) {
+    initializeConnectivityTriggerState(automation.id, automation.reportConfig, loadVehicles());
+  }
   archiveAutomationProfile(userId, automation);
   return automation;
 }
@@ -687,7 +747,12 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
   const sendAt = new Date();
   const row = getDb().prepare('SELECT last_offline_snapshot FROM report_automations WHERE id = ?').get(id);
   const previousSnapshot = parseOfflineSnapshot(row?.last_offline_snapshot);
-  const payload = buildPackPayload(auto.packs, {
+  const triggerRows = isTriggerModeConfig(auto.reportConfig)
+    ? listPendingConnectivityTriggers(auto.id)
+    : null;
+  const payload = triggerRows
+    ? buildTriggerPackPayload(auto, triggerRows, sendAt)
+    : buildPackPayload(auto.packs, {
     frequency: auto.frequency,
     dayOfMonth: auto.dayOfMonth ?? 1,
     timezone: auto.timezone,
@@ -703,8 +768,28 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
     title: auto.title,
     format: auto.format,
     previousSnapshot,
+    triggerRows,
     now: sendAt,
   });
+
+  if (!test && triggerRows && triggerRows.length === 0) {
+    const now = sendAt.toISOString();
+    const nextSendAt = computeNextSendAt({
+      frequency: auto.frequency,
+      sendHour: auto.sendHour,
+      dayOfWeek: auto.dayOfWeek ?? 1,
+      dayOfMonth: auto.dayOfMonth ?? 1,
+      timezone: auto.timezone,
+      nightBatch: auto.frequency === 'hourly' && auto.reportConfig?.nightBatch,
+      from: sendAt,
+    });
+    getDb().prepare(`
+      UPDATE report_automations
+      SET last_sent_at = ?, next_send_at = ?, last_error = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(now, nextSendAt, now, id);
+    return { sent: false, skipped: 'no_pending_triggers', automation: getAutomationForUser(id, userId), rowCount: 0 };
+  }
 
   let result;
   if (exportFile) {
@@ -713,7 +798,7 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
       filename: exportFile.filename,
       mime: exportFile.mime,
       contentBase64: exportFile.contentBase64,
-      reportTitle: `${test ? '[Test] ' : ''}${auto.title || 'Fleet report'}`,
+      reportTitle: `${test ? '[Test] ' : ''}${triggerRows ? GPS_SILENCE_TRIGGER_LABEL : auto.title || 'Fleet report'}`,
       meta: exportFile.meta,
       eventCount: exportFile.rowCount,
     });
@@ -744,6 +829,9 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
           last_offline_snapshot = COALESCE(?, last_offline_snapshot)
       WHERE id = ?
     `).run(now, nextSendAt, now, payload.offlineSnapshot ? JSON.stringify(payload.offlineSnapshot) : null, id);
+    if (!test && triggerRows) {
+      clearPendingConnectivityTriggers(id);
+    }
   } else {
     getDb().prepare(`
       UPDATE report_automations SET last_error = ?, updated_at = ? WHERE id = ?

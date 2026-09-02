@@ -50,7 +50,7 @@ export function useHosRecords(date?: string) {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  const records = data?.records ?? [];
+  const records = Array.isArray(data?.records) ? data.records : [];
 
   return {
     data,

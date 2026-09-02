@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Moon, Search, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
 import { isActiveDriver, isActiveDriverId, displayDriverName } from '../../lib/driverUtils';
 import { DEMO_BRANDING, demoDriverLabel } from '../../config/demoBranding';
@@ -10,6 +11,7 @@ import { useHosRecords } from '../../hooks/useHosRecords';
 import { fmtHosMinutes, type HosRecord, type HosRuleId, type HosStatus } from '../../lib/hos';
 import { hosPointsFromHeldMinutes, type FleetScoreConfig } from '../../lib/fleetSafetyScore';
 import { useFleet } from '../../context/FleetContext';
+import { makeScopedVehicleRegSet } from '../../lib/siteScope';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import PageControls from '../../components/PageControls';
 
@@ -120,6 +122,20 @@ function scrubHosRecords(list: HosRecord[]): HosRecord[] {
 
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+type HosSiteScope = {
+  allowedRegs: Set<string>;
+  allowedSites: Set<string>;
+};
+
+function filterHosRecordsToSiteScope(records: HosRecord[], scope: HosSiteScope | null): HosRecord[] {
+  if (!scope) return records;
+  return records.filter(record => {
+    const reg = (record.vehicleReg || '').trim().toLowerCase();
+    const site = (record.site || '').trim().toLowerCase();
+    return scope.allowedRegs.has(reg) || scope.allowedSites.has(site);
+  });
 }
 
 function fmtSignedHosMinutes(min: number) {
@@ -367,7 +383,8 @@ function ThLabel({
 }
 
 export default function FatigueManagementPage() {
-  const { scoreConfig } = useFleet();
+  const { scoreConfig, vehicles, selectedSites } = useFleet();
+  const [searchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
@@ -382,6 +399,19 @@ export default function FatigueManagementPage() {
   const { records: hosRaw, loading: hosLoading, lastTripDay } = useHosRecords(targetDate);
   const { records: hosPointsRaw, loading: hosPointsLoading } = useHosRecords(hosPointsDate);
 
+  useEffect(() => {
+    const q = searchParams.get('q');
+    if (q) setSearch(q);
+  }, [searchParams]);
+
+  const hosSiteScope = useMemo<HosSiteScope | null>(() => {
+    if (selectedSites.length === 0) return null;
+    return {
+      allowedRegs: makeScopedVehicleRegSet(vehicles),
+      allowedSites: new Set(selectedSites.map(site => site.trim().toLowerCase()).filter(Boolean)),
+    };
+  }, [selectedSites, vehicles]);
+
   // Today often has no trips if MiX trip sync is behind — jump once to the last day with data.
   const [didAutoJump, setDidAutoJump] = useState(false);
   useEffect(() => {
@@ -395,11 +425,17 @@ export default function FatigueManagementPage() {
   }, [didAutoJump, hosLoading, isTodayView, hosRaw.length, lastTripDay, targetDate]);
 
   const hosRecords = useMemo(() => {
-    return scrubHosRecords(hosRaw).filter(r => {
+    const activeRecords = scrubHosRecords(hosRaw).filter(r => {
       if (r.id) return isActiveDriverId(r.id);
       return isActiveDriver(r.driverName, null);
     });
-  }, [hosRaw]);
+    return filterHosRecordsToSiteScope(activeRecords, hosSiteScope);
+  }, [hosRaw, hosSiteScope]);
+
+  const scopedHosPointsRecords = useMemo(
+    () => filterHosRecordsToSiteScope(scrubHosRecords(hosPointsRaw), hosSiteScope),
+    [hosPointsRaw, hosSiteScope],
+  );
 
   const hosPointDetailsByKey = useMemo(() => {
     const map = new Map<string, HosPointDetail>();
@@ -407,7 +443,7 @@ export default function FatigueManagementPage() {
       const k = (key || '').trim();
       if (k && !map.has(k)) map.set(k, detail);
     };
-    scrubHosRecords(hosPointsRaw)
+    scopedHosPointsRecords
       .filter(r => (r.id ? isActiveDriverId(r.id) : isActiveDriver(r.driverName, null)))
       .forEach(r => {
         const detail = buildHosPointDetail(r, scoreConfig);
@@ -415,7 +451,7 @@ export default function FatigueManagementPage() {
         add(r.driverName, detail);
       });
     return map;
-  }, [hosPointsRaw, scoreConfig]);
+  }, [scopedHosPointsRecords, scoreConfig]);
 
   const filtered = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();

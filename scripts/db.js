@@ -204,6 +204,36 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_report_automations_user ON report_automations(user_id);
     CREATE INDEX IF NOT EXISTS idx_report_automations_next ON report_automations(next_send_at);
 
+    CREATE TABLE IF NOT EXISTS connectivity_trigger_state (
+      automation_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      was_silent INTEGER NOT NULL DEFAULT 0,
+      last_age_hours REAL,
+      last_seen_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (automation_id, asset_id),
+      FOREIGN KEY (automation_id) REFERENCES report_automations(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS connectivity_trigger_pending (
+      id TEXT PRIMARY KEY,
+      automation_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      threshold_hours REAL NOT NULL,
+      threshold_operator TEXT NOT NULL DEFAULT 'gte',
+      triggered_at TEXT NOT NULL,
+      last_seen_at TEXT,
+      vehicle_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (automation_id) REFERENCES report_automations(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_connectivity_trigger_pending_open
+      ON connectivity_trigger_pending(automation_id, asset_id);
+    CREATE INDEX IF NOT EXISTS idx_connectivity_trigger_pending_auto
+      ON connectivity_trigger_pending(automation_id, created_at);
+
     CREATE TABLE IF NOT EXISTS document_folders (
       id TEXT PRIMARY KEY,
       parent_id TEXT,

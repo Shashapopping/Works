@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useDeferredValue } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
@@ -149,10 +149,11 @@ function driverOfficialStatus(
   };
 }
 
-function DriverCard({ driver, expanded, onToggle, stats, latestWarning, hosPoints, hosHeldMinutes, consequenceConfig }: {
+function DriverCard({ driver, expanded, onToggle, onHosOpen, stats, latestWarning, hosPoints, hosHeldMinutes, consequenceConfig }: {
   driver: DriverProfile;
   expanded: boolean;
   onToggle: () => void;
+  onHosOpen: () => void;
   stats: ReturnType<typeof periodCardStats>;
   latestWarning: DriverWarning | null;
   hosPoints: number;
@@ -182,7 +183,18 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning, hosPoint
       className={`dm-row${expanded ? ' is-open' : ''}`}
       style={{ '--dm-accent': color } as React.CSSProperties}
     >
-      <button type="button" className="dm-row-head" onClick={onToggle}>
+      <div
+        className="dm-row-head"
+        role="button"
+        tabIndex={0}
+        onClick={onToggle}
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+      >
         <div className="dm-ident">
           <div className="dm-avatar">{displayDriverName(driver.name).charAt(0) || '?'}</div>
           <div className="dm-ident-text">
@@ -203,10 +215,18 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning, hosPoint
           <div className="dm-stat-val">{distanceLabel}</div>
           <div className="dm-stat-lbl">km</div>
         </div>
-        <div className="dm-stat" title={HOS_WINDOW_TIP}>
+        <button
+          type="button"
+          className="dm-stat dm-stat--tap"
+          title={`${HOS_WINDOW_TIP} Open Fatigue Management for ${displayDriverName(driver.name)}.`}
+          onClick={e => {
+            e.stopPropagation();
+            onHosOpen();
+          }}
+        >
           <div className="dm-stat-val" style={{ color: hosHasData ? undefined : 'var(--cd-text-muted)' }}>{hosLabel}</div>
           <div className="dm-stat-lbl">HOS</div>
-        </div>
+        </button>
 
         <ScoreBar score={finalDisplayScore} category={finalCategory} />
 
@@ -216,7 +236,7 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning, hosPoint
             ? <ChevronUp size={14} className="dm-chevron" />
             : <ChevronDown size={14} className="dm-chevron" />}
         </div>
-      </button>
+      </div>
 
       {expanded && (
         <div className="dm-drop">
@@ -323,12 +343,13 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning, hosPoint
 
 export default function DriverManagement() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '');
   const [dateRange, setDateRange] = useState<DateRange>('30days');
   const [customRange, setCustomRange] = useState(defaultDriverCustomRange);
   const [expandedDrivers, setExpandedDrivers] = useState<Set<string>>(new Set());
   const { tripDrivers: periodTrips, loading: periodTripLoading } = usePeriodTripDrivers(dateRange, customRange);
-  const { tripDrivers: scoreTrips, loading: scoreTripLoading } = usePeriodTripDrivers(DRIVER_SCORE_PERIOD);
+  const { tripDrivers: scoreTrips, loading: scoreTripLoading } = usePeriodTripDrivers(DRIVER_SCORE_PERIOD, customRange);
   const { events, eventsLoading, vehicles, selectedSites, siteOptions, siteNameOptions, scoreConfig } = useFleet();
   const { records: hosRaw } = useHosRecords();
   const [driverWarnings, setDriverWarnings] = useState<Map<string, DriverWarning>>(new Map());
@@ -393,7 +414,8 @@ export default function DriverManagement() {
         heldMinutes,
       });
     };
-    hosRaw.forEach(record => {
+    const source = Array.isArray(hosRaw) ? hosRaw : [];
+    source.forEach(record => {
       const heldMinutes = hosHeldMinutesFromRecord(record);
       if (heldMinutes <= 0) return;
       add(record.id, heldMinutes);
@@ -412,11 +434,14 @@ export default function DriverManagement() {
       return;
     }
     let cancelled = false;
-    fetchDriverWarnings(driverWarningKeys)
+    // Do not pass thousands of keys — GET query string length crashes the page.
+    fetchDriverWarnings()
       .then(warnings => {
         if (cancelled) return;
+        const wanted = new Set(driverWarningKeys);
         const byDriver = new Map<string, DriverWarning>();
         warnings.forEach(w => {
+          if (!wanted.has(w.driverKey)) return;
           if (!byDriver.has(w.driverKey)) byDriver.set(w.driverKey, w);
         });
         setDriverWarnings(byDriver);
@@ -451,8 +476,9 @@ export default function DriverManagement() {
     }),
     [drivers, finalOutcomeByDriverKey],
   );
-  const visible = deferredSearch
-    ? rankedDrivers.filter(d => d.name.toLowerCase().includes(deferredSearch.toLowerCase()) || d.regNo.toLowerCase().includes(deferredSearch.toLowerCase()))
+  const searchNeedle = deferredSearch.trim().toLowerCase();
+  const visible = searchNeedle
+    ? rankedDrivers.filter(d => String(d.name || '').toLowerCase().includes(searchNeedle) || String(d.regNo || '').toLowerCase().includes(searchNeedle))
     : rankedDrivers;
 
   const pagination = useClientPagination(visible, 50, deferredSearch);
@@ -594,6 +620,7 @@ export default function DriverManagement() {
                   driver={d}
                   expanded={expandedDrivers.has(d.name) || expandedDrivers.has(d.key)}
                   onToggle={() => toggle(d.name)}
+                  onHosOpen={() => navigate(`/drivers/fatigue?q=${encodeURIComponent(displayDriverName(d.name))}`)}
                   stats={periodCardStats(d, dateRange, customRange, periodTripMap, consequenceConfig)}
                   latestWarning={driverWarnings.get(d.key) ?? null}
                   hosPoints={hos?.points ?? 0}

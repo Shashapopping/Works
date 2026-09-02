@@ -8,6 +8,8 @@ function columnHasValue(rows, columnIndex) {
   return rows.some(row => !isEmptyExportCell(row[columnIndex] ?? ''));
 }
 
+const ALWAYS_KEEP_HEADERS = new Set(['Last location', 'Remark']);
+
 /** Drop columns where every row is empty / N/A / —. */
 export function pruneTabularColumns(report) {
   const { columns, rows } = report;
@@ -15,7 +17,7 @@ export function pruneTabularColumns(report) {
 
   const keptIndices = columns
     .map((_, index) => index)
-    .filter(index => columnHasValue(rows, index));
+    .filter(index => ALWAYS_KEEP_HEADERS.has(columns[index].header) || columnHasValue(rows, index));
 
   if (keptIndices.length === columns.length) return report;
 

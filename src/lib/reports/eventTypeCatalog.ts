@@ -20,7 +20,7 @@ export const REPORT_EVENT_TYPE_CATALOG: ReportEventTypeDef[] = [
   { id: 'Overspeeding', hint: 'Speed above limit', group: 'ivms' },
   { id: 'Overspeed Tiered', hint: 'Tiered road-speed breach', group: 'ivms' },
   { id: 'Harsh Cornering', hint: 'Sharp turn at speed', group: 'ivms' },
-  { id: NO_RECENT_COMMUNICATION, hint: 'No GPS in the tracking window. Excludes Offline (24h+) and Non-Operational.', group: 'connectivity' },
+  { id: NO_RECENT_COMMUNICATION, hint: 'No GPS for 2 hours. Stored once, then emailed on the next hourly run.', group: 'connectivity' },
   { id: 'Offline', hint: 'Not receiving GPS (24h–30d). Excludes Non-Operational and No recent communication.', group: 'connectivity' },
   { id: 'Non-Operational', hint: 'No GPS for 30+ days — excluded from Offline and No recent communication.', group: 'connectivity' },
 ];
@@ -31,8 +31,8 @@ export function reportEventTypeDef(id: string): ReportEventTypeDef | undefined {
   return REPORT_EVENT_TYPE_CATALOG.find(o => o.id === normalizeConnectivityEventType(id));
 }
 
-const NO_RECENT_COMMUNICATION_DISPLAY_LABEL =
-  'No recent communication (excluding Non-Operational 30 days and Offline 24–30 days)';
+const NO_RECENT_COMMUNICATION_DISPLAY_LABEL =
+  'No recent communication (2 hrs)';
 
 export function connectivityEventDisplayLabel(bucket: string): string {
   const normalized = normalizeConnectivityEventType(bucket);
@@ -44,12 +44,13 @@ export function formatEventTypeOptionLabel(
   id: string,
   count?: number | null,
 ): string {
-  const normalized = normalizeConnectivityEventType(id);
-  const def = reportEventTypeDef(normalized);
-  const hint = def?.hint ?? '';
-  const countPart = count != null && count >= 0 ? ` · ${count.toLocaleString()}` : '';
-  return hint ? `${normalized}${countPart} — ${hint}` : `${normalized}${countPart}`;
-}
+  const normalized = normalizeConnectivityEventType(id);
+  const def = reportEventTypeDef(normalized);
+  const hint = def?.hint ?? '';
+  const label = normalized === NO_RECENT_COMMUNICATION ? NO_RECENT_COMMUNICATION_DISPLAY_LABEL : normalized;
+  const countPart = count != null && count >= 0 ? ` · ${count.toLocaleString()}` : '';
+  return hint ? `${label}${countPart} — ${hint}` : `${label}${countPart}`;
+}
 
 export function buildEventTypeCounts(
   ivmsCounts: Record<string, number>,
@@ -63,4 +64,4 @@ export function buildEventTypeCounts(
   }
   return out;
 }
-
+

@@ -37,12 +37,13 @@ const EVENT_COLUMNS: { header: string; get: (e: LogEntry) => string; textForce?:
   { header: 'Note', get: (e) => e.connectivityNote || '' },
   { header: 'Event Time', get: (e) => (e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB') : 'N/A') },
   {
-    header: 'Location',
+    header: 'Last location',
     get: (e) => {
       if (e.address && e.address !== 'N/A' && e.address !== 'null') return brandLabel(e.address);
       return 'N/A';
     },
   },
+  { header: 'Remark', get: () => '' },
 ];
 
 function scrubPhone(phone?: string) {

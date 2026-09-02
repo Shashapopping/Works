@@ -1949,6 +1949,26 @@
   color: var(--cd-text);
 }
 
+.bpl-automate-pending {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #0078D4 26%, var(--cd-border));
+  background: color-mix(in srgb, #0078D4 7%, var(--cd-surface));
+  color: var(--cd-text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.bpl-automate-pending strong {
+  color: var(--cd-text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 :root[data-theme="dark"] .bpl-automate-schedule-preview,
 .dark .bpl-automate-schedule-preview {
   background: color-mix(in srgb, #0078D4 14%, var(--cd-surface));
@@ -2927,6 +2947,19 @@
 .dm-stat {
   text-align: right;
   min-width: 0;
+}
+
+.dm-stat--tap {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+}
+
+.dm-stat--tap:hover .dm-stat-val {
+  color: var(--bpl-blue);
 }
 
 .dm-stat-val {

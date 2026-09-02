@@ -42,7 +42,12 @@ async function fetchDistanceSummary(fromIso: string | null, toIso: string | null
   if (includeJourneys) params.set('includeJourneys', '1');
   const res = await authFetch(`/api/driver-distance?${params}&trips=0`);
   if (!res.ok) return { drivers: [] as DistanceDriverRow[], assets: [] as any[] };
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  return {
+    ...data,
+    drivers: Array.isArray(data?.drivers) ? data.drivers : [],
+    assets: Array.isArray(data?.assets) ? data.assets : [],
+  };
 }
 
 async function fetchKpi(fromIso: string | null, toIso: string | null): Promise<KpiData | null> {
@@ -67,7 +72,7 @@ export async function generateTabularReport(ctx: ReportBuildContext): Promise<Ta
     const data = await fetchDistanceSummary(ctx.fromIso, ctx.toIso, false);
     return buildDriverScorecardReport({
       events: ctx.events,
-      drivers: (data.drivers || []) as DistanceDriverRow[],
+      drivers: (Array.isArray(data.drivers) ? data.drivers : []) as DistanceDriverRow[],
       reportTitle: typeTitle,
       meta: ctx.meta,
       search: ctx.search,
@@ -77,7 +82,7 @@ export async function generateTabularReport(ctx: ReportBuildContext): Promise<Ta
 
   if (ctx.reportType === 'trips') {
     const data = await fetchDistanceSummary(ctx.fromIso, ctx.toIso, true);
-    const journeys = flattenJourneysFromDistanceAssets(data.assets || []);
+    const journeys = flattenJourneysFromDistanceAssets(Array.isArray(data.assets) ? data.assets : []);
     const groupBy = ctx.tripGroupBy === 'driver' ? 'driver' : 'asset';
     return buildTripReport({
       journeys,
@@ -92,7 +97,7 @@ export async function generateTabularReport(ctx: ReportBuildContext): Promise<Ta
   // asset_utilization
   const kpi = await fetchKpi(ctx.fromIso, ctx.toIso);
   return buildUtilizationReport({
-    assets: kpi?.assets || [],
+    assets: Array.isArray(kpi?.assets) ? kpi.assets : [],
     reportTitle: typeTitle,
     meta: ctx.meta,
     search: ctx.search,

@@ -2,7 +2,7 @@ const NO_RECENT_COMMUNICATION = 'No recent communication';
 const LEGACY_NO_TELEMETRY = 'No telemetry';
 
 const NO_RECENT_COMMUNICATION_DISPLAY_LABEL =
-  'No recent communication (excluding Non-Operational 30 days and Offline 24–30 days)';
+  'No recent communication (2 hrs)';
 
 export function normalizeConnectivityEventType(eventType) {
   if (eventType === LEGACY_NO_TELEMETRY) return NO_RECENT_COMMUNICATION;

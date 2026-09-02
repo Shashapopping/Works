@@ -31,6 +31,7 @@ import {
 } from "./db.js";
 import { querySafetyEventAggregates, queryRiskAggregates } from "./event-aggregates.js";
 import { fuelEventTypeFromId } from "./fuel-constants.js";
+import { queueConnectivityTriggersForPoll } from "./connectivity-triggers.js";
 
 const IDENTITY_URL = "https://identity.za.mixtelematics.com/core/connect/token";
 const API_BASE = "https://integrate.za.mixtelematics.com/api";
@@ -1430,6 +1431,12 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
 
   // Fast path: SQL rollups — no per-trip JS merge when summary-only.
   if (!includeTrips) {
+    // MiX synthetic drivers accumulate every asset; never attach vehicles[] for them
+    // or the distance JSON balloons and crashes Drivers in the browser.
+    const SYSTEM_DRIVER_IDS = new Set([
+      '-7564450339336730068', // Unknown
+      '-4331286019934761070', // No Driver Assigned
+    ]);
     const assetRows = loadTripRollupsByAsset(fromIso, toIso);
     const driverRows = loadTripRollupsByDriver(fromIso, toIso);
     const lastDrivers = loadLastDriverIdByAsset(fromIso, toIso);
@@ -1441,7 +1448,7 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
     for (const row of driverAssets) {
       const driverId = row.driverId != null ? String(row.driverId) : '';
       const assetId = row.assetId != null ? String(row.assetId) : '';
-      if (!driverId || !assetId) continue;
+      if (!driverId || !assetId || SYSTEM_DRIVER_IDS.has(driverId)) continue;
       const reg = vehicleLookup.get(assetId)?.RegistrationNumber;
       if (!reg || reg === 'N/A') continue;
       if (!vehiclesByDriver.has(driverId)) vehiclesByDriver.set(driverId, new Set());
@@ -1480,12 +1487,19 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
     const drivers = driverRows
       .map(row => {
         const driverId = row.driverId != null ? String(row.driverId) : null;
+        if (driverId && SYSTEM_DRIVER_IDS.has(driverId)) return null;
         const driver = driverLookup.get(driverId);
+        const name = driver?.name || 'N/A';
+        const norm = String(name).trim().toLowerCase();
+        if (!norm || norm === 'n/a' || norm === 'unknown' || norm === 'unknown driver'
+          || norm === 'no driver assigned' || norm === 'no driver') {
+          return null;
+        }
         const totalDrivingTimeSeconds = Math.round((Number(row.totalDrivingHours) || 0) * 3600);
         const journeyCount = Number(row.tripCount) || 0;
         return {
           driverId,
-          driverName: driver?.name || 'N/A',
+          driverName: name,
           driverPhone: driver?.phone || 'N/A',
           totalDistanceKm: Number((Number(row.totalDistanceKm) || 0).toFixed(2)),
           journeyCount,
@@ -1493,7 +1507,7 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
           vehicles: driverId ? Array.from(vehiclesByDriver.get(driverId) || []) : [],
         };
       })
-      .filter(d => d.totalDistanceKm > 0)
+      .filter(d => d && d.totalDistanceKm > 0)
       .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm);
 
     const totalDistanceKm = Number(assets.reduce((s, a) => s + a.totalDistanceKm, 0).toFixed(2));
@@ -2393,13 +2407,19 @@ export async function pollOnce() {
       // Fill Unknown/coord locations from Nominatim (cached; rate-limited)
       const geocoded = await processGeocodeQueue();
       const applied = applyCachedAddresses(merged);
+      let finalVehicles = merged;
       if (geocoded > 0 || applied.updated > 0) {
         fs.writeFileSync(dataPath, JSON.stringify(applied.vehicles));
+        finalVehicles = applied.vehicles;
         if (applied.updated > 0) {
           console.log(`📍 Applied ${applied.updated} cached place name(s) to fleet positions`);
         }
       }
       saveAddressCacheIfDirty();
+      const triggerResult = queueConnectivityTriggersForPoll(finalVehicles);
+      if (triggerResult.queued > 0) {
+        console.log(`📬 Queued ${triggerResult.queued} connectivity threshold trigger(s)`);
+      }
 
       console.log(`📊 Panic: ${stats.panic} | Warnings: ${stats.warnings} | Moving: ${stats.moving} | Idle: ${stats.idle} | Excessive Idle: ${stats.excessiveIdle} | Stationary: ${stats.stationary} | Parked: ${stats.parked} | Inactive: ${stats.inactive} | Offline: ${stats.offline}`);
       console.log("💾 Saved to data.json");

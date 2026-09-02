@@ -16,6 +16,8 @@ import {
 import { connectivityEventDisplayLabel } from './connectivity-labels.js';
 import { pruneTabularColumns } from './prune-tabular-columns.js';
 
+const GPS_SILENCE_TRIGGER_LABEL = 'No recent communication (2 hrs)';
+
 const IVMS_EVENT_TYPES = [
   'Harsh Braking',
   'Harsh Acceleration',
@@ -48,13 +50,14 @@ const EVENT_COLUMNS = [
     get: e => (e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB') : 'N/A'),
   },
   {
-    header: 'Location',
+    header: 'Last location',
     get: e => {
       const addr = e.address;
       if (addr && addr !== 'N/A' && addr !== 'null') return addr;
       return 'N/A';
     },
   },
+  { header: 'Remark', get: () => '' },
 ];
 
 const COL_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
@@ -229,6 +232,34 @@ function collectEventEntries(reportConfig, { now, previousSnapshot } = {}) {
   return [...ivmsEntries, ...connectivityEntries];
 }
 
+function pendingTriggerRowsToEntries(rows = []) {
+  return rows.map(row => {
+    let vehicle = {};
+    try {
+      vehicle = row.vehicle_json ? JSON.parse(row.vehicle_json) : {};
+    } catch {
+      vehicle = {};
+    }
+    const eventTime = row.triggered_at || row.created_at || new Date().toISOString();
+    return {
+      eventId: row.id,
+      label: row.event_type,
+      type: 'warning',
+      timestamp: eventTime,
+      eventTime,
+      assetId: String(row.asset_id || ''),
+      regNo: vehicle.regNo || vehicle.RegistrationNumber || 'N/A',
+      assetName: vehicle.assetName || vehicle.Description || 'N/A',
+      site: vehicle.site || vehicle.zone || '',
+      transporter: vehicle.transporter || 'N/A',
+      driverName: vehicle.driverName || 'N/A',
+      driverPhone: vehicle.driverPhone || 'N/A',
+      address: vehicle.address || vehicle.position?.address || 'N/A',
+      connectivityNote: `Triggered at ${Number(row.threshold_hours).toLocaleString()}h silence`,
+    };
+  });
+}
+
 function entriesToTabular(entries, title, meta) {
   return {
     title,
@@ -305,13 +336,20 @@ export function buildAutomationExport({
   title,
   format = 'csv',
   previousSnapshot = null,
+  triggerRows = null,
   now = new Date(),
 }) {
   if (!reportConfig || reportConfig.reportType !== 'events') return null;
 
-  const entries = collectEventEntries(reportConfig, { now, previousSnapshot });
-  const windowPhrase = reportingWindowLabel(reportConfig);
-  const eventLabel = normalizeAutomationEventType(reportConfig.eventType) || 'All event types';
+  const entries = Array.isArray(triggerRows)
+    ? pendingTriggerRowsToEntries(triggerRows)
+    : collectEventEntries(reportConfig, { now, previousSnapshot });
+  const windowPhrase = Array.isArray(triggerRows)
+    ? `New arrivals since last send`
+    : reportingWindowLabel(reportConfig);
+  const eventLabel = Array.isArray(triggerRows)
+    ? GPS_SILENCE_TRIGGER_LABEL
+    : normalizeAutomationEventType(reportConfig.eventType) || 'All event types';
   const meta = [
     `Window: ${windowPhrase}`,
     `Event: ${eventLabel}`,
@@ -319,7 +357,11 @@ export function buildAutomationExport({
     reportConfig.site ? `Site: ${reportConfig.site}` : '',
   ].filter(Boolean).join('  ·  ');
 
-  const report = pruneTabularColumns(entriesToTabular(entries, title || 'Fleet report', meta));
+  const report = pruneTabularColumns(entriesToTabular(
+    entries,
+    Array.isArray(triggerRows) ? GPS_SILENCE_TRIGGER_LABEL : title || 'Fleet report',
+    meta,
+  ));
   const stamp = new Date().toISOString().slice(0, 10);
   const base = `${slugTitle(report.title)}-${stamp}`;
   const fmt = String(format || 'csv').toLowerCase();

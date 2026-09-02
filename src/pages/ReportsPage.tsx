@@ -109,6 +109,7 @@ const EVENT_PREVIEW_LIMIT = 20;
 const REPORT_EMAIL_WARN_ROWS = 5_000;
 const REPORT_EMAIL_MAX_ROWS = 100_000;
 const EVENTS_REFRESH_MS = 30_000;
+const EVENT_TYPES = REPORT_EVENT_TYPE_IDS;
 
 function confirmLargeEmailReport(rowCount: number, format: ExportFormat) {
   if (rowCount <= REPORT_EMAIL_WARN_ROWS) return true;
@@ -212,8 +213,10 @@ function mapDemoEntries(
   events: ReturnType<typeof useFleet>['events'],
   vehicles: ReturnType<typeof useFleet>['vehicles'],
 ): LogEntry[] {
-  return events.map(e => {
-    const vehicle = vehicles.find(v => v.id === e.assetId || v.regNo === e.regNo);
+  const eventRows = Array.isArray(events) ? events : [];
+  const vehicleRows = Array.isArray(vehicles) ? vehicles : [];
+  return eventRows.map(e => {
+    const vehicle = vehicleRows.find(v => v.id === e.assetId || v.regNo === e.regNo);
     return {
       eventId: e.eventId,
       label: e.label,
@@ -232,8 +235,15 @@ function mapDemoEntries(
   });
 }
 
+function eventRowsFromPayload(data: any): Record<string, unknown>[] {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.entries)) return data.entries;
+  return [];
+}
+
 function mapApiEntry(e: Record<string, unknown>, vehicles: ReturnType<typeof useFleet>['vehicles']): LogEntry {
-  const vehicle = vehicles.find(
+  const vehicleRows = Array.isArray(vehicles) ? vehicles : [];
+  const vehicle = vehicleRows.find(
     v => v.id === String(e.assetId ?? '') || v.regNo === String(e.regNo ?? ''),
   );
   return {
@@ -436,7 +446,7 @@ export default function ReportsPage() {
       const url = `/api/events/log?${params}`;
       const applyData = (data: any) => {
         const veh = vehiclesRef.current;
-        const rows = Array.isArray(data) ? data : data?.entries ?? [];
+        const rows = eventRowsFromPayload(data);
         setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, veh)));
         setEventCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
       };
@@ -801,7 +811,7 @@ export default function ReportsPage() {
         const res = await authFetch(`/api/events/log?${params}`);
         if (!res.ok) throw new Error('Failed to fetch events for export');
         const data = await res.json();
-        const rows = Array.isArray(data) ? data : data?.entries ?? [];
+        const rows = eventRowsFromPayload(data);
         const veh = vehiclesRef.current;
         eventsForReport = rows
           .map((e: Record<string, unknown>) => mapApiEntry(e, veh))
