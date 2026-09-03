@@ -415,6 +415,7 @@ export default function ReportsPage() {
   const [tripGroupBy, setTripGroupBy] = useState<TripReportGroupBy>('asset');
   const [tabularPreview, setTabularPreview] = useState<TabularReport | null>(null);
   const [tabularPreviewLoading, setTabularPreviewLoading] = useState(false);
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchTerm);
 
   const reportTitle = brandReportTitle();
   const defaultEmailTo = useMemo(() => {
@@ -629,6 +630,11 @@ export default function ReportsPage() {
   );
 
   useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
+    return () => window.clearTimeout(id);
+  }, [searchTerm]);
+
+  useEffect(() => {
     if (reportType === 'events') {
       setTabularPreview(null);
       setTabularPreviewLoading(false);
@@ -650,9 +656,9 @@ export default function ReportsPage() {
                   : dateRange === '30days' ? 'Last 30 days'
                     : fromDate && toDate ? `${fromDate} to ${toDate}` : 'Custom'
             }`,
-            searchTerm ? `Search: ${searchTerm}` : '',
+            debouncedSearchTerm ? `Search: ${debouncedSearchTerm}` : '',
           ].filter(Boolean).join('  ·  '),
-          search: searchTerm,
+          search: debouncedSearchTerm,
           events: scorecardEvents,
           fromIso: from,
           toIso: to,
@@ -667,7 +673,7 @@ export default function ReportsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [reportType, dateRange, fromDate, toDate, searchTerm, scorecardEvents, reportTitle, tripGroupBy, vehicleRefs]);
+  }, [reportType, dateRange, fromDate, toDate, debouncedSearchTerm, scorecardEvents, reportTitle, tripGroupBy, vehicleRefs]);
 
   const tabularPreviewRows = useMemo(
     () => (tabularPreview?.rows ?? []).slice(0, EVENT_PREVIEW_LIMIT),

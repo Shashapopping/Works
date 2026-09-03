@@ -55,12 +55,11 @@ const COL_TIPS: Record<string, string> = {
   '4h continuous': 'Max 4 hours continuous driving. A parked gap of ≥30 minutes resets the block.',
   'Daily rest': 'Driver needs at least 8 hours continuous rest inside each rolling 24-hour cycle.',
   'Weekly rest': 'At least 24 hours continuous off-duty rest required in every rolling 7-day week.',
-  'Drive time': 'Driving credited inside the selected Lagos day only. Overnight trips are clipped at midnight — yesterday’s hours do not count toward today. Long open trips with almost no distance are also capped.',
+  'Drive time': 'Total minutes driven inside the selected Lagos day.',
   'Trip time': 'Sum of each trip’s clock time inside the selected day (clipped at midnight). Gaps between trips are not counted — so an overnight open trip cannot stretch Trip time to ~23h.',
-  'Longest block': 'Longest continuous drive block this day toward the 4-hour limit. The time under the bar is the actual minutes driven in that block.',
   'Violation value': 'Extra driving minutes past the 4-hour continuous limit.',
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',
-  'Current block': 'How full the live continuous drive block is toward 4 hours. The time under the bar is the actual minutes in the live block. Resets after a ≥30 min rest.',
+  'Present Block': 'How full the live continuous drive block is toward 4 hours. The time under the bar is the actual minutes in the live block. Resets after a ≥30 min rest.',
   'Drive left': 'Time left before the 4h continuous-driving breach. Negative time means the 4h limit has already been passed.',
   'Since 8h rest': 'Elapsed time since the last >=8h continuous rest ended. The bar breaches at 24h and can show over 100%.',
   'Hours left': 'Time left before the daily-rest breach point. Negative time means the 24h window has already been passed.',
@@ -83,8 +82,8 @@ const HOS_GROUPS: {
     title: '4h continuous',
     className: 'bpl-fatigue-group-4h',
     fields: [
-      { label: 'Longest block', align: 'right' },
-      { label: 'Current block', align: 'right' },
+      { label: 'Drive time', align: 'right' },
+      { label: 'Present Block', align: 'right' },
       { label: 'Drive left', align: 'right' },
       { label: 'Violation value', align: 'right' },
     ],
@@ -211,12 +210,6 @@ function hosDayOptionLabel(day: string, daysBack: number) {
 
 function limitOf(record: HosRecord) {
   return record.driveLimitMinutes || 240;
-}
-
-function longestBlockMinutes(record: HosRecord) {
-  if (record.maxContinuousMinutes > 0) return record.maxContinuousMinutes;
-  if (record.continuousMinutes > 0) return record.continuousMinutes;
-  return 0;
 }
 
 function currentBlockMinutes(record: HosRecord) {
@@ -871,7 +864,6 @@ export default function FatigueManagementPage() {
               </tr>
             ) : pagination.pageRows.map(record => {
               const limit = limitOf(record);
-              const longestMin = longestBlockMinutes(record);
               const currentMin = currentBlockMinutes(record);
               const driveMinutesLeft = limit - currentMin;
               const vDrive = record.violationDriveMinutes ?? 0;
@@ -894,15 +886,13 @@ export default function FatigueManagementPage() {
                   <td className="bpl-fatigue-cell-clip" title={record.site || undefined}>{record.site || '—'}</td>
 
                   {/* 4h continuous */}
-                  <FatigueMeter
-                    className="bpl-fatigue-td-4h bpl-fatigue-td-meter bpl-fatigue-field-start"
-                    minutes={longestMin}
-                    limit={limit}
-                    color={meterColor(longestMin, limit)}
-                    title={`Longest continuous block: ${fmtHosMinutes(longestMin)} (${longestMin} min) toward the 4h limit`}
-                    showTime
-                    allowOverLimitPct
-                  />
+                  <td
+                    className="bpl-fatigue-td-4h bpl-fatigue-field-start"
+                    style={{ textAlign: 'right' }}
+                    title={COL_TIPS['Drive time']}
+                  >
+                    {fmtHosMinutes(record.driveMinutesToday)}
+                  </td>
                   <FatigueMeter
                     className="bpl-fatigue-td-4h bpl-fatigue-td-meter"
                     minutes={currentMin}
@@ -910,8 +900,8 @@ export default function FatigueManagementPage() {
                     color={meterColor(currentMin, limit)}
                     title={
                       currentMin <= 0 && isTodayView
-                        ? 'Current block reset after a ≥30 min rest (0 min)'
-                        : `Current continuous block: ${fmtHosMinutes(currentMin)} (${currentMin} min) toward the 4h limit`
+                        ? 'Present block reset after a ≥30 min rest (0 min)'
+                        : `Present continuous block: ${fmtHosMinutes(currentMin)} (${currentMin} min) toward the 4h limit`
                     }
                     showTime
                     allowOverLimitPct
@@ -925,7 +915,7 @@ export default function FatigueManagementPage() {
                     }}
                     title={
                       currentMin <= 0 && isTodayView
-                        ? 'Current block reset after a ≥30 min rest — full 4h available again'
+                        ? 'Present block reset after a ≥30 min rest — full 4h available again'
                         : driveMinutesLeft < 0
                           ? `4h continuous-driving limit is overdue by ${fmtHosMinutes(Math.abs(driveMinutesLeft))}`
                           : `${fmtHosMinutes(driveMinutesLeft)} left before the 4h continuous-driving breach`

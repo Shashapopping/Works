@@ -1830,10 +1830,24 @@ function plausibleHosDriveSec(distanceKm, driveSecCandidate, spanSec) {
   return driveSec;
 }
 
-function pushNormalizedTrip(byDriver, raw, rangeStart, rangeEnd) {
+function pushNormalizedTrip(byDriver, raw, rangeStart, rangeEnd, liveStatusByAsset) {
   const t = normalizeTripForDistance(raw);
   const startMs = t.tripStart ? new Date(t.tripStart).getTime() : NaN;
-  const endMs = t.tripEnd ? new Date(t.tripEnd).getTime() : NaN;
+  const rawEndMs = t.tripEnd ? new Date(t.tripEnd).getTime() : NaN;
+  // Open trip (no TripEnd synced yet). Only extend it through rangeEnd ("now" for
+  // today) when the live poller currently sees this asset actually Moving — otherwise
+  // MiX just never closed the trip out, and stretching it to "now" would make a
+  // stopped driver look like they're still driving, forever, every time this runs.
+  // Fall back to the asset's last known GPS timestamp instead.
+  let endMs = rawEndMs;
+  if (!Number.isFinite(endMs) && Number.isFinite(startMs)) {
+    const live = liveStatusByAsset?.get(t.assetId);
+    if (live?.status === 'Moving') {
+      endMs = rangeEnd;
+    } else if (Number.isFinite(live?.dateMs)) {
+      endMs = Math.min(live.dateMs, rangeEnd);
+    }
+  }
   const anchor = Number.isFinite(endMs) ? endMs : startMs;
   if (!Number.isFinite(anchor)) return;
   // Keep trips that overlap the window (not only those ending inside it).
@@ -1907,12 +1921,19 @@ export function getHosRecords(dayStr) {
   if (vehicleLookup.size === 0) loadVehicleLookup();
 
   const liveZoneByAsset = new Map();
+  // assetId -> { status, dateMs } from the live poller — lets an open trip (no TripEnd
+  // synced yet) tell "still actually driving" from "MiX never closed this out".
+  const liveStatusByAsset = new Map();
   try {
     const dataPath = path.join(process.cwd(), 'public', 'data.json');
     if (fs.existsSync(dataPath)) {
       const rows = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
       rows.forEach(v => {
         if (v.id && v.zone) liveZoneByAsset.set(String(v.id), v.zone);
+        if (v.id) {
+          const dateMs = v.date ? new Date(v.date).getTime() : NaN;
+          liveStatusByAsset.set(String(v.id), { status: v.status, dateMs });
+        }
       });
     }
   } catch { /* ignore */ }
@@ -1959,7 +1980,7 @@ export function getHosRecords(dayStr) {
 
   const byDriver = new Map();
   for (const raw of getTripsInRange(new Date(weekStart).toISOString(), new Date(windowEnd).toISOString())) {
-    pushNormalizedTrip(byDriver, raw, weekStart, windowEnd);
+    pushNormalizedTrip(byDriver, raw, weekStart, windowEnd, liveStatusByAsset);
   }
 
   const records = [];

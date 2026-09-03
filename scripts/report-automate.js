@@ -747,8 +747,11 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
   const sendAt = new Date();
   const row = getDb().prepare('SELECT last_offline_snapshot FROM report_automations WHERE id = ?').get(id);
   const previousSnapshot = parseOfflineSnapshot(row?.last_offline_snapshot);
-  const triggerRows = isTriggerModeConfig(auto.reportConfig)
-    ? listPendingConnectivityTriggers(auto.id)
+  const triggerWindow = isTriggerModeConfig(auto.reportConfig)
+    ? periodBounds({ frequency: 'hourly', now: sendAt })
+    : null;
+  const triggerRows = triggerWindow
+    ? listPendingConnectivityTriggers(auto.id, triggerWindow)
     : null;
   const payload = triggerRows
     ? buildTriggerPackPayload(auto, triggerRows, sendAt)
@@ -763,7 +766,7 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
     previousSnapshot,
   });
 
-  const exportFile = buildAutomationExport({
+  const exportFile = await buildAutomationExport({
     reportConfig: auto.reportConfig,
     title: auto.title,
     format: auto.format,
@@ -788,6 +791,7 @@ export async function sendAutomationNow(id, userId, { test = false } = {}) {
       SET last_sent_at = ?, next_send_at = ?, last_error = NULL, updated_at = ?
       WHERE id = ?
     `).run(now, nextSendAt, now, id);
+    clearPendingConnectivityTriggers(id);
     return { sent: false, skipped: 'no_pending_triggers', automation: getAutomationForUser(id, userId), rowCount: 0 };
   }
 

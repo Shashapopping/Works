@@ -63,6 +63,18 @@ function shouldQueue({ ageHours, thresholdHours }) {
   return ageHours != null && ageHours >= thresholdHours;
 }
 
+export function connectivityThresholdCrossedAt(lastSeenIso, thresholdHours = GPS_SILENCE_TRIGGER_HOURS) {
+  if (!lastSeenIso) return null;
+  const lastSeen = new Date(lastSeenIso);
+  const threshold = Number(thresholdHours);
+  if (!Number.isFinite(lastSeen.getTime()) || !Number.isFinite(threshold)) return null;
+  return new Date(lastSeen.getTime() + threshold * 60 * 60 * 1000).toISOString();
+}
+
+export function pendingTriggerEffectiveTime(row) {
+  return connectivityThresholdCrossedAt(row?.last_seen_at, row?.threshold_hours) || row?.triggered_at || null;
+}
+
 function activeTriggerAutomations() {
   const rows = getDb().prepare(`
     SELECT id, report_config
@@ -159,8 +171,13 @@ export function queueConnectivityTriggersForPoll(vehicles, now = new Date()) {
         const ageHours = gpsAgeHours(vehicle, nowMs);
         const silent = ageHours != null && ageHours >= thresholdHours;
         const state = getState.get(automation.id, assetId);
+        const lastSeenIso = lastSeenAt(vehicle);
+        const crossedAt = pendingTriggerEffectiveTime({
+          last_seen_at: lastSeenIso,
+          threshold_hours: thresholdHours,
+        });
 
-        if (state && !state.was_silent && shouldQueue({ ageHours, thresholdHours })) {
+        if (state && !state.was_silent && crossedAt && shouldQueue({ ageHours, thresholdHours })) {
           const result = insertPending.run(
             crypto.randomUUID(),
             automation.id,
@@ -168,15 +185,15 @@ export function queueConnectivityTriggersForPoll(vehicles, now = new Date()) {
             eventType,
             thresholdHours,
             'gte',
-            stamp,
-            lastSeenAt(vehicle),
+            crossedAt,
+            lastSeenIso,
             JSON.stringify(vehicle),
             stamp,
           );
           queued += result.changes || 0;
         }
 
-        upsertState.run(automation.id, assetId, silent ? 1 : 0, ageHours, lastSeenAt(vehicle), stamp);
+        upsertState.run(automation.id, assetId, silent ? 1 : 0, ageHours, lastSeenIso, stamp);
       }
     }
   });
@@ -192,14 +209,24 @@ export function pendingConnectivityTriggerCount(automationId) {
   `).get(automationId)?.c || 0;
 }
 
-export function listPendingConnectivityTriggers(automationId) {
+export function listPendingConnectivityTriggers(automationId, window = null) {
   if (!automationId) return [];
-  return getDb().prepare(`
+  const rows = getDb().prepare(`
     SELECT *
     FROM connectivity_trigger_pending
     WHERE automation_id = ?
     ORDER BY created_at ASC
   `).all(automationId);
+  if (!window?.from || !window?.to) return rows;
+
+  const fromMs = new Date(window.from).getTime();
+  const toMs = new Date(window.to).getTime();
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return rows;
+
+  return rows.filter(row => {
+    const effectiveMs = new Date(pendingTriggerEffectiveTime(row) || '').getTime();
+    return Number.isFinite(effectiveMs) && effectiveMs >= fromMs && effectiveMs <= toMs;
+  });
 }
 
 export function clearPendingConnectivityTriggers(automationId) {

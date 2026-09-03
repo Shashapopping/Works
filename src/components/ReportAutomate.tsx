@@ -285,7 +285,7 @@ export default function ReportAutomate({
       assetCount: connectivityAssetCount,
     });
     if (!isNoRecent) return base;
-    return `${NO_RECENT_COMMUNICATION_DISPLAY_LABEL} is stored once when a vehicle reaches 2 hours without GPS. New arrivals are sent hourly.`;
+    return `${NO_RECENT_COMMUNICATION_DISPLAY_LABEL} is stored once when a vehicle reaches 2 hours without GPS. New arrivals are sent hourly.${nightBatch ? ' Events from 7:00 PM to 6:00 AM Lagos are batched and delivered at 6:00 AM.' : ''}`;
   }, [
     scheduleTick,
     frequency,
@@ -318,7 +318,6 @@ export default function ReportAutomate({
     });
     if (normalized === NO_RECENT_COMMUNICATION) {
       setFrequency('hourly');
-      setNightBatch(false);
     }
   };
 
@@ -408,7 +407,7 @@ export default function ReportAutomate({
         lookbackUnit: 'hours' as const,
         eventType: NO_RECENT_COMMUNICATION,
         format: config.format,
-        nightBatch: false,
+        nightBatch,
       }
       : { ...config, format: config.format, nightBatch: frequency === 'hourly' ? nightBatch : false };
     const payload = {
@@ -757,7 +756,7 @@ export default function ReportAutomate({
                 </div>
               )}
 
-              {config.eventType !== NO_RECENT_COMMUNICATION && frequency === 'hourly' && (
+              {(config.eventType === NO_RECENT_COMMUNICATION || frequency === 'hourly') && (
                 <label className="bpl-automate-night-batch">
                   <input
                     type="checkbox"
