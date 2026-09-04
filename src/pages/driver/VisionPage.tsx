@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Camera, Smartphone, Search, EyeOff } from 'lucide-react';
 import { authFetch } from '../../context/FleetContext';
 import { isActiveDriver, displayDriverName } from '../../lib/driverUtils';
-import { DEMO_BRANDING, demoDriverLabel } from '../../config/demoBranding';
 import MockNamesBadge from '../../components/MockNamesBadge';
 import { type KpiPeriodMode, type FatigueDriverRow, buildKpiUrl, defaultKpiCustomRange } from '../../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../../lib/apiCache';
@@ -17,11 +16,7 @@ type VisionRow = FatigueDriverRow & { visionTotal: number };
 type SortKey = 'driverName' | 'distractionCount' | 'phoneDistractionCount' | 'visionTotal' | 'lastEventTime';
 
 function scrubKpiDrivers(list: FatigueDriverRow[]): FatigueDriverRow[] {
-  if (!DEMO_BRANDING) return list;
-  return list.map(d => ({
-    ...d,
-    driverName: isActiveDriver(d.driverName, d.driverId) ? demoDriverLabel(d.driverName) : d.driverName,
-  }));
+  return list;
 }
 
 function fmtTime(iso: string | null) {

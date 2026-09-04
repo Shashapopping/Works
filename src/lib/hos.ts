@@ -2,7 +2,7 @@
  * Hours-of-Service — continuous-driving-time compliance, served by /api/hos.
  *
  * Rules:
- * 1) 4 hours continuous driving requires a ≥30-minute rest (parked gap between trips).
+ * 1) 4 hours continuous driving requires a ≥20-minute rest (parked gap between trips).
  * 2) 8 hours continuous rest required inside each rolling 24-hour cycle.
  * 3) ≥24 hours continuous rest within a rolling 7-day week.
  * "Today" = since 00:00 Africa/Lagos — trip drive time is clipped to that day

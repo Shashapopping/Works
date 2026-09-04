@@ -532,6 +532,64 @@ function packsFromReportConfig(config, fallback = []) {
   return Array.isArray(fallback) && fallback.length ? fallback : ['report:events'];
 }
 
+function stableComparable(value) {
+  if (Array.isArray(value)) return value.map(stableComparable);
+  if (!value || typeof value !== 'object') return value;
+  return Object.keys(value).sort().reduce((acc, key) => {
+    const next = value[key];
+    if (next === undefined) return acc;
+    acc[key] = stableComparable(next);
+    return acc;
+  }, {});
+}
+
+function comparableReportConfig(config) {
+  if (!config) return null;
+  return stableComparable({
+    ...config,
+    siteKeys: [...(config.siteKeys || [])].map(String).sort(),
+  });
+}
+
+function automationSignature({ frequency, packs, reportConfig, format, recipients, sendHour, dayOfWeek, dayOfMonth, timezone }) {
+  return JSON.stringify(stableComparable({
+    frequency,
+    packs: [...(packs || [])].map(String).sort(),
+    reportConfig: comparableReportConfig(reportConfig),
+    format: normalizeReportFormat(format),
+    recipients: [...(recipients || [])].map(e => String(e || '').trim().toLowerCase()).filter(Boolean).sort(),
+    sendHour,
+    dayOfWeek,
+    dayOfMonth,
+    timezone,
+  }));
+}
+
+function findDuplicateAutomation(userId, candidate, ignoreId = null) {
+  const wanted = automationSignature(candidate);
+  const rows = getDb().prepare(`
+    SELECT * FROM report_automations
+    WHERE user_id = ?
+  `).all(userId);
+  for (const row of rows) {
+    if (ignoreId && row.id === ignoreId) continue;
+    const existing = rowToAutomation(row);
+    const sig = automationSignature({
+      frequency: existing.frequency,
+      packs: existing.packs,
+      reportConfig: existing.reportConfig,
+      format: existing.format,
+      recipients: existing.recipients,
+      sendHour: existing.sendHour,
+      dayOfWeek: existing.dayOfWeek,
+      dayOfMonth: existing.dayOfMonth,
+      timezone: existing.timezone,
+    });
+    if (sig === wanted) return existing;
+  }
+  return null;
+}
+
 function archiveAutomationProfile(userId, automation) {
   if (!automation?.reportConfig) return null;
   try {
@@ -595,6 +653,24 @@ export function createAutomation(userId, input, userEmail) {
     timezone,
     nightBatch: input.frequency === 'hourly' && reportConfig?.nightBatch,
   });
+  const duplicate = findDuplicateAutomation(userId, {
+    frequency: input.frequency,
+    packs,
+    reportConfig,
+    format,
+    recipients,
+    sendHour,
+    dayOfWeek,
+    dayOfMonth,
+    timezone,
+  });
+  if (duplicate) {
+    throw Object.assign(new Error('That exact automation already exists.'), {
+      status: 409,
+      code: 'duplicate_automation',
+      duplicateId: duplicate.id,
+    });
+  }
 
   getDb().prepare(`
     INSERT INTO report_automations (
@@ -681,6 +757,25 @@ export function updateAutomation(id, userId, input, userEmail) {
   validateInput({ frequency, packs, recipients });
 
   const scheduleChanged = scheduleFieldsChanged(input, existing);
+
+  const duplicate = findDuplicateAutomation(userId, {
+    frequency,
+    packs,
+    reportConfig,
+    format,
+    recipients,
+    sendHour,
+    dayOfWeek,
+    dayOfMonth,
+    timezone,
+  }, id);
+  if (duplicate) {
+    throw Object.assign(new Error('That exact automation already exists.'), {
+      status: 409,
+      code: 'duplicate_automation',
+      duplicateId: duplicate.id,
+    });
+  }
 
   const nextSendAt = !enabled
     ? existing.nextSendAt
@@ -873,8 +968,19 @@ export async function processDueAutomations() {
 
 let schedulerStarted = false;
 
+function reportAutomateSchedulerEnabled() {
+  const flag = String(process.env.REPORT_AUTOMATE_SCHEDULER || '').trim().toLowerCase();
+  if (['0', 'false', 'off', 'no'].includes(flag)) return false;
+  if (['1', 'true', 'on', 'yes'].includes(flag)) return true;
+  return process.env.NODE_ENV === 'production';
+}
+
 export function startReportAutomateScheduler() {
   if (schedulerStarted) return;
+  if (!reportAutomateSchedulerEnabled()) {
+    console.log('📬 Report Automate scheduler disabled outside production');
+    return;
+  }
   schedulerStarted = true;
   const tick = () => {
     processDueAutomations().catch(e => {

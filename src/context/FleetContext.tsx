@@ -17,7 +17,7 @@ import {
   DEMO_TRIPS,
 } from '../lib/homeWidgetData';
 import { isKnownDriver } from '../lib/driverUtils';
-import { DEMO_BRANDING, demoDriverLabel, demoPlaceLabel } from '../config/demoBranding';
+import { DEMO_BRANDING, demoPlaceLabel } from '../config/demoBranding';
 import {
   sanitizeLogEntry,
   sanitizeVehicle,
@@ -56,9 +56,7 @@ async function generateSafeIQAnalysis(
   if (!SAFEIQ_ENABLED || !ANTHROPIC_API_KEY) return null;
 
   const eventType = e.label || 'Unknown';
-  const driver = (DEMO_BRANDING && e.driverName)
-    ? demoDriverLabel(e.driverName)
-    : (e.driverName || 'Unknown Driver');
+  const driver = e.driverName || 'Unknown Driver';
   const vehicle = e.regNo || e.assetId;
   const location = (DEMO_BRANDING && e.address)
     ? demoPlaceLabel(e.address)

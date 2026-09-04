@@ -1631,7 +1631,7 @@ export function getDriverDistanceSummary({ range = '24h', month = null, from = n
 }
 
 /**
- * Walk one driver-day's trips (chronological). Rest = a >=30 min gap between trips
+ * Walk one driver-day's trips (chronological). Rest = a >=20 min gap between trips
  * (vehicle parked / ignition off). Lafarge trips have no sub-trip telemetry, so — unlike
  * an ELD — a stop *within* a single trip (traffic, loading) can't be distinguished from a
  * genuine break; only inter-trip gaps reset the continuous-driving clock.
@@ -1911,7 +1911,7 @@ function clipTripsToWindow(trips, windowStart, windowEnd) {
 
 /**
  * Hours-of-Service rules (Africa/Lagos day):
- * 1) 4h continuous driving → ≥30 min rest resets the block
+ * 1) 4h continuous driving → ≥20 min rest resets the block
  * 2) ≥8h continuous rest required inside each rolling 24h cycle
  * 3) ≥24h continuous rest within a rolling 7-day week
  */
@@ -1945,8 +1945,8 @@ export function getHosRecords(dayStr) {
   const WEEKLY_REST_MIN = 24 * 60;   // 24 hours continuous rest in a week
   const WEEKLY_REST_WINDOW_MIN = 7 * 24 * 60;
   const DUTY_LIMIT_MIN = 720;        // 12 hours (display only)
-  const REST_GAP_MIN = 30;           // a >=30m gap counts as a rest / break
-  const WARN_MIN = 210;              // "approaching 4h" (within 30 min of the limit)
+  const REST_GAP_MIN = 20;           // a >=20m gap counts as a rest / break
+  const WARN_MIN = 220;              // "approaching 4h" (within 20 min of the limit)
   const CYCLE_8H_WARN_MIN = 450;     // approaching 8h continuous in 24h
   const DAILY_REST_WARN_MIN = 20 * 60;
 
@@ -2143,7 +2143,7 @@ export function getHosRecords(dayStr) {
 }
 
 const HOS_DRIVE_LIMIT_MIN = 240;
-const HOS_REST_GAP_MIN = 30;
+const HOS_REST_GAP_MIN = 20;
 const HOS_SLICE_MIN = 10;
 
 let safetyExposureCache = new Map();
@@ -2165,7 +2165,7 @@ function writeSafetyExposureCache(key, value) {
 
 /**
  * Minutes a 4h-continuous HOS breach was actually held in [fromIso, toIso]:
- * drive minutes past the 4h limit (a ≥30 min rest resets the block).
+ * drive minutes past the 4h limit (a ≥20 min rest resets the block).
  * Every 10 of these minutes becomes a score slice on the client.
  */
 function parseAssetIdList(raw) {

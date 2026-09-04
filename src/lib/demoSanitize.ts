@@ -1,17 +1,9 @@
 import {
   DEMO_BRANDING,
-  demoDriverLabel,
   demoPhoneLabel,
   demoPlaceLabel,
 } from '../config/demoBranding';
-import { isKnownDriver } from './driverUtils';
 import type { SafetyNotification } from '../hooks/useSafeIQ';
-
-function scrubDriverName(name?: string | null): string | undefined {
-  if (name == null) return name ?? undefined;
-  if (!isKnownDriver(name)) return name;
-  return demoDriverLabel(name);
-}
 
 function scrubPlace(value?: string | null): string | undefined {
   if (value == null || value === '') return value ?? undefined;
@@ -29,7 +21,7 @@ export function sanitizeLogEntry<T extends {
   if (!DEMO_BRANDING) return e;
   return {
     ...e,
-    driverName: scrubDriverName(e.driverName) ?? e.driverName,
+    driverName: e.driverName,
     driverPhone: e.driverPhone ? demoPhoneLabel(e.driverPhone) : e.driverPhone,
     transporter: scrubPlace(e.transporter) ?? e.transporter,
     address: scrubPlace(e.address) ?? e.address,
@@ -63,7 +55,7 @@ export function sanitizeNotification(n: SafetyNotification): SafetyNotification 
     ...n,
     driver: {
       ...n.driver,
-      name: isKnownDriver(n.driver.name) ? demoDriverLabel(n.driver.name) : n.driver.name,
+      name: n.driver.name,
     },
     location: scrubPlace(n.location) ?? n.location,
   };
@@ -78,15 +70,13 @@ export function sanitizeDriverDistance<T extends {
     ...summary,
     drivers: summary.drivers.map(d => ({
       ...d,
-      driverName: isKnownDriver(d.driverName) ? demoDriverLabel(d.driverName) : d.driverName,
+      driverName: d.driverName,
       driverPhone: d.driverPhone ? demoPhoneLabel(d.driverPhone) : d.driverPhone,
     })),
     assets: summary.assets.map(a => ({
       ...a,
       assetName: scrubPlace(a.assetName) ?? a.assetName,
-      drivers: a.drivers.map(name =>
-        isKnownDriver(name) ? demoDriverLabel(name) : name,
-      ),
+      drivers: a.drivers,
     })),
   };
 }
@@ -95,14 +85,13 @@ export function sanitizeVaultRecord<T extends { driverName: string; location: st
   if (!DEMO_BRANDING) return r;
   return {
     ...r,
-    driverName: isKnownDriver(r.driverName) ? demoDriverLabel(r.driverName) : r.driverName,
+    driverName: r.driverName,
     location: scrubPlace(r.location) ?? r.location,
   };
 }
 
 export function sanitizeDriverScore<T extends { name: string }>(d: T): T {
-  if (!DEMO_BRANDING || !isKnownDriver(d.name)) return d;
-  return { ...d, name: demoDriverLabel(d.name) };
+  return d;
 }
 
 /** Scrub a TripDriver row from /api/driver-distance (page-local fetches). */
@@ -113,7 +102,7 @@ export function sanitizeTripDriver<T extends {
   if (!DEMO_BRANDING) return d;
   return {
     ...d,
-    driverName: isKnownDriver(d.driverName) ? demoDriverLabel(d.driverName) : d.driverName,
+    driverName: d.driverName,
     driverPhone: d.driverPhone ? demoPhoneLabel(d.driverPhone) : d.driverPhone,
   };
 }

@@ -368,7 +368,25 @@ export default function ReportAutomate({
 
   useEffect(() => { void load(); }, [load]);
 
+  const resetForNewAutomation = () => {
+    setSelectedAutomationId('');
+    setConfig(normalizeConfigForUi(DEFAULT_CONFIG));
+    setFrequency(defaultFrequency);
+    setRecipients(defaultRecipient || user?.email || '');
+    setSendHour(7);
+    setDayOfWeek(1);
+    setDayOfMonth(0);
+    setMonthlyPeriodMode('end');
+    setNightBatch(false);
+    setMessage(null);
+    setError(null);
+  };
+
   const loadAutomationForEdit = (id: string) => {
+    if (!id) {
+      resetForNewAutomation();
+      return;
+    }
     setSelectedAutomationId(id);
     const a = automations.find(item => item.id === id);
     if (!a) return;
@@ -421,9 +439,7 @@ export default function ReportAutomate({
       dayOfMonth,
       timezone: 'Africa/Lagos',
     };
-    const existingId = selectedAutomationId
-      || automations.find(a => a.title === reportTitle)?.id
-      || '';
+    const existingId = selectedAutomationId;
     try {
       const res = await automateFetch(
         existingId ? `/api/reports/automate/${existingId}` : '/api/reports/automate',
