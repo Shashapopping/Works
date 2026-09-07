@@ -1,8 +1,15 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useFleet } from '../../context/FleetContext';
 import { displayDriverName } from '../../lib/driverUtils';
-import { CATEGORY_COLORS, type ConsequenceCategory } from '../../lib/consequenceScore';
+import {
+  CATEGORY_COLORS,
+  CONSEQUENCE_CONFIG_EVENT,
+  CONSEQUENCE_CONFIG_KEY,
+  loadConsequenceConfig,
+  type ConsequenceCategory,
+  type ConsequenceScoreConfig,
+} from '../../lib/consequenceScore';
 import { assessDrivers, pickHomeDriverMix, latestEventIso } from '../../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../../hooks/useAssessmentTripDrivers';
 
@@ -24,9 +31,26 @@ function timeAgo(iso: string) {
 export default function DriverPerformanceWidget() {
   const { events } = useFleet();
   const { tripDrivers } = useAssessmentTripDrivers();
+  const [consequenceConfig, setConsequenceConfig] = useState<ConsequenceScoreConfig>(() => loadConsequenceConfig());
+
+  useEffect(() => {
+    const onConfig = (event: Event) => {
+      setConsequenceConfig((event as CustomEvent<ConsequenceScoreConfig>).detail ?? loadConsequenceConfig());
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === CONSEQUENCE_CONFIG_KEY) setConsequenceConfig(loadConsequenceConfig());
+    };
+    window.addEventListener(CONSEQUENCE_CONFIG_EVENT, onConfig);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(CONSEQUENCE_CONFIG_EVENT, onConfig);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
   const rows = useMemo(
-    () => pickHomeDriverMix(assessDrivers(events, tripDrivers)),
-    [events, tripDrivers],
+    () => pickHomeDriverMix(assessDrivers(events, tripDrivers, consequenceConfig)),
+    [consequenceConfig, events, tripDrivers],
   );
 
   return (

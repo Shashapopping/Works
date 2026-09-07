@@ -1,5 +1,6 @@
 import { displayDriverName } from '../driverUtils';
 import type { TabularReport } from '../reportTypes';
+import { matchesTripSearch, transporterByReg, type ReportVehicleRef } from './reportSearch';
 
 export type TripReportGroupBy = 'asset' | 'driver';
 
@@ -70,8 +71,9 @@ export function buildTripReport(opts: {
   meta: string;
   search?: string;
   groupBy?: TripReportGroupBy;
+  vehicles?: ReportVehicleRef[];
 }): TabularReport {
-  const q = (opts.search || '').trim().toLowerCase();
+  const transporterLookup = transporterByReg(opts.vehicles || []);
   const groupBy: TripReportGroupBy = opts.groupBy === 'driver' ? 'driver' : 'asset';
 
   const columns = [
@@ -87,9 +89,17 @@ export function buildTripReport(opts: {
   ];
 
   const filtered = (opts.journeys || []).filter(j => {
-    if (!q) return true;
-    const hay = `${j.regNo || ''} ${j.assetName || ''} ${j.driverName || ''} ${j.assetId || ''}`.toLowerCase();
-    return hay.includes(q);
+    const transporter = transporterLookup.get((j.regNo || '').trim().toLowerCase()) || '';
+    return matchesTripSearch(
+      {
+        regNo: j.regNo,
+        assetName: j.assetName,
+        assetId: j.assetId,
+        driverName: j.driverName,
+        transporter,
+      },
+      opts.search || '',
+    );
   });
 
   const buckets = new Map<string, { label: string; trips: JourneyRow[] }>();

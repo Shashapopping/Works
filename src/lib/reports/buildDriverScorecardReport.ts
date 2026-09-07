@@ -6,6 +6,11 @@ import {
 import { displayDriverName, isActiveDriver, isActiveDriverId } from '../driverUtils';
 import type { LogEntry } from '../reportExport';
 import type { TabularReport } from '../reportTypes';
+import {
+  matchesDriverScorecardSearch,
+  transporterByReg,
+  type ReportVehicleRef,
+} from './reportSearch';
 
 export interface DistanceDriverRow {
   driverId?: string | null;
@@ -28,16 +33,18 @@ export function buildDriverScorecardReport(opts: {
   reportTitle: string;
   meta: string;
   search?: string;
+  vehicles?: ReportVehicleRef[];
 }): TabularReport {
-  const { events, drivers, reportTitle, meta, search = '' } = opts;
+  const { events, drivers, reportTitle, meta, search = '', vehicles = [] } = opts;
   const config = loadConsequenceConfig();
-  const q = search.trim().toLowerCase();
+  const transporterLookup = transporterByReg(vehicles);
 
   const distanceByKey = new Map<string, number>();
   const drivingByKey = new Map<string, number>();
   const journeysByKey = new Map<string, number>();
   const phoneByKey = new Map<string, string>();
   const regByKey = new Map<string, string>();
+  const transporterByKey = new Map<string, string>();
   const nameByKey = new Map<string, string>();
 
   for (const d of drivers) {
@@ -49,7 +56,12 @@ export function buildDriverScorecardReport(opts: {
     journeysByKey.set(key, (journeysByKey.get(key) || 0) + (d.journeyCount || 0));
     if (d.driverPhone) phoneByKey.set(key, d.driverPhone);
     if (d.driverName) nameByKey.set(key, d.driverName);
-    if (d.vehicles?.[0]) regByKey.set(key, d.vehicles[0]);
+    const reg = d.vehicles?.[0];
+    if (reg) {
+      regByKey.set(key, reg);
+      const t = transporterLookup.get(reg.trim().toLowerCase());
+      if (t) transporterByKey.set(key, t);
+    }
   }
 
   const eventsByKey = new Map<string, LogEntry[]>();
@@ -63,7 +75,11 @@ export function buildDriverScorecardReport(opts: {
     eventsByKey.get(key)!.push(e);
     if (e.driverName) nameByKey.set(key, e.driverName);
     if (e.driverPhone) phoneByKey.set(key, e.driverPhone);
-    if (e.regNo && e.regNo !== 'N/A') regByKey.set(key, e.regNo);
+    if (e.regNo && e.regNo !== 'N/A') {
+      regByKey.set(key, e.regNo);
+      const t = transporterLookup.get(e.regNo.trim().toLowerCase());
+      if (t) transporterByKey.set(key, t);
+    }
   }
 
   const keys = new Set([...distanceByKey.keys(), ...eventsByKey.keys()]);
@@ -89,11 +105,9 @@ export function buildDriverScorecardReport(opts: {
   for (const key of keys) {
     const name = nameByKey.get(key) || key;
     const phone = phoneByKey.get(key) || 'N/A';
+    const transporter = transporterByKey.get(key) || '';
     const reg = regByKey.get(key) || 'N/A';
-    if (q) {
-      const hay = `${name} ${phone} ${reg}`.toLowerCase();
-      if (!hay.includes(q)) continue;
-    }
+    if (!matchesDriverScorecardSearch(name, phone, transporter, search)) continue;
     const distanceKm = distanceByKey.get(key) || 0;
     const driverEvents = eventsByKey.get(key) || [];
     if (distanceKm <= 0 && driverEvents.length === 0) continue;

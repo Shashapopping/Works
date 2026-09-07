@@ -3,6 +3,8 @@
  * Opaque session IDs in httpOnly cookies; permissions enforced server-side.
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import bcrypt from 'bcryptjs';
 import { getDb } from './db.js';
 
@@ -61,6 +63,15 @@ const DEFAULT_ROLES = [
     description: 'Read-only access to Dashboard and Reports',
     permissions: ['dashboard', 'reports'],
   },
+  {
+    id: 'transporter',
+    name: 'Transporter',
+    description: 'Scoped to one transporter site — no fleet segment pages',
+    permissions: [
+      'dashboard', 'fleet', 'drivers', 'incidents', 'reports',
+      'trips', 'fuel-monitoring', 'fuel-consumption', 'maintenance',
+    ],
+  },
 ];
 
 /** Simple in-memory IP rate limiter for auth routes */
@@ -91,6 +102,7 @@ function newId() {
 
 export function publicUser(row, permissions) {
   if (!row) return null;
+  const transporter = row.transporter ? String(row.transporter).trim() : null;
   return {
     id: row.id,
     email: row.email,
@@ -100,6 +112,7 @@ export function publicUser(row, permissions) {
     status: row.status,
     mustChangePassword: !!row.must_change_password,
     isOrganisational: !!row.is_organisational,
+    transporter: transporter || null,
     permissions: permissions || [],
     lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at,
@@ -133,7 +146,10 @@ export function getSeatInfo() {
 export function seedRolesIfNeeded() {
   const db = getDb();
   const count = db.prepare('SELECT COUNT(*) AS c FROM roles').get().c;
-  if (count > 0) return;
+  if (count > 0) {
+    ensureTransporterRole();
+    return;
+  }
 
   const insertRole = db.prepare(
     'INSERT INTO roles (id, name, description, created_at) VALUES (?, ?, ?, ?)',
@@ -152,6 +168,54 @@ export function seedRolesIfNeeded() {
   });
   tx();
   console.log('🔐 Seeded default roles');
+}
+
+/** Add transporter role on existing installs (idempotent). */
+export function ensureTransporterRole() {
+  const role = DEFAULT_ROLES.find(r => r.id === 'transporter');
+  if (!role) return;
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM roles WHERE id = ?').get(role.id);
+  if (!existing) {
+    db.prepare('INSERT INTO roles (id, name, description, created_at) VALUES (?, ?, ?, ?)')
+      .run(role.id, role.name, role.description, nowIso());
+  }
+  const insertPerm = db.prepare(
+    'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
+  );
+  for (const pid of role.permissions) {
+    if (VALID_PERMISSIONS.has(pid)) insertPerm.run(role.id, pid);
+  }
+}
+
+export function listTransporters() {
+  const dataPath = path.join(process.cwd(), 'public', 'data.json');
+  try {
+    const raw = fs.readFileSync(dataPath, 'utf8');
+    const vehicles = JSON.parse(raw);
+    if (!Array.isArray(vehicles)) return [];
+    const names = new Set();
+    for (const v of vehicles) {
+      const site = (v.site || '').trim();
+      const transporter = (v.transporter || '').trim();
+      if (site) names.add(site);
+      if (transporter) names.add(transporter);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeTransporterName(value) {
+  return String(value || '').trim();
+}
+
+function transporterNamesMatch(a, b) {
+  const left = normalizeTransporterName(a);
+  const right = normalizeTransporterName(b);
+  if (!left || !right) return false;
+  return left.localeCompare(right, undefined, { sensitivity: 'base' }) === 0;
 }
 
 export async function bootstrapAdminIfNeeded() {
@@ -300,18 +364,23 @@ export async function createUser({
   actorId,
   isOrganisational = false,
   sendInviteEmail = true,
+  transporter = null,
 }) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const displayName = String(name || '').trim();
   const role = String(roleId || '').trim();
   const pwd = String(password || '');
   const orgFlag = !!isOrganisational;
+  const transporterName = normalizeTransporterName(transporter) || null;
 
   if (!normalizedEmail || !normalizedEmail.includes('@')) {
     throw Object.assign(new Error('Valid email is required'), { status: 400 });
   }
   if (!displayName) throw Object.assign(new Error('Name is required'), { status: 400 });
   if (pwd.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
+  if (role === 'transporter' && !transporterName) {
+    throw Object.assign(new Error('Transporter site is required for transporter accounts'), { status: 400 });
+  }
 
   const db = getDb();
   const roleExists = db.prepare('SELECT id FROM roles WHERE id = ?').get(role);
@@ -333,11 +402,11 @@ export async function createUser({
   const id = newId();
   const hash = await bcrypt.hash(pwd, BCRYPT_ROUNDS);
   db.prepare(`
-    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, is_organisational, created_at)
-    VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?)
-  `).run(id, normalizedEmail, displayName, hash, role, orgFlag ? 1 : 0, nowIso());
+    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, is_organisational, transporter, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)
+  `).run(id, normalizedEmail, displayName, hash, role, orgFlag ? 1 : 0, transporterName, nowIso());
 
-  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role, isOrganisational: orgFlag });
+  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role, isOrganisational: orgFlag, transporter: transporterName });
   const row = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
     LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
@@ -365,7 +434,7 @@ export async function createUser({
   return { ...created, emailSent: !!emailResult.sent, emailError: emailResult.error || null };
 }
 
-export async function updateUser(userId, { name, roleId, status, password, isOrganisational }, actorId) {
+export async function updateUser(userId, { name, roleId, status, password, isOrganisational, transporter }, actorId) {
   const db = getDb();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -374,6 +443,9 @@ export async function updateUser(userId, { name, roleId, status, password, isOrg
   const nextRole = roleId !== undefined ? String(roleId).trim() : user.role_id;
   const nextStatus = status !== undefined ? String(status).trim() : user.status;
   const nextOrg = isOrganisational !== undefined ? (!!isOrganisational ? 1 : 0) : (user.is_organisational || 0);
+  let nextTransporter = transporter !== undefined
+    ? (normalizeTransporterName(transporter) || null)
+    : (user.transporter ? normalizeTransporterName(user.transporter) : null);
 
   if (!nextName) throw Object.assign(new Error('Name is required'), { status: 400 });
   if (!['active', 'disabled'].includes(nextStatus)) {
@@ -381,6 +453,12 @@ export async function updateUser(userId, { name, roleId, status, password, isOrg
   }
   if (!db.prepare('SELECT id FROM roles WHERE id = ?').get(nextRole)) {
     throw Object.assign(new Error('Invalid role'), { status: 400 });
+  }
+  if (nextRole === 'transporter' && !nextTransporter) {
+    throw Object.assign(new Error('Transporter site is required for transporter accounts'), { status: 400 });
+  }
+  if (nextRole !== 'transporter') {
+    nextTransporter = null;
   }
 
   // Don't allow disabling or demoting the last active admin with user-management
@@ -415,11 +493,11 @@ export async function updateUser(userId, { name, roleId, status, password, isOrg
   }
 
   db.prepare(`
-    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?, is_organisational = ?
+    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?, is_organisational = ?, transporter = ?
     WHERE id = ?
-  `).run(nextName, nextRole, nextStatus, hash, mustChange, nextOrg, userId);
+  `).run(nextName, nextRole, nextStatus, hash, mustChange, nextOrg, nextTransporter, userId);
 
-  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus, isOrganisational: !!nextOrg });
+  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus, isOrganisational: !!nextOrg, transporter: nextTransporter });
   const row = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
     LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
@@ -489,8 +567,9 @@ export async function changePassword(userId, currentPassword, newPassword) {
   return { ok: true };
 }
 
-export async function login(email, password, { createSession = true } = {}) {
+export async function login(email, password, { createSession = true, transporter: portalTransporter = null } = {}) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
+  const expectedTransporter = normalizeTransporterName(portalTransporter) || null;
   const db = getDb();
   const user = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
@@ -501,6 +580,19 @@ export async function login(email, password, { createSession = true } = {}) {
   // Constant-ish fail path
   if (!user || user.status !== 'active') {
     throw Object.assign(new Error('Invalid email or password'), { status: 401 });
+  }
+
+  const userTransporter = normalizeTransporterName(user.transporter) || null;
+
+  if (expectedTransporter) {
+    if (!userTransporter || !transporterNamesMatch(userTransporter, expectedTransporter)) {
+      throw Object.assign(new Error('Invalid email or password'), { status: 401 });
+    }
+  } else if (userTransporter) {
+    throw Object.assign(
+      new Error('Use the Transporter login and select your company'),
+      { status: 403, code: 'transporter_portal_required' },
+    );
   }
 
   const ok = await bcrypt.compare(String(password || ''), user.password_hash);
@@ -540,6 +632,13 @@ export async function loginWithEmail(email, { displayName = null, provider = 'oa
 
   if (!user || user.status !== 'active') {
     throw Object.assign(new Error('No active account for this email'), { status: 403 });
+  }
+
+  if (normalizeTransporterName(user.transporter)) {
+    throw Object.assign(
+      new Error('Use the Transporter login and select your company'),
+      { status: 403, code: 'transporter_portal_required' },
+    );
   }
 
   if (displayName && displayName !== user.name) {

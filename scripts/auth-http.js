@@ -10,6 +10,7 @@ import {
   isOrganisationalUser,
   listRoles,
   listUsers,
+  listTransporters,
   login,
   logout,
   parseCookies,
@@ -156,6 +157,11 @@ export async function handleAuthRequest(req, res) {
       return true;
     }
 
+    if (path === '/api/transporters' && method === 'GET') {
+      sendJson(res, 200, { transporters: listTransporters() });
+      return true;
+    }
+
     if (path === '/api/auth/login' && method === 'POST') {
       const rl = checkRateLimit(clientIp(req), { limit: 15, windowMs: 15 * 60 * 1000 });
       if (!rl.ok) {
@@ -165,7 +171,10 @@ export async function handleAuthRequest(req, res) {
       }
       const body = await readBody(req);
       const jwtMode = isJwtAuthMode();
-      const result = await login(body.email, body.password, { createSession: !jwtMode });
+      const result = await login(body.email, body.password, {
+        createSession: !jwtMode,
+        transporter: body.transporter,
+      });
       if (jwtMode) {
         const token = signAccessToken(result.user);
         sendJson(res, 200, { user: result.user, token, authMode: 'jwt' });
@@ -262,6 +271,7 @@ export async function handleAuthRequest(req, res) {
           roleId: body.roleId,
           actorId: user.id,
           isOrganisational: wantOrg,
+          transporter: body.transporter,
         });
         sendJson(res, 201, { user: created, seats: getSeatInfo() });
       } catch (e) {
@@ -553,6 +563,7 @@ export function authExpressMiddleware() {
     const path = req.path || req.url?.split('?')[0];
     if (
       path?.startsWith('/api/auth') ||
+      path === '/api/transporters' ||
       path === '/api/roles' ||
       path?.startsWith('/api/users') ||
       path?.startsWith('/api/notifications') ||
@@ -576,6 +587,7 @@ export function authViteMiddleware() {
     const urlPath = (req.url || '').split('?')[0];
     if (
       urlPath.startsWith('/api/auth') ||
+      urlPath === '/api/transporters' ||
       urlPath === '/api/roles' ||
       urlPath.startsWith('/api/users') ||
       urlPath.startsWith('/api/notifications') ||

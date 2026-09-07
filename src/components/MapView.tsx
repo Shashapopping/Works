@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
@@ -7,6 +7,7 @@ import 'leaflet.markercluster';
 import { useFleet } from '../context/FleetContext';
 import { SkelValue } from './data/DataBusy';
 import { statusDisplayLabel } from '../lib/metricDefinitions';
+import { makeScopedVehicleIdSet } from '../lib/siteScope';
 
 interface Warning {
   eventId: string;
@@ -131,6 +132,7 @@ function createFlagIcon(color: string) {
 }
 
 export default function MapView({ authFetch, statusFilter, onAcknowledge, compact = false }: Props) {
+  const { vehicles: scopedFleet, selectedSites } = useFleet();
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
@@ -141,6 +143,14 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
   const loading = vehiclesLoading && vehicles.length === 0;
   const [searchTerm, setSearchTerm] = useState('');
   const prevWarningIds = useRef<Set<string>>(new Set());
+
+  const displayVehicles = useMemo(() => {
+    if (!scopedFleet.length) {
+      return selectedSites.length > 0 ? [] : vehicles;
+    }
+    const ids = makeScopedVehicleIdSet(scopedFleet);
+    return vehicles.filter(v => ids.has(String(v.id)));
+  }, [vehicles, scopedFleet, selectedSites]);
 
   // Initialize map
   useEffect(() => {
@@ -212,7 +222,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
     if (!mapRef.current) return;
     const t = setTimeout(() => mapRef.current?.invalidateSize(), 100);
     return () => clearTimeout(t);
-  }, [compact, vehicles.length]);
+  }, [compact, displayVehicles.length]);
 
   // Expose acknowledge function globally for popup button
   useEffect(() => {
@@ -229,7 +239,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
   useEffect(() => {
     if (!mapRef.current || !clusterGroupRef.current) return;
 
-    const filtered = vehicles.filter(v => {
+    const filtered = displayVehicles.filter(v => {
       if (!v.position?.latitude || !v.position?.longitude) return false;
       const matchesStatus = statusFilter === 'All' || v.status === statusFilter;
       const matchesSearch = searchTerm === '' ||
@@ -324,9 +334,9 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
         markersRef.current.set(vehicle.id, marker);
       }
     });
-  }, [vehicles, statusFilter, searchTerm]);
+  }, [displayVehicles, statusFilter, searchTerm]);
 
-  const visibleCount = vehicles.filter(v => {
+  const visibleCount = displayVehicles.filter(v => {
     if (!v.position?.latitude) return false;
     const matchesStatus = statusFilter === 'All' || v.status === statusFilter;
     const matchesSearch = searchTerm === '' ||
@@ -350,7 +360,7 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
             {loading ? (
               <SkelValue wide />
             ) : (
-              <>Showing {visibleCount} of {vehicles.filter(v => v.position?.latitude).length} vehicles with GPS</>
+              <>Showing {visibleCount} of {displayVehicles.filter(v => v.position?.latitude).length} vehicles with GPS</>
             )}
           </p>
         </div>

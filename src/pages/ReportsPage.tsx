@@ -31,7 +31,26 @@ import {
   type ReportType,
   type TabularReport,
 } from '../lib/reportTypes';
+import {
+  buildEventTypeCounts,
+  connectivityEventDisplayLabel,
+  REPORT_EVENT_TYPE_CATALOG,
+  REPORT_EVENT_TYPE_IDS,
+  reportEventTypeDef,
+} from '../lib/reports/eventTypeCatalog';
+import {
+  buildConnectivityEntries,
+  selectedIvmsEventTypes,
+  wantsIvmsEvents,
+} from '../lib/reports/buildConnectivityEntries';
+import { isConnectivityEventType, IVMS_EVENT_TYPES, isAutomationOfflineCandidate } from '../lib/reports/connectivityCounts';
+import { repeatOffenderIdsFromSnapshot, saveOfflineSnapshot } from '../lib/reports/repeatOffenders';
 import { generateTabularReport } from '../lib/reports/generateTabularReport';
+import {
+  matchesEventReportSearch,
+  reportSearchPlaceholder,
+  vehicleStatusForEntry,
+} from '../lib/reports/reportSearch';
 import type { TripReportGroupBy } from '../lib/reports/buildTripReport';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
 import { reportTitle as brandReportTitle } from '../lib/branding';
@@ -39,6 +58,7 @@ import { authFetchInit } from '../lib/authApi';
 import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 import { startJitteredInterval } from '../lib/pollSchedule';
+import { trackingWindowHoursFromIso } from '../lib/reports/trackingWindow';
 
 interface TrendDay {
   date: string;
@@ -53,13 +73,19 @@ interface TrendDay {
 type DateRange = 'today' | '7days' | '30days' | 'custom';
 type ViewMode = 'events' | 'trends';
 
-const EVENT_TYPES = [
-  'Harsh Braking',
-  'Harsh Acceleration',
-  'Overspeeding',
-  'Overspeed Tiered',
-  'Harsh Cornering',
-] as const;
+const REPORTS_OFFLINE_SNAPSHOT_KEY = 'reports-page';
+
+function persistOfflineSnapshotIfNeeded(
+  vehicleList: { id: string; status?: string; position?: unknown; date?: string }[],
+  selected: Set<string>,
+  windowHours: number,
+) {
+  if (!selected.has('Offline')) return;
+  const candidateIds = vehicleList
+    .filter(v => isAutomationOfflineCandidate(v, Date.now(), windowHours))
+    .map(v => v.id);
+  saveOfflineSnapshot(REPORTS_OFFLINE_SNAPSHOT_KEY, candidateIds);
+}
 
 const HIDDEN_LABELS = [
   'Possible Power Tamper',
@@ -84,6 +110,7 @@ const EVENT_PREVIEW_LIMIT = 20;
 const REPORT_EMAIL_WARN_ROWS = 5_000;
 const REPORT_EMAIL_MAX_ROWS = 100_000;
 const EVENTS_REFRESH_MS = 30_000;
+const EVENT_TYPES = REPORT_EVENT_TYPE_IDS;
 
 function confirmLargeEmailReport(rowCount: number, format: ExportFormat) {
   if (rowCount <= REPORT_EMAIL_WARN_ROWS) return true;
@@ -146,6 +173,10 @@ function eventLabel(entry: LogEntry) {
   return entry.label || 'Unknown';
 }
 
+function eventDisplayLabel(entry: LogEntry) {
+  return connectivityEventDisplayLabel(entry.label || '');
+}
+
 function matchesEventType(entry: LogEntry, selected: Set<string>) {
   if (selected.size === 0) return false;
   return selected.has(eventLabel(entry));
@@ -183,8 +214,10 @@ function mapDemoEntries(
   events: ReturnType<typeof useFleet>['events'],
   vehicles: ReturnType<typeof useFleet>['vehicles'],
 ): LogEntry[] {
-  return events.map(e => {
-    const vehicle = vehicles.find(v => v.id === e.assetId || v.regNo === e.regNo);
+  const eventRows = Array.isArray(events) ? events : [];
+  const vehicleRows = Array.isArray(vehicles) ? vehicles : [];
+  return eventRows.map(e => {
+    const vehicle = vehicleRows.find(v => v.id === e.assetId || v.regNo === e.regNo);
     return {
       eventId: e.eventId,
       label: e.label,
@@ -203,8 +236,15 @@ function mapDemoEntries(
   });
 }
 
+function eventRowsFromPayload(data: any): Record<string, unknown>[] {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.entries)) return data.entries;
+  return [];
+}
+
 function mapApiEntry(e: Record<string, unknown>, vehicles: ReturnType<typeof useFleet>['vehicles']): LogEntry {
-  const vehicle = vehicles.find(
+  const vehicleRows = Array.isArray(vehicles) ? vehicles : [];
+  const vehicle = vehicleRows.find(
     v => v.id === String(e.assetId ?? '') || v.regNo === String(e.regNo ?? ''),
   );
   return {
@@ -227,10 +267,14 @@ function mapApiEntry(e: Record<string, unknown>, vehicles: ReturnType<typeof use
 
 function FilterCheck({
   label,
+  hint,
+  count,
   checked,
   onToggle,
 }: {
   label: string;
+  hint?: string;
+  count?: number;
   checked: boolean;
   onToggle: () => void;
 }) {
@@ -241,7 +285,15 @@ function FilterCheck({
       onClick={onToggle}
     >
       <span className="bpl-reports-check-box" aria-hidden>{checked ? '✓' : ''}</span>
-      {label}
+      <span className="bpl-reports-check-copy">
+        <span className="bpl-reports-check-label">
+          {label}
+          {count != null && count >= 0 && (
+            <span className="bpl-reports-check-count"> · {count.toLocaleString()}</span>
+          )}
+        </span>
+        {hint && <span className="bpl-reports-check-hint">{hint}</span>}
+      </span>
     </button>
   );
 }
@@ -249,6 +301,7 @@ function FilterCheck({
 function MultiSelectDropdown({
   label,
   options,
+  counts,
   selected,
   onToggle,
   onSelectAll,
@@ -258,6 +311,7 @@ function MultiSelectDropdown({
 }: {
   label: string;
   options: readonly string[];
+  counts?: Record<string, number>;
   selected: Set<string>;
   onToggle: (value: string) => void;
   onSelectAll: () => void;
@@ -312,14 +366,19 @@ function MultiSelectDropdown({
         <div className="bpl-reports-ms-menu">
           <FilterCheck label="Select all" checked={allSelected} onToggle={onSelectAll} />
           <div className="bpl-reports-ms-scroll">
-            {options.map(option => (
-              <FilterCheck
-                key={option}
-                label={option}
-                checked={isChecked(option)}
-                onToggle={() => onToggle(option)}
-              />
-            ))}
+            {options.map(option => {
+              const def = reportEventTypeDef(option);
+              return (
+                <FilterCheck
+                  key={option}
+                  label={option}
+                  hint={def?.hint}
+                  count={counts?.[option]}
+                  checked={isChecked(option)}
+                  onToggle={() => onToggle(option)}
+                />
+              );
+            })}
           </div>
         </div>
       )}
@@ -388,6 +447,7 @@ export default function ReportsPage() {
   const [tripGroupBy, setTripGroupBy] = useState<TripReportGroupBy>('asset');
   const [tabularPreview, setTabularPreview] = useState<TabularReport | null>(null);
   const [tabularPreviewLoading, setTabularPreviewLoading] = useState(false);
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchTerm);
 
   const reportTitle = brandReportTitle();
   const defaultEmailTo = useMemo(() => {
@@ -411,12 +471,15 @@ export default function ReportsPage() {
       params.set('format', 'page');
       params.set('limit', String(EVENT_PREVIEW_LIMIT));
       if (selectedEventTypes.size > 0 && selectedEventTypes.size < EVENT_TYPES.length) {
-        params.set('types', [...selectedEventTypes].join(','));
+        const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
+        if (ivmsTypes.length > 0) {
+          params.set('types', ivmsTypes.join(','));
+        }
       }
       const url = `/api/events/log?${params}`;
       const applyData = (data: any) => {
         const veh = vehiclesRef.current;
-        const rows = Array.isArray(data) ? data : data?.entries ?? [];
+        const rows = eventRowsFromPayload(data);
         setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, veh)));
         setEventCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
       };
@@ -505,7 +568,69 @@ export default function ReportsPage() {
     return d;
   }, [entries]);
 
-  const filtered = useMemo(
+  const vehicleRefs = useMemo(
+    () => vehicles.map(v => ({
+      id: v.id,
+      regNo: v.regNo,
+      transporter: v.transporter,
+      site: v.site,
+      status: v.status,
+    })),
+    [vehicles],
+  );
+
+  const trackingWindowHours = useMemo(() => {
+    const { from, to } = getDateBounds(dateRange, fromDate, toDate);
+    return trackingWindowHoursFromIso(from, to);
+  }, [dateRange, fromDate, toDate]);
+
+  const eventTypeCounts = useMemo(() => {
+    const ivms: Record<string, number> = {};
+    for (const e of entries) {
+      if (e.type === 'panic') continue;
+      const label = eventLabel(e);
+      if (HIDDEN_LABELS.includes(label)) continue;
+      ivms[label] = (ivms[label] || 0) + 1;
+    }
+    return buildEventTypeCounts(ivms, vehicles, trackingWindowHours);
+  }, [entries, vehicles, trackingWindowHours]);
+
+  const eventMatchesSearch = (event: LogEntry) =>
+    matchesEventReportSearch(
+      event,
+      searchTerm,
+      vehicleStatusForEntry(event, vehicleRefs),
+    );
+
+  const vehicleMatchesSelectedSite = (vehicle: (typeof vehicles)[number]) => {
+    if (selectedSites.length === 0) return true;
+    const zoneKey = reportSiteKeyFor(vehicle.zone);
+    const siteKey = (vehicle.site || '').trim();
+    return selectedSites.includes(zoneKey) || (siteKey.length > 0 && selectedSites.includes(siteKey));
+  };
+
+  const repeatOffenderIds = useMemo(() => {
+    if (!selectedEventTypes.has('Offline')) return undefined;
+    const candidateIds = vehicles
+      .filter(v => isAutomationOfflineCandidate(v, Date.now(), trackingWindowHours))
+      .map(v => v.id);
+    return repeatOffenderIdsFromSnapshot(REPORTS_OFFLINE_SNAPSHOT_KEY, candidateIds);
+  }, [vehicles, selectedEventTypes, trackingWindowHours]);
+
+  const connectivityEntries = useMemo(
+    () =>
+      buildConnectivityEntries({
+        vehicles,
+        selectedTypes: selectedEventTypes,
+        matchesSite: vehicleMatchesSelectedSite,
+        matchesSearch: eventMatchesSearch,
+        repeatOffenderIds,
+        windowHours: trackingWindowHours,
+      }),
+    [vehicles, selectedEventTypes, selectedSites, searchTerm, vehicleRefs, repeatOffenderIds, trackingWindowHours],
+  );
+
+  const ivmsFiltered = useMemo(
     () =>
       entries.filter(e => {
         if (e.type === 'panic') return false;
@@ -513,17 +638,14 @@ export default function ReportsPage() {
         if (HIDDEN_LABELS.includes(label)) return false;
         if (!matchesEventType(e, selectedEventTypes)) return false;
         if (!eventMatchesSelectedSite(e)) return false;
-        const q = searchTerm.toLowerCase();
-        const matchesSearch =
-          searchTerm === '' ||
-          (e.regNo && e.regNo !== 'N/A' && e.regNo.toLowerCase().includes(q)) ||
-          (e.assetName && e.assetName.toLowerCase().includes(q)) ||
-          (e.assetId && e.assetId.toLowerCase().includes(q)) ||
-          (isKnownDriver(e.driverName) && e.driverName!.toLowerCase().includes(q)) ||
-          (e.driverPhone && e.driverPhone.toLowerCase().includes(q));
-        return matchesSearch;
+        return eventMatchesSearch(e);
       }),
-    [entries, selectedEventTypes, scopedVehicleRefs, searchTerm],
+    [entries, selectedEventTypes, scopedVehicleRefs, searchTerm, vehicleRefs],
+  );
+
+  const filtered = useMemo(
+    () => [...ivmsFiltered, ...connectivityEntries],
+    [ivmsFiltered, connectivityEntries],
   );
 
   const previewRows = useMemo(
@@ -541,6 +663,11 @@ export default function ReportsPage() {
       }),
     [entries],
   );
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
+    return () => window.clearTimeout(id);
+  }, [searchTerm]);
 
   useEffect(() => {
     if (reportType === 'events') {
@@ -564,13 +691,14 @@ export default function ReportsPage() {
                   : dateRange === '30days' ? 'Last 30 days'
                     : fromDate && toDate ? `${fromDate} to ${toDate}` : 'Custom'
             }`,
-            searchTerm ? `Search: ${searchTerm}` : '',
+            debouncedSearchTerm ? `Search: ${debouncedSearchTerm}` : '',
           ].filter(Boolean).join('  ·  '),
-          search: searchTerm,
+          search: debouncedSearchTerm,
           events: scorecardEvents,
           fromIso: from,
           toIso: to,
           tripGroupBy,
+          vehicles: vehicleRefs,
         });
         if (!cancelled) setTabularPreview(tabular);
       } catch {
@@ -580,7 +708,7 @@ export default function ReportsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [reportType, dateRange, fromDate, toDate, searchTerm, scorecardEvents, reportTitle, tripGroupBy]);
+  }, [reportType, dateRange, fromDate, toDate, debouncedSearchTerm, scorecardEvents, reportTitle, tripGroupBy, vehicleRefs]);
 
   const tabularPreviewRows = useMemo(
     () => (tabularPreview?.rows ?? []).slice(0, EVENT_PREVIEW_LIMIT),
@@ -630,6 +758,7 @@ export default function ReportsPage() {
 
     filtered.forEach(e => {
       const label = eventLabel(e);
+      if (isConnectivityEventType(label)) return;
       const date = new Date(e.timestamp).toLocaleDateString('en-GB', {
         day: '2-digit',
         month: 'short',
@@ -660,7 +789,7 @@ export default function ReportsPage() {
     const types = selectedEventTypes.size === 0
       ? [...EVENT_TYPES]
       : [...selectedEventTypes];
-    return types.filter(t => t !== 'Total');
+    return types.filter(t => t !== 'Total' && !isConnectivityEventType(t));
   }, [selectedEventTypes, showTotal]);
 
   const toggleEventType = (evt: string) => {
@@ -695,46 +824,49 @@ export default function ReportsPage() {
 
   const canGenerate =
     reportType === 'events'
-      ? eventCensusTotal > 0
+      ? filtered.length > 0
       : !tabularPreviewLoading && (tabularPreview?.rowCount ?? 0) > 0;
   const estimatedEmailRows =
     reportType === 'events'
-      ? eventCensusTotal
+      ? filtered.length
       : (tabularPreview?.rowCount ?? 0);
 
   const runGenerate = async () => {
     const { from, to } = getDateBounds(dateRange, fromDate, toDate);
-    let eventsForReport = entries;
+    let eventsForReport: LogEntry[] = [];
     if (reportType === 'events') {
-      const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      if (selectedEventTypes.size > 0 && selectedEventTypes.size < EVENT_TYPES.length) {
-        params.set('types', [...selectedEventTypes].join(','));
+      const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
+      const fetchIvms = wantsIvmsEvents(selectedEventTypes, EVENT_TYPES.length);
+
+      if (fetchIvms) {
+        const params = new URLSearchParams();
+        if (from) params.set('from', from);
+        if (to) params.set('to', to);
+        if (
+          ivmsTypes.length > 0
+          && ivmsTypes.length < IVMS_EVENT_TYPES.length
+          && selectedEventTypes.size < EVENT_TYPES.length
+        ) {
+          params.set('types', ivmsTypes.join(','));
+        }
+        const res = await authFetch(`/api/events/log?${params}`);
+        if (!res.ok) throw new Error('Failed to fetch events for export');
+        const data = await res.json();
+        const rows = eventRowsFromPayload(data);
+        const veh = vehiclesRef.current;
+        eventsForReport = rows
+          .map((e: Record<string, unknown>) => mapApiEntry(e, veh))
+          .filter(e => {
+            if (e.type === 'panic') return false;
+            const label = eventLabel(e);
+            if (HIDDEN_LABELS.includes(label)) return false;
+            if (!matchesEventType(e, selectedEventTypes)) return false;
+            if (!eventMatchesSelectedSite(e)) return false;
+            return eventMatchesSearch(e);
+          });
       }
-      const res = await authFetch(`/api/events/log?${params}`);
-      if (!res.ok) throw new Error('Failed to fetch events for export');
-      const data = await res.json();
-      const rows = Array.isArray(data) ? data : data?.entries ?? [];
-      const veh = vehiclesRef.current;
-      eventsForReport = rows
-        .map((e: Record<string, unknown>) => mapApiEntry(e, veh))
-        .filter(e => {
-          if (e.type === 'panic') return false;
-          const label = eventLabel(e);
-          if (HIDDEN_LABELS.includes(label)) return false;
-          if (!matchesEventType(e, selectedEventTypes)) return false;
-          if (!eventMatchesSelectedSite(e)) return false;
-          const q = searchTerm.toLowerCase();
-          return (
-            searchTerm === '' ||
-            (e.regNo && e.regNo !== 'N/A' && e.regNo.toLowerCase().includes(q)) ||
-            (e.assetName && e.assetName.toLowerCase().includes(q)) ||
-            (e.assetId && e.assetId.toLowerCase().includes(q)) ||
-            (isKnownDriver(e.driverName) && e.driverName!.toLowerCase().includes(q)) ||
-            (e.driverPhone && e.driverPhone.toLowerCase().includes(q))
-          );
-        });
+
+      eventsForReport = [...eventsForReport, ...connectivityEntries];
     } else {
       eventsForReport = entries.filter(e => {
         if (e.type === 'panic') return false;
@@ -743,6 +875,7 @@ export default function ReportsPage() {
         return true;
       });
     }
+
     return generateTabularReport({
       reportType,
       baseTitle: reportTitle,
@@ -752,6 +885,7 @@ export default function ReportsPage() {
       fromIso: from,
       toIso: to,
       tripGroupBy,
+      vehicles: vehicleRefs,
     });
   };
 
@@ -766,6 +900,7 @@ export default function ReportsPage() {
         return;
       }
       await exportTabularReport(tabular, exportFormat);
+      persistOfflineSnapshotIfNeeded(vehicles, selectedEventTypes, trackingWindowHours);
     } catch (e) {
       setEmailStatus((e as Error)?.message || 'Failed to generate report.');
     } finally {
@@ -828,6 +963,7 @@ export default function ReportsPage() {
         return;
       }
       setEmailStatus(`Sent to ${to}`);
+      persistOfflineSnapshotIfNeeded(vehicles, selectedEventTypes, trackingWindowHours);
     } catch (e) {
       setEmailStatus((e as Error)?.message || 'Failed to send report email.');
     } finally {
@@ -855,9 +991,9 @@ export default function ReportsPage() {
         <span className="bpl-badge-blue">
           {reportType === 'events'
             ? (viewMode === 'events'
-              ? (eventCensusTotal > EVENT_PREVIEW_LIMIT
-                ? `Showing ${EVENT_PREVIEW_LIMIT} of ${eventCensusTotal.toLocaleString()}`
-                : `${eventCensusTotal.toLocaleString()} event${eventCensusTotal !== 1 ? 's' : ''}`)
+              ? (filtered.length > EVENT_PREVIEW_LIMIT
+                ? `Showing ${EVENT_PREVIEW_LIMIT} of ${filtered.length.toLocaleString()}`
+                : `${filtered.length.toLocaleString()} event${filtered.length !== 1 ? 's' : ''}`)
               : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} of trends`)
             : tabularPreviewLoading
               ? 'Loading preview…'
@@ -908,15 +1044,7 @@ export default function ReportsPage() {
             <Search size={14} />
             <input
               type="text"
-              placeholder={
-                reportType === 'events'
-                  ? 'Reg no, asset, driver, phone…'
-                  : reportType === 'driver_scorecard'
-                    ? 'Driver, phone, reg…'
-                    : reportType === 'trips'
-                      ? 'Reg no, asset, driver…'
-                      : 'Reg no, asset, zone…'
-              }
+              placeholder={reportSearchPlaceholder(reportType)}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
             />
@@ -958,6 +1086,7 @@ export default function ReportsPage() {
               <MultiSelectDropdown
                 label="Event type"
                 options={EVENT_TYPES}
+                counts={eventTypeCounts}
                 selected={selectedEventTypes}
                 onToggle={toggleEventType}
                 onSelectAll={selectAllEvents}
@@ -1136,7 +1265,7 @@ export default function ReportsPage() {
                     </thead>
                     <tbody>
                       {previewRows.map((entry, i) => {
-                        const label = eventLabel(entry);
+                        const label = eventDisplayLabel(entry);
                         const displayName =
                           entry.regNo && entry.regNo !== 'N/A' ? entry.regNo : entry.assetId;
                         const driverDisplay = displayDriverName(entry.driverName);
@@ -1147,6 +1276,9 @@ export default function ReportsPage() {
                               <span className="bpl-reports-event-label">
                                 {label}
                               </span>
+                              {entry.connectivityNote && (
+                                <div className="bpl-reports-cell-sub">{entry.connectivityNote}</div>
+                              )}
                             </td>
                             <td>
                               <strong>{displayName}</strong>
@@ -1170,9 +1302,9 @@ export default function ReportsPage() {
                       })}
                     </tbody>
                   </table>
-                  {eventCensusTotal > EVENT_PREVIEW_LIMIT && (
+                  {filtered.length > EVENT_PREVIEW_LIMIT && (
                     <div className="bpl-reports-preview-note">
-                      Showing {EVENT_PREVIEW_LIMIT} of {eventCensusTotal.toLocaleString()} events — download or email for the full set
+                      Showing {EVENT_PREVIEW_LIMIT} of {filtered.length.toLocaleString()} events — download or email for the full set
                     </div>
                   )}
                 </>

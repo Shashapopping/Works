@@ -28,6 +28,7 @@ const MEMORY_ONLY_PREFIXES = [
   '/api/kpi',
   'driver:period:',
   'driver:assessment-distance',
+  'hos:',
   'fuel:consumption:',
   'fuel:history:',
 ];

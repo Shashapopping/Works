@@ -3,6 +3,8 @@ import { brandLabel } from './branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { authFetchInit } from './authApi';
 import type { ReportColumn, TabularReport } from './reportTypes';
+import { connectivityEventDisplayLabel } from './reports/eventTypeCatalog';
+import { pruneTabularColumns } from './reports/pruneTabularColumns';
 
 export interface LogEntry {
   timestamp: string;
@@ -19,6 +21,7 @@ export interface LogEntry {
   label?: string;
   eventTime: string;
   type: 'panic' | 'warning';
+  connectivityNote?: string;
 }
 
 export type ExportFormat = 'csv' | 'excel' | 'pdf';
@@ -29,15 +32,17 @@ const EVENT_COLUMNS: { header: string; get: (e: LogEntry) => string; textForce?:
   { header: 'Transporter', get: (e) => brandLabel(e.transporter) || 'N/A' },
   { header: 'Driver', get: (e) => displayDriverName(e.driverName, 'N/A') },
   { header: 'Phone', get: (e) => scrubPhone(e.driverPhone), textForce: true },
-  { header: 'Event', get: (e) => e.label || 'Unknown' },
+  { header: 'Event', get: (e) => connectivityEventDisplayLabel(e.label || '') },
+  { header: 'Note', get: (e) => e.connectivityNote || '' },
   { header: 'Event Time', get: (e) => (e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB') : 'N/A') },
   {
-    header: 'Location',
+    header: 'Last location',
     get: (e) => {
       if (e.address && e.address !== 'N/A' && e.address !== 'null') return brandLabel(e.address);
       return 'N/A';
     },
   },
+  { header: 'Remark', get: () => '' },
 ];
 
 function scrubPhone(phone?: string) {
@@ -228,25 +233,26 @@ export async function buildTabularReportBlob(
   report: TabularReport,
   format: ExportFormat,
 ): Promise<{ blob: Blob; filename: string; mime: string }> {
+  const pruned = pruneTabularColumns(report);
   const stamp = fileStamp();
-  const base = `${slugTitle(report.title)}-${stamp}`;
+  const base = `${slugTitle(pruned.title)}-${stamp}`;
 
   if (format === 'csv') {
     return {
-      blob: buildCsvBlob(report.columns, report.rows),
+      blob: buildCsvBlob(pruned.columns, pruned.rows),
       filename: `${base}.csv`,
       mime: 'text/csv;charset=utf-8',
     };
   }
   if (format === 'excel') {
     return {
-      blob: await buildExcelBlob(report),
+      blob: await buildExcelBlob(pruned),
       filename: `${base}.xlsx`,
       mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     };
   }
   return {
-    blob: await buildPdfBlob(report),
+    blob: await buildPdfBlob(pruned),
     filename: `${base}.pdf`,
     mime: 'application/pdf',
   };

@@ -63,7 +63,10 @@ export async function markAllUserNotificationsRead(): Promise<void> {
 
 export async function fetchDriverWarnings(driverKeys: string[] = []): Promise<DriverWarning[]> {
   const keys = [...new Set(driverKeys.map(k => k.trim()).filter(Boolean))];
-  const qs = keys.length
+  // Large IN lists blow past URL length limits (~2–8KB on many stacks) and crash
+  // Drivers once the roster is trip-backed (~thousands of keys). Warnings table is
+  // small — fetch the full set and let the caller index by driverKey.
+  const qs = keys.length > 0 && keys.length <= 80
     ? `?driverKeys=${encodeURIComponent(keys.join(','))}`
     : '';
   const res = await fetch(`/api/coaching/warnings${qs}`, authFetchInit());

@@ -9,6 +9,7 @@ export interface AuthUser {
   status: string;
   mustChangePassword: boolean;
   isOrganisational?: boolean;
+  transporter?: string | null;
   permissions: string[];
   lastLoginAt: string | null;
   createdAt: string;
@@ -132,12 +133,26 @@ export async function authMe(): Promise<{ user: AuthUser; authMode?: string } | 
   return data;
 }
 
-export async function authLogin(email: string, password: string): Promise<AuthUser> {
+export async function fetchTransporters(): Promise<string[]> {
+  const res = await fetch('/api/transporters');
+  const data = await parseJson(res) as { transporters: string[] };
+  return Array.isArray(data.transporters) ? data.transporters : [];
+}
+
+export async function authLogin(
+  email: string,
+  password: string,
+  transporter?: string | null,
+): Promise<AuthUser> {
   const res = await fetch('/api/auth/login', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(transporter ? { transporter } : {}),
+    }),
   });
   const data = await parseJson(res) as {
     user: AuthUser;
@@ -194,6 +209,7 @@ export async function createUserApi(body: {
   password: string;
   roleId: string;
   isOrganisational?: boolean;
+  transporter?: string | null;
 }) {
   const res = await fetch('/api/users', authFetchInit({
     method: 'POST',
@@ -212,6 +228,7 @@ export async function patchUserApi(id: string, body: {
   status?: string;
   password?: string;
   isOrganisational?: boolean;
+  transporter?: string | null;
 }) {
   const res = await fetch(`/api/users/${encodeURIComponent(id)}`, authFetchInit({
     method: 'PATCH',

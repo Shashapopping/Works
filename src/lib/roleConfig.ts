@@ -72,6 +72,15 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     desc: 'Read-only access to Dashboard and Reports',
     permissions: ['dashboard', 'reports'],
   },
+  {
+    id: 'transporter',
+    name: 'Transporter',
+    desc: 'Scoped to one transporter site — no fleet segment pages',
+    permissions: [
+      'dashboard', 'fleet', 'drivers', 'incidents', 'reports',
+      'trips', 'fuel-monitoring', 'fuel-consumption', 'maintenance',
+    ],
+  },
 ];
 
 export function accessLabel(id: string): string {

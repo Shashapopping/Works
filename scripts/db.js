@@ -210,6 +210,36 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_report_automations_user ON report_automations(user_id);
     CREATE INDEX IF NOT EXISTS idx_report_automations_next ON report_automations(next_send_at);
 
+    CREATE TABLE IF NOT EXISTS connectivity_trigger_state (
+      automation_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      was_silent INTEGER NOT NULL DEFAULT 0,
+      last_age_hours REAL,
+      last_seen_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (automation_id, asset_id),
+      FOREIGN KEY (automation_id) REFERENCES report_automations(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS connectivity_trigger_pending (
+      id TEXT PRIMARY KEY,
+      automation_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      threshold_hours REAL NOT NULL,
+      threshold_operator TEXT NOT NULL DEFAULT 'gte',
+      triggered_at TEXT NOT NULL,
+      last_seen_at TEXT,
+      vehicle_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (automation_id) REFERENCES report_automations(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_connectivity_trigger_pending_open
+      ON connectivity_trigger_pending(automation_id, asset_id);
+    CREATE INDEX IF NOT EXISTS idx_connectivity_trigger_pending_auto
+      ON connectivity_trigger_pending(automation_id, created_at);
+
     CREATE TABLE IF NOT EXISTS document_folders (
       id TEXT PRIMARY KEY,
       parent_id TEXT,
@@ -288,6 +318,7 @@ function initSchema() {
   if (!userCols.includes('is_organisational')) {
     db.exec(`ALTER TABLE users ADD COLUMN is_organisational INTEGER NOT NULL DEFAULT 0`);
   }
+  ensureColumn('users', 'transporter', 'TEXT');
   const eventCols = db.prepare(`PRAGMA table_info(events)`).all().map(c => c.name);
   if (!eventCols.includes('speed')) {
     db.exec(`ALTER TABLE events ADD COLUMN speed REAL`);
@@ -308,6 +339,7 @@ function initSchema() {
   ensureColumn('report_automations', 'title', 'TEXT');
   ensureColumn('report_automations', 'report_config', 'TEXT');
   ensureColumn('report_automations', 'format', "TEXT NOT NULL DEFAULT 'csv'");
+  ensureColumn('report_automations', 'last_offline_snapshot', 'TEXT');
 
   // Keep known BPL / bootstrap accounts organisational (idempotent)
   db.prepare(`
@@ -931,6 +963,22 @@ export function loadTripRollupsByDriver(fromIso, toIso) {
     FROM trips
     ${where}
     GROUP BY driver_id
+  `).all(...params);
+}
+
+/** Distinct driver ↔ asset pairs (for site-scope vehicle matching on trips=0 path). */
+export function loadTripDriverAssets(fromIso, toIso) {
+  const database = getDb();
+  const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  conditions.push(`driver_id IS NOT NULL`);
+  conditions.push(`driver_id != ''`);
+  conditions.push(`asset_id IS NOT NULL`);
+  conditions.push(`asset_id != ''`);
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  return database.prepare(`
+    SELECT DISTINCT driver_id AS driverId, asset_id AS assetId
+    FROM trips
+    ${where}
   `).all(...params);
 }
 

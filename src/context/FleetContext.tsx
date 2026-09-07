@@ -17,7 +17,7 @@ import {
   DEMO_TRIPS,
 } from '../lib/homeWidgetData';
 import { isKnownDriver } from '../lib/driverUtils';
-import { DEMO_BRANDING, demoDriverLabel, demoPlaceLabel } from '../config/demoBranding';
+import { DEMO_BRANDING, demoPlaceLabel } from '../config/demoBranding';
 import {
   sanitizeLogEntry,
   sanitizeVehicle,
@@ -42,6 +42,7 @@ import { filterOverspeedEvents } from '../lib/overspeedFilter';
 import { filterDistanceAssetsByVehicles, filterTripDriversByVehicles } from '../lib/siteScope';
 import { buildDriverDistanceUrl } from '../lib/pagePeriod';
 import { defaultPageCustomRange } from '../lib/pagePeriod';
+import { useAuth } from './AuthContext';
 
 export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
@@ -59,9 +60,7 @@ async function generateSafeIQAnalysis(
   if (!SAFEIQ_ENABLED || !ANTHROPIC_API_KEY) return null;
 
   const eventType = e.label || 'Unknown';
-  const driver = (DEMO_BRANDING && e.driverName)
-    ? demoDriverLabel(e.driverName)
-    : (e.driverName || 'Unknown Driver');
+  const driver = e.driverName || 'Unknown Driver';
   const vehicle = e.regNo || e.assetId;
   const location = (DEMO_BRANDING && e.address)
     ? demoPlaceLabel(e.address)
@@ -301,6 +300,9 @@ interface FleetContextType {
   siteOptions: { key: string; label: string; count: number }[];
   /** Distinct `site` values (transporter/depot names within a zone) derived from live data, with asset counts. */
   siteNameOptions: { key: string; label: string; count: number }[];
+  /** True when the signed-in user is scoped to one transporter site. */
+  siteLock: boolean;
+  lockedTransporter: string | null;
 }
 
 /** @deprecated kept for any leftover imports — empty selectedSites means all */
@@ -338,6 +340,9 @@ const defaultMeta: Metadata = {
 const FleetContext = createContext<FleetContextType>({} as FleetContextType);
 
 export function FleetProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const lockedTransporter = user?.transporter?.trim() || null;
+  const siteLock = !!lockedTransporter;
   const [metadata, setMetadata] = useState<Metadata>(() =>
     cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? defaultMeta,
   );
@@ -442,10 +447,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setSelectedSites = useCallback((sites: string[]) => {
+    if (siteLock && lockedTransporter) {
+      persistSites([lockedTransporter]);
+      return;
+    }
     persistSites(sites);
-  }, [persistSites]);
+  }, [persistSites, siteLock, lockedTransporter]);
 
   const toggleSite = useCallback((siteKey: string) => {
+    if (siteLock) return;
     setSelectedSitesState(prev => {
       const next = prev.includes(siteKey)
         ? prev.filter(s => s !== siteKey)
@@ -457,6 +467,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (lockedTransporter) persistSites([lockedTransporter]);
+  }, [lockedTransporter, persistSites]);
 
   const updateScoreConfig = useCallback((config: FleetScoreConfig) => {
     setScoreConfig(saveFleetScoreConfig(config));
@@ -893,7 +907,11 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const filteredVehicles = useMemo(() => {
     if (!siteFilterActive) return vehicles;
     const allowed = new Set(selectedSites);
-    return vehicles.filter(v => allowed.has(siteKeyFor(v.zone)) || allowed.has((v.site || '').trim()));
+    return vehicles.filter(v =>
+      allowed.has(siteKeyFor(v.zone))
+      || allowed.has((v.site || '').trim())
+      || allowed.has((v.transporter || '').trim()),
+    );
   }, [vehicles, selectedSites, siteFilterActive]);
 
   const filteredEvents = useMemo(() => {
@@ -1035,6 +1053,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
       selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
+      siteLock, lockedTransporter,
     }}>
       {children}
     </FleetContext.Provider>

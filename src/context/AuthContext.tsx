@@ -13,7 +13,7 @@ import { resetApiWarmState } from '../lib/apiWarm';
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, transporter?: string | null) => Promise<void>;
   logout: () => Promise<void>;
   changePassword: (current: string, next: string) => Promise<void>;
   refresh: () => Promise<void>;
@@ -76,8 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  const login = async (email: string, password: string) => {
-    const u = await authLogin(email, password);
+  const login = async (email: string, password: string, transporter?: string | null) => {
+    const u = await authLogin(email, password, transporter);
     setUser(u);
     writeCachedUser(u);
   };

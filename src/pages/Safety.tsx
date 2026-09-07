@@ -22,6 +22,7 @@ import {
   SCORE_DROP_PER_IVMS_UNIT,
   FLEET_SCORE_SCALE,
   eventWeight,
+  hosSlicesFromMinutes,
   type FleetScoreConfig,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
@@ -33,9 +34,21 @@ const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, c
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
-function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config, busy }: {
+function ScoreGauge({
+  score,
+  delta,
+  totalIncidents,
+  weightedRate,
+  hosHeldMinutes,
+  hosSlices,
+  onOpenExplainer,
+  config,
+  busy,
+}: {
   score: number; delta: number; totalIncidents: number;
   weightedRate: number;
+  hosHeldMinutes: number;
+  hosSlices?: number;
   onOpenExplainer: () => void;
   config: FleetScoreConfig;
   busy?: boolean;
@@ -51,6 +64,8 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
     : 'Very high IVMS rate per 100 km — immediate intervention advised';
 
   const circumference = 2 * Math.PI * 48;
+  const activeHosSlices = hosSlices ?? hosSlicesFromMinutes(hosHeldMinutes, config);
+  const hosWeightLabel = `+${config.hosPointsPer10Min} / ${config.hosSliceMinutes} min`;
 
   return (
     <button
@@ -118,6 +133,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
               { value: totalIncidents, label: 'incidents / 30d', title: undefined },
               { value: weightedRate.toFixed(2), label: 'IVMS pts / 100 km', title: undefined },
               { value: SCORE_DROP_PER_IVMS_UNIT, label: '× multiplier', title: undefined },
+              { value: activeHosSlices, label: 'HOS slices', title: undefined },
             ].map(m => (
               <div key={m.label} title={m.title}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
@@ -143,6 +159,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
             { label: 'Overspeeding', weight: config.weights.overspeeding, color: '#d97706', title: undefined },
             { label: 'Harsh Accel.', weight: config.weights.harshAcceleration, color: '#f59e0b', title: undefined },
             { label: 'Cornering', weight: config.weights.harshCornering, color: '#8b5cf6', title: undefined },
+            { label: 'HOS', weight: hosWeightLabel, color: '#0d9488', title: undefined },
           ].map(w => (
             <div key={w.label} title={w.title} style={{
               background: `${w.color}12`, border: `1px solid ${w.color}30`,
@@ -782,6 +799,8 @@ export default function Safety() {
           delta={safetyDelta}
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={pageExposure?.hosSlices}
           config={scoreConfig}
           busy={scoreBusy}
           onOpenExplainer={() => setExplainerOpen(true)}
@@ -806,6 +825,8 @@ export default function Safety() {
           vehicleCount={vehicles.length}
           actualWeightedRate={weightedRate}
           distanceKm={distanceKm}
+          hosHeldMinutes={hosHeldMinutes}
+          hosSlices={pageExposure?.hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

@@ -204,6 +204,76 @@ export function archiveDocument({
   };
 }
 
+function findAutomationProfileFile(automationId) {
+  if (!automationId) return null;
+  const rows = getDb().prepare(`
+    SELECT * FROM document_files
+    WHERE source = 'automation-profile'
+    ORDER BY created_at DESC
+  `).all();
+  for (const row of rows) {
+    const meta = row.meta_json ? safeJson(row.meta_json) : null;
+    if (meta?.automationId === automationId) return row;
+  }
+  return null;
+}
+
+/** Replace an existing automation profile JSON or create one with a stable name. */
+export function archiveOrReplaceAutomationProfile({
+  automationId,
+  filename,
+  mime,
+  buffer,
+  meta = null,
+  createdBy = null,
+}) {
+  if (!buffer || !Buffer.isBuffer(buffer)) {
+    const err = new Error('File content required');
+    err.status = 400;
+    throw err;
+  }
+  if (buffer.length > 40 * 1024 * 1024) {
+    const err = new Error('File too large (max 40 MB)');
+    err.status = 413;
+    throw err;
+  }
+
+  const existing = findAutomationProfileFile(automationId);
+  if (existing) {
+    const absPath = path.join(DOCUMENTS_ROOT, existing.storage_path.split('/').join(path.sep));
+    ensureDiskRoot();
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, buffer);
+    const createdAt = nowIso();
+    getDb().prepare(`
+      UPDATE document_files
+      SET size_bytes = ?, meta_json = ?, created_at = ?
+      WHERE id = ?
+    `).run(
+      buffer.length,
+      meta ? JSON.stringify(meta) : null,
+      createdAt,
+      existing.id,
+    );
+    return {
+      file: publicFile(getFileById(existing.id)),
+      folder: publicFolder(getFolderById(existing.folder_id)),
+      replaced: true,
+    };
+  }
+
+  const archived = archiveDocument({
+    filename: filename || `${automationId}.automation.json`,
+    mime,
+    buffer,
+    type: 'Automation',
+    source: 'automation-profile',
+    meta,
+    createdBy,
+  });
+  return { ...archived, replaced: false };
+}
+
 export function listDocumentTree() {
   ensureDiskRoot();
   // Seed empty roots so Explorer always has Reports and Automation side-by-side.

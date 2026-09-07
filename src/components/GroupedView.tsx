@@ -3,6 +3,7 @@ import { Search, ChevronDown, ChevronUp, WifiOff, MapPin } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import { SkelValue, SkelTable } from './data/DataBusy';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace } from '../lib/placeAddress';
+import { makeScopedVehicleIdSet } from '../lib/siteScope';
 
 interface Warning { eventId: string; label: string; timestamp: string; eventTime: string; }
 
@@ -304,26 +305,36 @@ function GroupSection({ groupName, siteGroups, startOpen }: GroupSectionProps) {
 }
 
 export default function GroupedView({ statusFilter, authFetch }: Props) {
-  const { vehicles: sharedVehicles, vehiclesLoading } = useFleet();
+  const { vehicles: scopedFleet, vehiclesLoading, selectedSites } = useFleet();
   void authFetch;
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>(() =>
+    cachePeek<Vehicle[]>(CACHE_KEYS.fleetData) ?? [],
+  );
   const loading = vehiclesLoading && vehicles.length === 0;
   const [isStale, setIsStale] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedGroup, setSelectedGroup] = useState<string>('All');
   const [allOpen, setAllOpen] = useState(false);
 
+  const displayVehicles = useMemo(() => {
+    if (!scopedFleet.length) {
+      return selectedSites.length > 0 ? [] : vehicles;
+    }
+    const ids = makeScopedVehicleIdSet(scopedFleet);
+    return vehicles.filter(v => ids.has(String(v.id)));
+  }, [vehicles, scopedFleet, selectedSites]);
+
   // Count vehicles per major group for tab badges
   const groupCounts = useMemo(() => {
-    const counts: Record<string, number> = { All: vehicles.length };
+    const counts: Record<string, number> = { All: displayVehicles.length };
     GROUP_ORDER.forEach(g => { counts[g] = 0; });
-    vehicles.forEach(v => {
+    displayVehicles.forEach(v => {
       const g = getGroup(v.zone);
       if (counts[g] !== undefined) counts[g]++;
       else counts[g] = 1;
     });
     return counts;
-  }, [vehicles]);
+  }, [displayVehicles]);
   const warningTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const lastSuccess = useRef<number>(Date.now());
 
@@ -337,7 +348,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
   };
 
   useEffect(() => {
-    const fresh = sharedVehicles as unknown as Vehicle[];
+    const fresh = scopedFleet as unknown as Vehicle[];
     if (!fresh.length) return;
     lastSuccess.current = Date.now();
     setIsStale(false);
@@ -357,7 +368,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
         return { ...v, warnings: mergedWarnings };
       });
     });
-  }, [sharedVehicles]);
+  }, [scopedFleet]);
 
   useEffect(() => {
     const iv = setInterval(() => {
@@ -390,7 +401,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
     const q = search.toLowerCase().trim();
     const hasSearch = q.length > 0;
 
-    const filtered = vehicles.filter(v => {
+    const filtered = displayVehicles.filter(v => {
       if (statusFilter !== 'All' && v.status !== statusFilter) return false;
       if (selectedGroup !== 'All' && getGroup(v.zone) !== selectedGroup) return false;
       if (!hasSearch && !vehicleHasResolvedPlace(v)) return false;
@@ -432,7 +443,7 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
     });
 
     return { flatGroups: flat, treeGroups: treeArr };
-  }, [vehicles, statusFilter, search, selectedGroup]);
+  }, [displayVehicles, statusFilter, search, selectedGroup]);
 
   const totalShown = selectedGroup === 'All'
     ? treeGroups.reduce((n, [, sites]) => n + sites.reduce((m, [, vs]) => m + vs.length, 0), 0)

@@ -64,7 +64,7 @@ export function useHosRecords(date?: string, opts?: { enabled?: boolean }) {
     }, 30_000, 5_000);
   }, [enabled, fetchData, isLiveDay]);
 
-  const records = data?.records ?? [];
+  const records = Array.isArray(data?.records) ? data.records : [];
 
   return {
     data,

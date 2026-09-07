@@ -13,6 +13,8 @@ interface Props {
   siteNameOptions: SiteOption[];
   variant?: 'header' | 'field';
   label?: string;
+  locked?: boolean;
+  lockedLabel?: string;
 }
 
 export default function SiteScopeDropdown({
@@ -23,6 +25,8 @@ export default function SiteScopeDropdown({
   siteNameOptions,
   variant = 'header',
   label,
+  locked = false,
+  lockedLabel,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -102,6 +106,42 @@ export default function SiteScopeDropdown({
   );
   const allChecked = !isFiltered;
   const field = variant === 'field';
+
+  if (locked) {
+    const displayLabel = lockedLabel || activeLabel;
+    return (
+      <div
+        title="Site scope is fixed for your transporter account"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 7,
+          height: field ? 38 : 32,
+          padding: field ? '0 12px' : '0 10px',
+          borderRadius: field ? 10 : 8,
+          background: field ? 'var(--cd-surface-2)' : 'rgba(0,120,212,0.12)',
+          border: field ? '1px solid var(--cd-border)' : '0.5px solid rgba(0,120,212,0.35)',
+          color: field ? 'var(--cd-text-muted)' : 'rgba(255,255,255,0.75)',
+          maxWidth: field ? undefined : 260,
+          cursor: 'default',
+        }}
+      >
+        <MapPin size={14} style={{ flexShrink: 0, opacity: 0.85 }} />
+        <span style={{
+          flex: 1, minWidth: 0, textAlign: 'left',
+          fontSize: field ? 13 : 12.5, fontWeight: 600, whiteSpace: 'nowrap',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {brandLabel(displayLabel)}
+        </span>
+        <span style={{
+          fontSize: 10, fontWeight: 700, borderRadius: 99, padding: '1px 6px', flexShrink: 0,
+          background: field ? 'var(--cd-surface)' : 'rgba(255,255,255,0.1)',
+          color: field ? 'var(--cd-text-muted)' : 'rgba(255,255,255,0.55)',
+        }}>
+          {activeCount}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: 'relative', width: field ? '100%' : undefined }} ref={ref}>

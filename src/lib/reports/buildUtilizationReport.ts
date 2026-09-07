@@ -1,6 +1,7 @@
 import type { KpiAssetRow } from '../operationalKpi';
 import { ASSET_CLASS_LABELS } from '../operationalKpi';
 import type { TabularReport } from '../reportTypes';
+import { matchesUtilizationSearch } from './reportSearch';
 
 function pct(n: number | null | undefined) {
   if (n == null || !Number.isFinite(n)) return '—';
@@ -13,10 +14,10 @@ export function buildUtilizationReport(opts: {
   meta: string;
   search?: string;
 }): TabularReport {
-  const q = (opts.search || '').trim().toLowerCase();
   const columns = [
     { header: 'Reg No', textForce: true, width: 14 },
     { header: 'Asset name', width: 22 },
+    { header: 'Transporter', width: 18 },
     { header: 'Zone', width: 16 },
     { header: 'Class', width: 12 },
     { header: 'Engine hours', width: 12 },
@@ -29,9 +30,9 @@ export function buildUtilizationReport(opts: {
 
   const rows: string[][] = [];
   for (const a of opts.assets || []) {
-    if (q) {
-      const hay = `${a.regNo} ${a.assetName} ${a.zone}`.toLowerCase();
-      if (!hay.includes(q)) continue;
+    const transporter = a.transporter || '';
+    if (!matchesUtilizationSearch(a.regNo || '', a.assetName || '', transporter, opts.search || '')) {
+      continue;
     }
     // Keep assets with any activity signal
     if (
@@ -41,6 +42,7 @@ export function buildUtilizationReport(opts: {
     rows.push([
       a.regNo || 'N/A',
       a.assetName || 'N/A',
+      transporter || 'N/A',
       a.zone || 'N/A',
       ASSET_CLASS_LABELS[a.assetClass] || a.assetClass || 'Other',
       Number(a.engineHours || 0).toFixed(1),
@@ -53,8 +55,8 @@ export function buildUtilizationReport(opts: {
   }
 
   rows.sort((a, b) => {
-    const ua = a[8] === '—' ? -1 : Number(a[8].replace('%', ''));
-    const ub = b[8] === '—' ? -1 : Number(b[8].replace('%', ''));
+    const ua = a[9] === '—' ? -1 : Number(a[9].replace('%', ''));
+    const ub = b[9] === '—' ? -1 : Number(b[9].replace('%', ''));
     return ub - ua;
   });
 
