@@ -1,0 +1,262 @@
+.bpl-dt-range {
+  position: relative;
+  z-index: 5;
+}
+.bpl-dt-range.stacked .bpl-dt-range-fields {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.bpl-dt-range:not(.stacked) .bpl-dt-range-fields {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.bpl-dt-inline-label {
+  font-size: 12px;
+  color: var(--cd-text-muted);
+}
+.bpl-dt-field-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 140px;
+}
+.bpl-dt-field {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: 1px solid var(--cd-border);
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--cd-surface-2);
+  color: var(--cd-text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bpl-dt-field.open,
+.bpl-dt-field:hover {
+  border-color: #0f766e;
+  outline: 1px solid color-mix(in srgb, #0f766e 35%, transparent);
+}
+.bpl-dt-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: min(300px, 92vw);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid var(--cd-border);
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+.bpl-dt-popover-portal {
+  position: fixed;
+  z-index: 10050;
+  /* top/left/width set inline from the anchor */
+}
+.bpl-dt-header-bar {
+  background: #0f766e;
+  color: #fff;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 8px 10px;
+}
+.bpl-dt-header-body {
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.bpl-dt-date-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: center;
+}
+.bpl-dt-month,
+.bpl-dt-year {
+  font-size: 14px;
+  color: #64748b;
+  font-weight: 600;
+}
+.bpl-dt-day {
+  font-size: 28px;
+  font-weight: 700;
+  color: #0f766e;
+  line-height: 1;
+}
+.bpl-dt-time-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+.bpl-dt-time-part {
+  border: none;
+  background: transparent;
+  font-size: 28px;
+  font-weight: 700;
+  color: #64748b;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.bpl-dt-time-part.active {
+  color: #0f766e;
+}
+.bpl-dt-time-colon {
+  font-size: 26px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+.bpl-dt-switch-date {
+  display: block;
+  margin: 8px auto 0;
+  border: none;
+  background: none;
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.bpl-dt-calendar {
+  padding: 10px 12px 4px;
+}
+.bpl-dt-cal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.bpl-dt-cal-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+.bpl-dt-nav-btn {
+  border: none;
+  background: #f1f5f9;
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #334155;
+}
+.bpl-dt-dow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 4px;
+}
+.bpl-dt-dow span {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+  padding: 4px 0;
+}
+.bpl-dt-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.bpl-dt-day-cell {
+  aspect-ratio: 1;
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+.bpl-dt-day-cell.empty {
+  cursor: default;
+}
+.bpl-dt-day-cell.today:not(.selected) {
+  background: #f1f5f9;
+}
+.bpl-dt-day-cell.selected {
+  background: #0f766e;
+  color: #fff;
+}
+.bpl-dt-day-cell:not(.empty):not(.selected):hover {
+  background: #ccfbf1;
+}
+.bpl-dt-day-cell.disabled,
+.bpl-dt-day-cell:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  color: #94a3b8;
+}
+.bpl-dt-day-cell.disabled:hover,
+.bpl-dt-day-cell:disabled:hover {
+  background: transparent;
+}
+.bpl-dt-time-pick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px 12px;
+  max-height: 220px;
+}
+.bpl-dt-time-col-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin-bottom: 6px;
+  text-align: center;
+}
+.bpl-dt-time-scroll {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 4px;
+}
+.bpl-dt-time-opt {
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+}
+.bpl-dt-time-opt.selected {
+  background: #0f766e;
+  color: #fff;
+}
+.bpl-dt-time-opt:not(.selected):hover {
+  background: #f0fdfa;
+}
+.bpl-dt-footer {
+  border-top: 1px solid #e2e8f0;
+  padding: 8px 12px 10px;
+  text-align: center;
+}
+.bpl-dt-done {
+  border: none;
+  background: none;
+  color: #0f766e;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 6px 16px;
+}
+.bpl-dt-done:hover {
+  text-decoration: underline;
+}

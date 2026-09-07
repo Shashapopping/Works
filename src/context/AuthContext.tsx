@@ -8,6 +8,7 @@ import {
   permissionForPath,
   type AuthUser,
 } from '../lib/authApi';
+import { resetApiWarmState } from '../lib/apiWarm';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -21,25 +22,53 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const AUTH_USER_CACHE_KEY = 'hbm_auth_user_cache';
+
+function readCachedUser(): AuthUser | null {
+  try {
+    const raw = sessionStorage.getItem(AUTH_USER_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as AuthUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedUser(user: AuthUser | null) {
+  try {
+    if (user) sessionStorage.setItem(AUTH_USER_CACHE_KEY, JSON.stringify(user));
+    else sessionStorage.removeItem(AUTH_USER_CACHE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<AuthUser | null>(() => readCachedUser());
+  const [loading, setLoading] = useState(() => !readCachedUser());
 
   const refresh = async () => {
     const me = await authMe();
-    setUser(me?.user ?? null);
+    const nextUser = me?.user ?? null;
+    setUser(nextUser);
+    writeCachedUser(nextUser);
   };
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        await fetchAuthMode();
+        void fetchAuthMode().catch(() => null);
         const me = await authMe();
-        if (!cancelled) setUser(me?.user ?? null);
+        if (!cancelled) {
+          const nextUser = me?.user ?? null;
+          setUser(nextUser);
+          writeCachedUser(nextUser);
+        }
       } catch {
-        if (!cancelled) setUser(null);
+        if (!cancelled) {
+          setUser(null);
+          writeCachedUser(null);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -50,11 +79,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     const u = await authLogin(email, password);
     setUser(u);
+    writeCachedUser(u);
   };
 
   const logout = async () => {
+    resetApiWarmState();
     await authLogout();
     setUser(null);
+    writeCachedUser(null);
   };
 
   const changePassword = async (current: string, next: string) => {

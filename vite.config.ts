@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers } from './scripts/mix-test.js'
+import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers, getEventTrends } from './scripts/mix-test.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
-import { getFuelHistory } from './scripts/db.js'
+import { getFuelHistoryResponse } from './scripts/fuel-history-api.js'
+import { getFleetDataResponse } from './scripts/fleet-data-api.js'
 import { handleEventsLogQuery } from './scripts/events-log-api.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
 import { authViteMiddleware } from './scripts/auth-http.js'
@@ -43,6 +44,17 @@ export default defineConfig({
     host: true,
     watch: {
       ignored: ['**/scripts/mix-test.js', '**/public/data.json', '**/public/metadata.json', '**/public/acknowledged.json', '**/public/drivers.json', '**/public/vehicles.json', '**/events.log', '**/panic.log', '**/kpi-events.log'],
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/recharts')) return 'recharts';
+          if (id.includes('node_modules/jspdf')) return 'jspdf';
+          if (id.includes('node_modules/html2canvas')) return 'html2canvas';
+        },
+      },
     },
   },
   plugins: [
@@ -116,9 +128,10 @@ export default defineConfig({
           if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
           if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
           try {
-            const data = fs.readFileSync(path.join(process.cwd(), 'public', 'data.json'), 'utf8')
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
             res.setHeader('Content-Type', 'application/json')
-            res.end(data)
+            res.end(getFleetDataResponse({ view: params.get('view') }))
           } catch { res.statusCode = 404; res.end('Not Found') }
         })
 
@@ -174,68 +187,23 @@ export default defineConfig({
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
-            const period = params.get('period') || 'day'
-            const fromQ = params.get('from')
-            const toQ = params.get('to')
-            const now = Date.now()
-
-            let cutoffStart: number
-            let cutoffEnd = now
-            if (fromQ && toQ) {
-              cutoffStart = new Date(fromQ).getTime()
-              const toDate = new Date(toQ)
-              toDate.setHours(23, 59, 59, 999)
-              cutoffEnd = toDate.getTime()
-              if (Number.isNaN(cutoffStart) || Number.isNaN(cutoffEnd)) {
-                res.statusCode = 400
-                res.setHeader('Content-Type', 'application/json')
-                res.end(JSON.stringify({ error: 'Invalid from/to dates' }))
-                return
-              }
-            } else {
-              const cutoffs: Record<string, number> = { day: 86400000, week: 604800000, month: 2592000000 }
-              cutoffStart = now - (cutoffs[period] || cutoffs.day)
-            }
-
-            // All probe rows (5min / 1min / trip start-end). Restricting to 5min
-            // dropped assets that still have live fuel and a drawable series.
-            const entries = getFuelHistory({
-              fromIso: new Date(cutoffStart).toISOString(),
-              toIso: new Date(cutoffEnd).toISOString(),
+            const result = getFuelHistoryResponse({
+              period: params.get('period') || 'day',
+              from: params.get('from'),
+              to: params.get('to'),
             })
-
-            const seriesMap = new Map<string, { time: string; level: number }[]>()
-            entries.forEach(entry => {
-              if (!seriesMap.has(entry.assetId)) seriesMap.set(entry.assetId, [])
-              seriesMap.get(entry.assetId)!.push({ time: entry.timestamp, level: Math.max(0, entry.level) })
-            })
-
-            const vehicleLookup = new Map<string, any>()
-            try {
-              const dataPath = path.join(process.cwd(), 'public', 'data.json')
-              if (fs.existsSync(dataPath)) {
-                JSON.parse(fs.readFileSync(dataPath, 'utf8')).forEach((v: any) => {
-                  vehicleLookup.set(v.id?.toString(), { regNo: v.regNo, assetName: v.assetName, zone: v.zone })
-                })
-              }
-            } catch { }
-
-            const result: any[] = []
-            seriesMap.forEach((data, assetId) => {
-              data.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
-              const info = vehicleLookup.get(assetId) || {}
-              result.push({
-                assetId,
-                regNo: (info.regNo || assetId).toString().trim(),
-                assetName: info.assetName || '',
-                zone: info.zone || '',
-                data,
-              })
-            })
-
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(result))
-          } catch { res.statusCode = 500; res.end('Internal Server Error') }
+          } catch (err: any) {
+            if (err?.statusCode === 400) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: err.message }))
+              return
+            }
+            res.statusCode = 500
+            res.end('Internal Server Error')
+          }
         })
 
         // GET /api/fuel/consumption?period=day|week|month&site=QUARRY+EWEKORO OR ?from=&to=
@@ -252,8 +220,19 @@ export default defineConfig({
             const tripsParam = params.get('trips')
             const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
             const data = computeConsumption({ period, from, to, siteFilter: site, includeTrips })
+            const summaryParam = params.get('summary')
+            const summaryOnly = summaryParam === '1' || summaryParam === 'true'
+            const body = summaryOnly ? {
+              period: data.period,
+              summary: data.summary,
+              dailySeries: data.dailySeries,
+              assets: [],
+              trips: [],
+              refuels: [],
+              siteTotals: [],
+            } : data
             res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify(data))
+            res.end(JSON.stringify(body))
           } catch { res.statusCode = 500; res.end('Internal Server Error') }
         })
 
@@ -270,8 +249,17 @@ export default defineConfig({
               to: params.get('to'),
               scope: params.get('scope') || 'quarry',
             })
+            const summaryParam = params.get('summary')
+            const summaryOnly = summaryParam === '1' || summaryParam === 'true'
+            const body = summaryOnly ? {
+              generatedAt: data.generatedAt,
+              period: data.period,
+              windowHours: data.windowHours,
+              scope: data.scope,
+              summary: data.summary,
+            } : data
             res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify(data))
+            res.end(JSON.stringify(body))
           } catch { res.statusCode = 500; res.end('Internal Server Error') }
         })
 
@@ -329,12 +317,15 @@ export default defineConfig({
           if ((req.originalUrl || req.url || '').includes('/journeys/')) { res.statusCode = 404; res.end('Not Found'); return }
           const tripsParam = params.get('trips')
           const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
+          const summaryParam = params.get('summary')
+          const summaryOnly = summaryParam === '1' || summaryParam === 'true' || summaryParam === 'totals'
           const summary = getDriverDistanceSummary({
             range: params.get('range') || '24h',
             month: params.get('month') || null,
             from: params.get('from') || null,
             to: params.get('to') || null,
             includeTrips,
+            summaryOnly,
           })
           const includeJourneys = params.get('includeJourneys') === '1' || params.get('includeJourneys') === 'true'
           const slim = includeJourneys
@@ -394,6 +385,28 @@ export default defineConfig({
           } catch { res.statusCode = 500; res.end('Internal Server Error') }
         })
 
+        server.middlewares.use('/api/events/trends', async (req, res) => {
+          if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+          try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const typesRaw = params.get('types')
+            const types = typesRaw
+              ? typesRaw.split(',').map(t => t.trim()).filter(Boolean)
+              : null
+            const data = getEventTrends({
+              from: params.get('from') || null,
+              to: params.get('to') || null,
+              assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || null,
+              types,
+            })
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(data))
+          } catch { res.statusCode = 500; res.end('Internal Server Error') }
+        })
+
         server.middlewares.use('/api/risk/drivers', async (req, res) => {
           if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
           if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
@@ -406,6 +419,7 @@ export default defineConfig({
               to: params.get('to') || null,
               assetIds: params.get('assetIds') || null,
               siteScope: params.get('siteScope') || null,
+              groupBy: params.get('groupBy') || 'driver',
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))

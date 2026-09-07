@@ -12,6 +12,7 @@ import {
 import { Fuel } from 'lucide-react';
 import { fetchFuelHistoryCached, peekFuelHistory } from '../hooks/useFuelConsumption';
 import { DataRegion } from './data/DataBusy';
+import { startJitteredInterval } from '../lib/pollSchedule';
 import {
   chartBucketMinutes,
   dropoutRevealFromRaw,
@@ -304,9 +305,12 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    const interval = setInterval(() => load(true), 30_000);
-    return () => clearInterval(interval);
-  }, [load]);
+    const refreshMs = timeMode === 'today' ? 60_000 : 5 * 60_000;
+    return startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void load(true);
+    }, refreshMs);
+  }, [load, timeMode]);
 
   const processed = useMemo(() => {
     if (!activeSeries) return null;

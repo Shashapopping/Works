@@ -21,6 +21,7 @@ import {
   getTripsInRange,
   countTrips,
   countTripsInRange,
+  loadTripTotalsInRange,
   loadTripRollupsByAsset,
   loadTripRollupsByDriver,
   loadLastDriverIdByAsset,
@@ -28,7 +29,8 @@ import {
   insertKpiEvents,
   pruneFleetHistory,
 } from "./db.js";
-import { querySafetyEventAggregates, queryRiskAggregates } from "./event-aggregates.js";
+import { querySafetyEventAggregates, queryRiskAggregates, queryEventTrendBuckets } from "./event-aggregates.js";
+import { memoApiResponse, apiCacheKey } from "./api-response-cache.js";
 import { fuelEventTypeFromId } from "./fuel-constants.js";
 
 const IDENTITY_URL = "https://identity.za.mixtelematics.com/core/connect/token";
@@ -1419,13 +1421,49 @@ function getDistanceRangeBounds(range = '24h', monthValue = null, fromIso = null
   return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end: now };
 }
 
-export function getDriverDistanceSummary({ range = '24h', month = null, from = null, to = null, includeTrips = true } = {}) {
-  if (driverLookup.size === 0) loadDriverLookup();
-  if (vehicleLookup.size === 0) loadVehicleLookup();
+export function getDriverDistanceSummary(options = {}) {
+  const range = options.range || '24h';
+  const month = options.month || null;
+  const from = options.from || null;
+  const to = options.to || null;
+  const includeTrips = options.includeTrips !== false;
+  const summaryOnly = options.summaryOnly === true;
+  const ttlMs = summaryOnly || !includeTrips ? 60_000 : 15_000;
+  return memoApiResponse(
+    'driver-distance',
+    ttlMs,
+    apiCacheKey({ range, month, from, to, includeTrips, summaryOnly }),
+    () => computeDriverDistanceSummary({ range, month, from, to, includeTrips, summaryOnly }),
+  );
+}
 
+function computeDriverDistanceSummary({ range = '24h', month = null, from = null, to = null, includeTrips = true, summaryOnly = false } = {}) {
   const { start, end } = getDistanceRangeBounds(range, month, from, to);
   const fromIso = start.toISOString();
   const toIso = end.toISOString();
+
+  if (summaryOnly) {
+    const totals = loadTripTotalsInRange(fromIso, toIso) || {};
+    const rawTripCount = Number(totals.rawTripCount) || 0;
+    return {
+      generatedAt: new Date().toISOString(),
+      range,
+      month,
+      start: fromIso,
+      end: toIso,
+      totalDistanceKm: Number(Number(totals.totalDistanceKm || 0).toFixed(2)),
+      rawTripCount,
+      journeyCount: rawTripCount,
+      driverCount: Number(totals.driverCount) || 0,
+      assetCount: Number(totals.assetCount) || 0,
+      cachedTripCount: countTrips(),
+      assets: [],
+      drivers: [],
+    };
+  }
+
+  if (driverLookup.size === 0) loadDriverLookup();
+  if (vehicleLookup.size === 0) loadVehicleLookup();
 
   // Fast path: SQL rollups — no per-trip JS merge when summary-only.
   if (!includeTrips) {
@@ -1818,6 +1856,11 @@ function clipTripsToWindow(trips, windowStart, windowEnd) {
  * 3) ≥24h continuous rest within a rolling 7-day week
  */
 export function getHosRecords(dayStr) {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(dayStr || '') ? dayStr : '__today__';
+  return memoApiResponse('hos', 30_000, day, () => computeHosRecords(dayStr));
+}
+
+function computeHosRecords(dayStr) {
   // HOS can be called from the API without a poll cycle having run yet (or after HMR).
   if (driverLookup.size === 0) loadDriverLookup();
   if (vehicleLookup.size === 0) loadVehicleLookup();
@@ -2010,7 +2053,9 @@ const HOS_REST_GAP_MIN = 30;
 const HOS_SLICE_MIN = 10;
 
 let safetyExposureCache = new Map();
-const SAFETY_EXPOSURE_TTL_MS = 45_000;
+const SAFETY_EXPOSURE_TTL_MS = 90_000;
+const SAFETY_SUMMARY_TTL_MS = 90_000;
+const RISK_DRIVERS_TTL_MS = 90_000;
 
 function readSafetyExposureCache(key) {
   const hit = safetyExposureCache.get(key);
@@ -2167,27 +2212,55 @@ export function getFleetSafetyExposure({ range = '30d', from = null, to = null, 
 }
 
 export function getSafetySummary({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
-  const ids = resolveAssetScope(assetIds, siteScope);
-  const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
-  const agg = querySafetyEventAggregates({ from: exposure.start, to: exposure.end, assetIds: ids });
-  return { ...exposure, ...agg };
+  const key = apiCacheKey({ range, from, to, assetIds, siteScope });
+  return memoApiResponse('safety-summary', SAFETY_SUMMARY_TTL_MS, key, () => {
+    const ids = resolveAssetScope(assetIds, siteScope);
+    const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
+    const agg = querySafetyEventAggregates({ from: exposure.start, to: exposure.end, assetIds: ids });
+    return { ...exposure, ...agg };
+  });
 }
 
-export function getRiskDrivers({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
+export function getEventTrends({ from = null, to = null, assetIds = null, siteScope = null, types = null } = {}) {
   const ids = resolveAssetScope(assetIds, siteScope);
-  const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
-  const drivers = queryRiskAggregates({
-    from: exposure.start,
-    to: exposure.end,
-    groupBy: 'driver',
-    assetIds: ids,
+  const rows = queryEventTrendBuckets({ from, to, assetIds: ids, types });
+  const byDay = new Map();
+  for (const row of rows) {
+    if (!byDay.has(row.dayKey)) byDay.set(row.dayKey, {});
+    const bucket = byDay.get(row.dayKey);
+    bucket[row.label] = (bucket[row.label] || 0) + row.count;
+  }
+  const buckets = [...byDay.entries()].map(([dayKey, byLabel]) => {
+    const total = Object.values(byLabel).reduce((sum, n) => sum + n, 0);
+    return { dayKey, byLabel, total };
+  }).sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+  return { from, to, buckets };
+}
+
+export function getRiskDrivers({ range = '30d', from = null, to = null, assetIds = null, siteScope = null, groupBy = 'driver' } = {}) {
+  const key = apiCacheKey({ range, from, to, assetIds, siteScope, groupBy });
+  return memoApiResponse('risk-drivers', RISK_DRIVERS_TTL_MS, key, () => {
+    const ids = resolveAssetScope(assetIds, siteScope);
+    // Risk pages only need scored-event counts. Do not compute safety exposure here:
+    // exposure pulls distance + HOS rollups and makes Assets/Drivers wait on work
+    // that is only needed by safety-score endpoints.
+    const { start, end } = getDistanceRangeBounds(range, null, from, to);
+    const fromIso = start.toISOString();
+    const toIso = end.toISOString();
+    const aggregates = queryRiskAggregates({
+      from: fromIso,
+      to: toIso,
+      groupBy: groupBy === 'asset' ? 'asset' : 'driver',
+      assetIds: ids,
+    });
+    return {
+      range,
+      start: fromIso,
+      end: toIso,
+      drivers: groupBy === 'asset' ? undefined : aggregates,
+      assets: groupBy === 'asset' ? aggregates : undefined,
+    };
   });
-  return {
-    range: exposure.range,
-    start: exposure.start,
-    end: exposure.end,
-    drivers,
-  };
 }
 
 export async function pollOnce() {

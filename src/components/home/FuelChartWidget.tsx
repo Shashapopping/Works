@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import PeriodSelect, { type PeriodValue } from './PeriodSelect';
+import CustomDateTimeRange, { ensureCustomRangeDefaults } from '../CustomDateTimeRange';
+import { startJitteredInterval } from '../../lib/pollSchedule';
 import { useFleet } from '../../context/FleetContext';
 import {
   QUARRY_SITE_KEYS,
@@ -258,8 +260,11 @@ export default function FuelChartWidget() {
     };
 
     void pull(!hasCached);
-    const id = setInterval(() => void pull(true), 60_000);
-    return () => { cancelled = true; clearInterval(id); };
+    const stop = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void pull(true);
+    }, period === 'day' ? 60_000 : 5 * 60_000);
+    return () => { cancelled = true; stop(); };
   }, [period, customRange.from, customRange.to]);
 
   const active = useMemo(() => {
@@ -357,16 +362,33 @@ export default function FuelChartWidget() {
       <div className="bpl-card-body bpl-fuel-widget-body">
         {period === 'custom' && (
           <div className="bpl-fuel-custom-row">
-            <input type="date" value={customRange.from} max={customRange.to} onChange={e => setCustomRange(r => ({ ...r, from: e.target.value }))} />
-            <span>to</span>
-            <input type="date" value={customRange.to} min={customRange.from} onChange={e => setCustomRange(r => ({ ...r, to: e.target.value }))} />
+            <CustomDateTimeRange
+              from={customRange.from}
+              to={customRange.to}
+              onFromChange={from => setCustomRange(r => ({ ...r, from }))}
+              onToChange={to => setCustomRange(r => ({ ...r, to }))}
+            />
           </div>
         )}
 
         <div className="bpl-fuel-summary">
           <div className="bpl-fuel-summary-meta">
             <div className="bpl-fuel-period-label">
-              <PeriodSelect value={period} onChange={setPeriod} includeCustom />
+              <PeriodSelect
+                value={period}
+                onChange={p => {
+                  if (p === 'custom') {
+                    ensureCustomRangeDefaults(
+                      customRange.from,
+                      customRange.to,
+                      from => setCustomRange(r => ({ ...r, from })),
+                      to => setCustomRange(r => ({ ...r, to })),
+                    );
+                  }
+                  setPeriod(p);
+                }}
+                includeCustom
+              />
             </div>
             <div className="bpl-fuel-total" style={{ color }}>
               {currentLevel != null && currentLevel > 0

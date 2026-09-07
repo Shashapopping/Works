@@ -41,8 +41,17 @@ export function clientName(): string {
   return DEMO_BRANDING ? DEMO.clientName : 'HBM Nigeria';
 }
 
+export function platformName(): string {
+  return DEMO_BRANDING ? DEMO.productName : 'Fleet Intelligence Platform';
+}
+
 export function brandLogoSrc(): string | null {
-  return DEMO_BRANDING ? DEMO.logoSrc : '/HBM-logo.jpeg';
+  return DEMO_BRANDING ? DEMO.logoSrc : '/hbm-logo-white-card.png';
+}
+
+/** Square mark for sidebar / login chrome (Chevron-style, no badge background). */
+export function brandLogoMarkSrc(): string | null {
+  return DEMO_BRANDING ? DEMO.logoSrc : '/hbm-logo-white-card.png';
 }
 
 export function brandLogoAlt(): string {

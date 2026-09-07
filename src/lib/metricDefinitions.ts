@@ -28,14 +28,19 @@ export const STATUS_DEFINITIONS = {
   excessiveIdle: 'MiX excessive-idle event — prolonged idling flagged by telematics.',
   stationary: 'Not moving; last GPS position less than 1 hour ago.',
   parked: 'Not moving; last GPS position between 1 and 24 hours ago.',
-  offline: 'No recent movement — last GPS between 24 hours and 30 days ago.',
-  nonOperational: 'Non-operational / Inactive — last GPS older than 30 days.',
+  offline: 'Inactive — vehicle has not moved in over 24 hours (last GPS between 24 hours and 30 days ago).',
+  nonOperational: 'Non-operational — vehicle has not moved in over 30 days.',
 } as const;
 
 export type KpiDefinitionKey = keyof typeof KPI_DEFINITIONS;
 export type StatusDefinitionKey = keyof typeof STATUS_DEFINITIONS;
 
-/** Display label for a vehicle status — the 'Inactive' status value reads as "Non-Operational" everywhere in the UI. */
+/**
+ * Display label for a vehicle status (Chevron naming):
+ * Offline → Inactive, Inactive → Non-Operational.
+ */
 export function statusDisplayLabel(status: string): string {
-  return status === 'Inactive' ? 'Non-Operational' : status;
+  if (status === 'Offline') return 'Inactive';
+  if (status === 'Inactive') return 'Non-Operational';
+  return status;
 }

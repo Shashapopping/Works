@@ -19,6 +19,8 @@ import {
   countByStatus, STATUS_COLOR, utilizationPct,
 } from '../lib/segmentMetrics';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
+import PageControls from '../components/PageControls';
+import { useClientPagination } from '../hooks/useClientPagination';
 
 type QuarryVehicle = Vehicle & { fuelLevel?: { level: number } | null };
 
@@ -26,6 +28,8 @@ function fmtL(n: number) {
   if (!Number.isFinite(n) || n <= 0) return '—';
   return `${Math.round(n).toLocaleString()} L`;
 }
+
+const LEADERBOARD_PAGE_SIZE = 20;
 
 function fmtRatio(n: number | null | undefined) {
   if (n == null || !Number.isFinite(n)) return '—';
@@ -115,12 +119,17 @@ export default function Quarry() {
   const leaderboard = useMemo(() =>
     [...haulAssets]
       .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm)
-      .slice(0, 15)
       .map(a => {
         const v = fleet.find(f => f.id?.toString() === a.assetId?.toString());
         return { ...a, vehicle: v };
       }),
   [haulAssets, fleet]);
+
+  const leaderboardPagination = useClientPagination(
+    leaderboard,
+    LEADERBOARD_PAGE_SIZE,
+    `${period}|${customRange.from}|${customRange.to}`,
+  );
 
   return (
     <div>
@@ -256,7 +265,7 @@ export default function Quarry() {
                   <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: 'var(--cd-text-muted)' }}>
                     No haul distance {periodLabel}
                   </td></tr>
-                ) : leaderboard.map((row, i) => {
+                ) : leaderboardPagination.pageRows.map((row, i) => {
                   const color = STATUS_COLOR[row.vehicle?.status ?? ''] ?? '#6B7A8D';
                   const site = (row.vehicle?.site || row.vehicle?.zone || '—').trim() || '—';
                   return (
@@ -278,6 +287,20 @@ export default function Quarry() {
               </tbody>
             </table>
           </div>
+          {leaderboard.length > 0 && (
+            <PageControls
+              page={leaderboardPagination.page}
+              pageCount={leaderboardPagination.pageCount}
+              from={leaderboardPagination.from}
+              to={leaderboardPagination.to}
+              total={leaderboardPagination.total}
+              hasPrev={leaderboardPagination.hasPrev}
+              hasNext={leaderboardPagination.hasNext}
+              onPrev={leaderboardPagination.prev}
+              onNext={leaderboardPagination.next}
+              itemLabel="assets"
+            />
+          )}
         </div>
 
         <div className="bpl-card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>

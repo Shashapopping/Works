@@ -1,5 +1,4 @@
 import { useState, useMemo, useDeferredValue } from 'react';
-import XLSX from 'xlsx-js-style';
 import { BadgeCheck, Plus, Search, Trash2, Pencil, Upload } from 'lucide-react';
 import {
   getCertificates,
@@ -44,11 +43,11 @@ function cellString(value: unknown) {
   return String(value).trim();
 }
 
-function dateCell(value: unknown) {
+function dateCell(value: unknown, parseExcelDate?: (value: number) => { y: number; m: number; d: number } | null) {
   if (value == null || value === '') return '';
   if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString().slice(0, 10);
   if (typeof value === 'number') {
-    const parsed = XLSX.SSF.parse_date_code(value);
+    const parsed = parseExcelDate?.(value);
     if (parsed) {
       return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
     }
@@ -82,6 +81,8 @@ function sourceValue(header: string, cert: DriverCertificate) {
 }
 
 async function parseCertificateFile(file: File, documentSetTitle: string): Promise<ImportSummary> {
+  const { default: XLSX } = await import('xlsx-js-style');
+  const parseExcelDate = (value: number) => XLSX.SSF.parse_date_code(value);
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -110,7 +111,7 @@ async function parseCertificateFile(file: File, documentSetTitle: string): Promi
     }
     const sourceRow = sourceHeaders.reduce<Record<string, string>>((acc, header) => {
       const colIdx = headers.findIndex(h => cellString(h) === header);
-      acc[header] = colIdx >= 0 ? (HEADER_ALIASES.issueDate.includes(normalizeHeader(header)) || HEADER_ALIASES.expiryDate.includes(normalizeHeader(header)) ? dateCell(row[colIdx]) : cellString(row[colIdx])) : '';
+      acc[header] = colIdx >= 0 ? (HEADER_ALIASES.issueDate.includes(normalizeHeader(header)) || HEADER_ALIASES.expiryDate.includes(normalizeHeader(header)) ? dateCell(row[colIdx], parseExcelDate) : cellString(row[colIdx])) : '';
       return acc;
     }, {});
 
@@ -119,8 +120,8 @@ async function parseCertificateFile(file: File, documentSetTitle: string): Promi
       driverName,
       certType,
       certNumber: headerMap.certNumber != null ? cellString(row[headerMap.certNumber]) : '',
-      issueDate: headerMap.issueDate != null ? dateCell(row[headerMap.issueDate]) : '',
-      expiryDate: headerMap.expiryDate != null ? dateCell(row[headerMap.expiryDate]) : '',
+      issueDate: headerMap.issueDate != null ? dateCell(row[headerMap.issueDate], parseExcelDate) : '',
+      expiryDate: headerMap.expiryDate != null ? dateCell(row[headerMap.expiryDate], parseExcelDate) : '',
       notes: headerMap.notes != null ? cellString(row[headerMap.notes]) : '',
       documentSetTitle,
       sourceHeaders,

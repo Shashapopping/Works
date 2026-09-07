@@ -1,0 +1,47 @@
+
+/* Page period chips */
+.bpl-page-period {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.bpl-page-period-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.bpl-page-period-chip {
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 0.5px solid var(--cd-border);
+  background: var(--cd-surface-2);
+  color: var(--cd-text-muted);
+  cursor: pointer;
+}
+
+.bpl-page-period-chip.active {
+  border-color: var(--cd-accent-2, #2563eb);
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.bpl-status-metric-period-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.bpl-fuel-custom-row {
+  margin-bottom: 8px;
+}
+
+.dm-period-bar {
+  align-items: flex-start;
+}

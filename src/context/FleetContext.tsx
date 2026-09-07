@@ -33,15 +33,19 @@ import {
   type FleetScoreConfig,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, BOOT_PREFETCH_URLS, warmApiUrlsSequentially } from '../lib/apiCache';
+import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, safetySummaryUrl, peekSafetySummary } from '../lib/apiCache';
+import { fetchHosCached, peekHos } from '../hooks/useHosRecords';
+import { buildHosUrl, type HosRecord } from '../lib/hos';
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
 import { filterDistanceAssetsByVehicles, filterTripDriversByVehicles } from '../lib/siteScope';
+import { buildDriverDistanceUrl } from '../lib/pagePeriod';
+import { defaultPageCustomRange } from '../lib/pagePeriod';
 
 export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
-export type DistanceRange = '24h' | 'currentMonth' | 'lastMonth';
+export type DistanceRange = 'day' | 'week' | 'month' | 'custom';
 
 const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
 
@@ -247,6 +251,10 @@ interface FleetContextType {
   eventsLoading: boolean;
   /** True while driver-distance for current distanceRange is in flight. */
   distanceLoading: boolean;
+  /** Live HOS / fatigue records for today (shared by home card + Fatigue page). */
+  hosRecords: HosRecord[];
+  hosLoading: boolean;
+  hosLastTripDay: string | null;
   safetyExposure: FleetSafetyExposure | null;
   safetyExposureLoading: boolean;
   fleetSafetyScore: number;
@@ -259,7 +267,8 @@ interface FleetContextType {
   insights: AiInsight[];
   trips: TripItem[];
   distanceRange: DistanceRange;
-  setDistanceRange: (range: DistanceRange) => void;
+  setDistanceRange: (range: DistanceRange, custom?: { from: string; to: string }) => void;
+  distanceCustom: { from: string; to: string };
   totalDistanceKm: number;
   environment: { weather: string; traffic: string; temp: string };
   redAlertCount: number;
@@ -344,20 +353,32 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents) ?? [],
   );
   const [driverDistance, setDriverDistance] = useState<DriverDistanceSummary | null>(() =>
-    cachePeek<DriverDistanceSummary>('/api/driver-distance?range=24h&trips=0'),
+    cachePeek<DriverDistanceSummary>(buildDriverDistanceUrl('week')),
   );
   const [vehiclesLoading, setVehiclesLoading] = useState(() => !cachePeek<Vehicle[]>(CACHE_KEYS.fleetData)?.length);
   const [eventsLoading, setEventsLoading] = useState(() => !(cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents)?.length));
   const [distanceLoading, setDistanceLoading] = useState(() =>
-    !cachePeek<DriverDistanceSummary>('/api/driver-distance?range=24h&trips=0'),
+    !cachePeek<DriverDistanceSummary>(buildDriverDistanceUrl('week')),
   );
-  const [safetyExposure, setSafetyExposure] = useState<FleetSafetyExposure | null>(null);
-  const [safetyExposurePrev, setSafetyExposurePrev] = useState<FleetSafetyExposure | null>(null);
-  const [safetyExposureLoading, setSafetyExposureLoading] = useState(true);
-  const [distanceRange, setDistanceRangeState] = useState<DistanceRange>('24h');
-  const setDistanceRange = useCallback((range: DistanceRange) => {
+  const hosTodayUrl = buildHosUrl();
+  const [hosRecords, setHosRecords] = useState<HosRecord[]>(() => peekHos(hosTodayUrl)?.records ?? []);
+  const [hosLastTripDay, setHosLastTripDay] = useState<string | null>(() => peekHos(hosTodayUrl)?.lastTripDay ?? null);
+  const [hosLoading, setHosLoading] = useState(() => !peekHos(hosTodayUrl));
+  const [safetyExposure, setSafetyExposure] = useState<FleetSafetyExposure | null>(() =>
+    peekSafetySummary<FleetSafetyExposure>('30d'),
+  );
+  const [safetyExposurePrev, setSafetyExposurePrev] = useState<FleetSafetyExposure | null>(() =>
+    peekSafetySummary<FleetSafetyExposure>('prev30d'),
+  );
+  const [safetyExposureLoading, setSafetyExposureLoading] = useState(() =>
+    !peekSafetySummary<FleetSafetyExposure>('30d'),
+  );
+  const [distanceRange, setDistanceRangeState] = useState<DistanceRange>('week');
+  const [distanceCustom, setDistanceCustom] = useState(defaultPageCustomRange);
+  const setDistanceRange = useCallback((range: DistanceRange, custom?: { from: string; to: string }) => {
     setDistanceLoading(true);
     setDistanceRangeState(range);
+    if (custom) setDistanceCustom(custom);
   }, []);
   const [fuelSeries, setFuelSeries] = useState<FuelDay[]>(DEFAULT_FUEL_SERIES);
   const [environment, setEnvironment] = useState({ weather: 'Loading…', traffic: 'Moderate', temp: '—' });
@@ -377,17 +398,19 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const seenEventIds = useRef<Set<string>>(new Set());
   const driverDistanceRef = useRef<DriverDistanceSummary | null>(driverDistance);
   const safetyExposureRef = useRef<FleetSafetyExposure | null>(safetyExposure);
+  const hosRecordsRef = useRef<HosRecord[]>(hosRecords);
   const bootTasksStartedRef = useRef(false);
   // Tracks the incident count at which we last fired a Claude analysis per driver
   const driverAnalysisRef = useRef<Map<string, { lastThreshold: number; notifId: string }>>(new Map());
 
   const scheduleIdle = useCallback((fn: () => void, timeoutMs: number) => {
-    if ('requestIdleCallback' in window) {
-      const id = window.requestIdleCallback(() => fn(), { timeout: timeoutMs });
-      return () => window.cancelIdleCallback(id);
+    const w = window as Window & typeof globalThis;
+    if (typeof w.requestIdleCallback === 'function') {
+      const id = w.requestIdleCallback(() => fn(), { timeout: timeoutMs });
+      return () => w.cancelIdleCallback(id);
     }
-    const id = window.setTimeout(fn, Math.min(timeoutMs, 1200));
-    return () => window.clearTimeout(id);
+    const id = w.setTimeout(fn, Math.min(timeoutMs, 1200));
+    return () => w.clearTimeout(id);
   }, []);
 
   useEffect(() => {
@@ -397,6 +420,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     safetyExposureRef.current = safetyExposure;
   }, [safetyExposure]);
+
+  useEffect(() => {
+    hosRecordsRef.current = hosRecords;
+  }, [hosRecords]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -474,17 +501,24 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const loadVehicles = useCallback(async () => {
     try {
       if (!vehiclesRef.current.length) setVehiclesLoading(true);
+      const hasSnapshot = vehiclesRef.current.length > 0;
       const raw = await cachedFetchJson<Vehicle[]>(
-        CACHE_KEYS.fleetData,
+        hasSnapshot ? CACHE_KEYS.fleetLive : CACHE_KEYS.fleetData,
         CACHE_TTL.fleetData,
         async () => {
-          const res = await authFetch('/api/data');
+          const res = await authFetch(hasSnapshot ? '/api/data?view=live' : '/api/data');
           if (!res.ok) return null;
           return res.json();
         },
       );
       if (!raw) return;
-      const data = raw
+      const source = hasSnapshot
+        ? (() => {
+            const prevById = new Map(vehiclesRef.current.map(v => [v.id, v]));
+            return raw.map(v => ({ ...(prevById.get(v.id) || {}), ...v }));
+          })()
+        : raw;
+      const data = source
         .filter(v => v.site !== 'XN - Decommissioned')
         .map(normalizeVehicle);
       vehiclesRef.current = data;
@@ -500,9 +534,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         CACHE_KEYS.fleetEvents,
         CACHE_TTL.fleetEvents,
         async () => {
+          // Boot feed only — short window + hard cap for alerts/widgets (not period totals).
           const to = new Date().toISOString();
-          const from = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=20000`);
+          const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+          const res = await authFetch(`/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=500`);
           if (!res.ok) return null;
           const payload = await res.json();
           return Array.isArray(payload) ? payload : payload?.entries ?? [];
@@ -671,41 +706,45 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
   const reloadEvents = useCallback(() => { loadEvents(); }, [loadEvents]);
 
-  const loadDriverDistance = useCallback(async () => {
+  const loadDriverDistance = useCallback(async (force = false) => {
     const hasVisibleDistance = !!driverDistanceRef.current;
     if (!hasVisibleDistance) setDistanceLoading(true);
     try {
-      const url = `/api/driver-distance?range=${distanceRange}&trips=0`;
+      const baseUrl = buildDriverDistanceUrl(distanceRange, distanceCustom);
+      const url = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}summary=1`;
       const next = await authCachedJson<DriverDistanceSummary>(url, authFetch, {
         ttlMs: CACHE_TTL.pageRollup,
+        force,
       });
       if (next) setDriverDistance(next);
     } catch {}
     finally {
       if (!hasVisibleDistance) setDistanceLoading(false);
     }
-  }, [distanceRange]);
+  }, [distanceRange, distanceCustom]);
 
   const loadSafetyExposure = useCallback(async (force = false) => {
-    const hasVisibleExposure = !!safetyExposureRef.current;
+    const curKey = safetySummaryUrl('30d');
+    const prevKey = safetySummaryUrl('prev30d');
+    const hasVisibleExposure = !!safetyExposureRef.current || !!peekSafetySummary<FleetSafetyExposure>('30d');
     if (!hasVisibleExposure) setSafetyExposureLoading(true);
     try {
       const [cur, prev] = await Promise.all([
         cachedFetchJson<FleetSafetyExposure>(
-          CACHE_KEYS.safetySummary('30d'),
+          curKey,
           CACHE_TTL.safetySummary,
           async () => {
-            const res = await authFetch('/api/safety/summary?range=30d');
+            const res = await authFetch(curKey);
             if (!res.ok) return null;
             return res.json();
           },
           { force },
         ),
         cachedFetchJson<FleetSafetyExposure>(
-          CACHE_KEYS.safetySummary('prev30d'),
+          prevKey,
           CACHE_TTL.safetySummary,
           async () => {
-            const res = await authFetch('/api/safety/summary?range=prev30d');
+            const res = await authFetch(prevKey);
             if (!res.ok) return null;
             return res.json();
           },
@@ -720,21 +759,13 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const loadFuelSummary = useCallback(async () => {
+  const loadFuelSummary = useCallback(async (force = false) => {
     try {
-      const url = '/api/fuel/consumption?period=week&trips=0';
-      const data = await cachedFetchJson<{
+      const url = '/api/fuel/consumption?period=week&trips=0&summary=1';
+      const data = await authCachedJson<{
         assets?: { totalFuelLiters?: number }[];
         summary?: { totalFuelLiters?: number };
-      }>(
-        CACHE_KEYS.fuelConsumption(url),
-        CACHE_TTL.fuelConsumption,
-        async () => {
-          const res = await authFetch(url);
-          if (!res.ok) return null;
-          return res.json();
-        },
-      );
+      }>(url, authFetch, { ttlMs: CACHE_TTL.fuelConsumption, force });
       if (!data) return;
       const assets = data.assets ?? [];
       const totalFuel = data.summary?.totalFuelLiters
@@ -749,37 +780,46 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     setEnvironment({ weather: 'Partly cloudy', traffic: 'Moderate', temp: '28°C' });
   }, []);
 
+  /** Chevron-style: one shared HOS feed for home card + Fatigue page (today). */
+  const loadHos = useCallback(async (force = false) => {
+    const url = buildHosUrl();
+    const cached = peekHos(url);
+    const hasVisible = !!(cached?.records?.length || hosRecordsRef.current.length);
+    if (cached?.records) {
+      setHosRecords(cached.records);
+      setHosLastTripDay(cached.lastTripDay ?? null);
+      setHosLoading(false);
+    } else if (!hasVisible) {
+      setHosLoading(true);
+    }
+    try {
+      const next = await fetchHosCached(url, { force });
+      if (next) {
+        setHosRecords(next.records ?? []);
+        setHosLastTripDay(next.lastTripDay ?? null);
+      }
+    } catch { /* keep prior */ }
+    finally { setHosLoading(false); }
+  }, []);
+
   useEffect(() => {
     loadMetadata();
     loadVehicles();
-    loadEvents();
     loadEnvironment();
+    void loadDriverDistance();
+    void loadHos();
     const bootCancels: Array<() => void> = [];
     if (!bootTasksStartedRef.current) {
       bootTasksStartedRef.current = true;
       bootCancels.push(() => { bootTasksStartedRef.current = false; });
-      bootCancels.push(scheduleIdle(() => { void loadDriverDistance(); }, 800));
+      bootCancels.push(scheduleIdle(() => { void loadEvents(); }, 600));
       bootCancels.push(scheduleIdle(() => { void loadSafetyExposure(); }, 1200));
       bootCancels.push(scheduleIdle(() => { void loadFuelSummary(); }, 1600));
     } else {
-      void loadDriverDistance();
+      void loadEvents();
       void loadSafetyExposure();
       void loadFuelSummary();
     }
-    const bootWarm = window.setTimeout(() => {
-      const warm = () => {
-        void warmApiUrlsSequentially(BOOT_PREFETCH_URLS, authFetch);
-      };
-      if (document.visibilityState === 'visible') warm();
-      else {
-        const onVisible = () => {
-          if (document.visibilityState !== 'visible') return;
-          document.removeEventListener('visibilitychange', onVisible);
-          warm();
-        };
-        document.addEventListener('visibilitychange', onVisible);
-      }
-    }, 2200);
     const metaInterval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void loadMetadata();
@@ -788,11 +828,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       if (document.visibilityState !== 'visible') return;
       void loadVehicles();
     }, 20_000);
+    const hosInterval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadHos(true);
+    }, 30_000);
     // Heavy rollups: ~60s + jitter so pages don't all hit SQLite together
     const stopEvents = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void loadEvents();
-    }, 20_000, 5_000);
+    });
     const stopDistance = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void loadDriverDistance();
@@ -806,16 +850,16 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       void loadFuelSummary();
     });
     return () => {
-      clearTimeout(bootWarm);
       bootCancels.forEach(cancel => cancel());
       clearInterval(metaInterval);
       clearInterval(vehicleInterval);
+      clearInterval(hosInterval);
       stopEvents();
       stopDistance();
       stopExposure();
       stopFuel();
     };
-  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, scheduleIdle]);
+  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, loadHos, scheduleIdle]);
 
   // ── Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays
@@ -977,12 +1021,13 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     <FleetContext.Provider value={{
       authFetch, metadata: effectiveMetadata, vehicles: demoVehicles, events: demoEvents, driverDistance: demoDriverDistance,
       vehiclesLoading, eventsLoading, distanceLoading,
+      hosRecords, hosLoading, hosLastTripDay,
       safetyExposure, safetyExposureLoading,
       fleetSafetyScore, fleetScoreDelta,
       safetyScore: fleetSafetyScore,
       safetyDelta: fleetScoreDelta,
       alerts, maintenance, fuelSeries, insights, trips,
-      distanceRange, setDistanceRange, totalDistanceKm, environment,
+      distanceRange, setDistanceRange, distanceCustom, totalDistanceKm, environment,
       redAlertCount,
       notifications: demoNotifications, dismissNotification, clearAllNotifications, selectedNotification: demoSelectedNotification,
       openNotification, closeNotification,

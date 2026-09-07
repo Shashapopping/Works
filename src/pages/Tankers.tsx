@@ -3,31 +3,34 @@ import {
   Shield, Truck, Gauge, OctagonAlert, Navigation, AlertTriangle,
   TrendingUp, TrendingDown, Minus, Info, ArrowUp, ArrowDown,
 } from 'lucide-react';
-import { useFleet, authFetch, type LogEntry } from '../context/FleetContext';
+import { useFleet, authFetch, type LogEntry, type TripAsset, type DriverDistanceSummary } from '../context/FleetContext';
 import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
 import {
-  scoreFromEvents,
   scoreBandColor,
   scoreBandLabel,
   computeFleetScore,
+  SCORE_DROP_PER_IVMS_UNIT,
+  FLEET_SCORE_SCALE,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
 import { KpiCard } from '../components/KpiCard';
 import SegmentPeriodBar from '../components/SegmentPeriodBar';
-import { useSegmentPeriod, useDriverDistancePeriod } from '../hooks/useDriverDistancePeriod';
 import {
-  eventsInPeriod,
+  buildDriverDistanceUrl,
+  defaultSegmentCustomRange,
   previousPeriodBounds,
   segmentPeriodBounds,
+  segmentPeriodLabel,
+  type SegmentPeriod,
 } from '../lib/segmentPeriod';
-import { toLocalDateValue } from '../lib/dateRange';
 import {
-  segmentVehicles, segmentTripAssets, segmentEvents,
+  segmentVehicles, segmentTripAssets,
   tankerCorridor, utilizationPct, STATUS_COLOR,
 } from '../lib/segmentMetrics';
 import { useTableSort } from '../hooks/useTableSort';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
-import { authCachedJson, CACHE_TTL } from '../lib/apiCache';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
+import { isOverspeedLabel } from '../lib/overspeedFilter';
 
 type TankerSortKey = 'corridor' | 'regNo' | 'driver' | 'distanceKm' | 'avgSpeedKph' | 'status';
 
@@ -81,100 +84,178 @@ function censusUrl(fromIso: string, toIso: string, assetIds: string[]) {
   return `/api/safety/summary?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&assetIds=${ids}`;
 }
 
-function useTankerCensus(assetIds: string[], fromIso: string, toIso: string, prevFromIso: string, prevToIso: string) {
-  const [current, setCurrent] = useState<FleetSafetyExposure | null>(null);
-  const [previous, setPrevious] = useState<FleetSafetyExposure | null>(null);
+function eventsListUrl(fromIso: string, toIso: string, assetIds: string[]) {
+  return `/api/events/log?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&format=page&limit=120&assetIds=${encodeURIComponent(assetIds.join(','))}`;
+}
 
+function parseEventsPayload(data: { entries?: LogEntry[] } | LogEntry[] | null | undefined): LogEntry[] {
+  if (!data) return [];
+  return Array.isArray(data) ? data : data.entries ?? [];
+}
+
+/**
+ * Chevron-style: one period → distance + safety census + events in parallel.
+ * KPIs/score/list share the same window so they cannot drift.
+ */
+function useTankerPeriodBundle(
+  assetIds: string[],
+  period: SegmentPeriod,
+  customRange: { from: string; to: string },
+) {
+  const bounds = useMemo(() => segmentPeriodBounds(period, customRange), [period, customRange]);
+  const prevBounds = useMemo(() => previousPeriodBounds(period, customRange), [period, customRange]);
+  const distUrl = useMemo(() => buildDriverDistanceUrl(period, customRange), [period, customRange]);
   const idKey = assetIds.join(',');
+  const curCensusUrl = assetIds.length ? censusUrl(bounds.fromIso, bounds.toIso, assetIds) : '';
+  const prevCensusUrl = assetIds.length
+    ? censusUrl(
+      new Date(prevBounds.fromMs).toISOString(),
+      new Date(Math.max(prevBounds.toMs - 1, prevBounds.fromMs)).toISOString(),
+      assetIds,
+    )
+    : '';
+  const listUrl = assetIds.length ? eventsListUrl(bounds.fromIso, bounds.toIso, assetIds) : '';
 
-  const load = useCallback(async () => {
+  const [periodAssets, setPeriodAssets] = useState<TripAsset[]>(() => {
+    const cached = cachePeek<DriverDistanceSummary>(distUrl);
+    return cached?.assets ?? [];
+  });
+  const [censusCurrent, setCensusCurrent] = useState<FleetSafetyExposure | null>(() =>
+    curCensusUrl ? cachePeek<FleetSafetyExposure>(curCensusUrl) : null,
+  );
+  const [censusPrevious, setCensusPrevious] = useState<FleetSafetyExposure | null>(() =>
+    prevCensusUrl ? cachePeek<FleetSafetyExposure>(prevCensusUrl) : null,
+  );
+  const [periodEvents, setPeriodEvents] = useState<LogEntry[]>(() =>
+    listUrl ? parseEventsPayload(cachePeek(listUrl)) : [],
+  );
+  const [loading, setLoading] = useState(() => {
+    if (!assetIds.length) return false;
+    const hasDist = !!cachePeek(distUrl);
+    const hasCensus = !!(curCensusUrl && cachePeek(curCensusUrl));
+    const hasList = !!(listUrl && cachePeek(listUrl));
+    return !(hasDist || hasCensus || hasList);
+  });
+
+  useEffect(() => {
+    let cancelled = false;
     if (!assetIds.length) {
-      setCurrent(null);
-      setPrevious(null);
+      setPeriodAssets([]);
+      setCensusCurrent(null);
+      setCensusPrevious(null);
+      setPeriodEvents([]);
+      setLoading(false);
       return;
     }
-    try {
-      const [cur, prev] = await Promise.all([
-        authCachedJson<FleetSafetyExposure>(censusUrl(fromIso, toIso, assetIds), authFetch, {
-          ttlMs: CACHE_TTL.safetySummary,
-        }),
-        authCachedJson<FleetSafetyExposure>(censusUrl(prevFromIso, prevToIso, assetIds), authFetch, {
-          ttlMs: CACHE_TTL.safetySummary,
-        }),
-      ]);
-      if (cur) setCurrent(cur);
-      if (prev) setPrevious(prev);
-    } catch {
-      /* keep prior / fall back to event score */
-    }
-  }, [assetIds, idKey, fromIso, toIso, prevFromIso, prevToIso]);
 
-  useEffect(() => { void load(); }, [load]);
+    const nextDist = buildDriverDistanceUrl(period, customRange);
+    const b = segmentPeriodBounds(period, customRange);
+    const pb = previousPeriodBounds(period, customRange);
+    const nextCur = censusUrl(b.fromIso, b.toIso, assetIds);
+    const nextPrev = censusUrl(
+      new Date(pb.fromMs).toISOString(),
+      new Date(Math.max(pb.toMs - 1, pb.fromMs)).toISOString(),
+      assetIds,
+    );
+    const nextList = eventsListUrl(b.fromIso, b.toIso, assetIds);
 
-  return { current, previous };
+    const peekedDist = cachePeek<DriverDistanceSummary>(nextDist);
+    const peekedCur = cachePeek<FleetSafetyExposure>(nextCur);
+    const peekedPrev = cachePeek<FleetSafetyExposure>(nextPrev);
+    const peekedList = parseEventsPayload(cachePeek(nextList));
+    if (peekedDist?.assets) setPeriodAssets(peekedDist.assets);
+    if (peekedCur) setCensusCurrent(peekedCur);
+    if (peekedPrev) setCensusPrevious(peekedPrev);
+    if (peekedList.length) setPeriodEvents(peekedList);
+
+    const hasPaint = !!(peekedDist || peekedCur || peekedList.length);
+    setLoading(!hasPaint);
+
+    void (async () => {
+      try {
+        const [dist, cur, prev, list] = await Promise.all([
+          authCachedJson<DriverDistanceSummary>(nextDist, authFetch, { ttlMs: CACHE_TTL.pageRollup }),
+          authCachedJson<FleetSafetyExposure>(nextCur, authFetch, { ttlMs: CACHE_TTL.safetySummary }),
+          authCachedJson<FleetSafetyExposure>(nextPrev, authFetch, { ttlMs: CACHE_TTL.safetySummary }),
+          authCachedJson<{ entries?: LogEntry[] } | LogEntry[]>(nextList, authFetch, {
+            ttlMs: CACHE_TTL.fleetEvents,
+          }),
+        ]);
+        if (cancelled) return;
+        if (dist?.assets) setPeriodAssets(dist.assets);
+        if (cur) setCensusCurrent(cur);
+        if (prev) setCensusPrevious(prev);
+        setPeriodEvents(parseEventsPayload(list));
+      } catch { /* keep peeked */ }
+      finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [idKey, period, customRange.from, customRange.to, assetIds]);
+
+  return {
+    periodAssets,
+    censusCurrent,
+    censusPrevious,
+    periodEvents,
+    loading,
+    bounds,
+  };
 }
 
 export default function Tankers() {
-  const { vehicles, events, eventsLoading, scoreConfig } = useFleet();
-  const {
-    period, setPeriod, customRange, setCustomRange,
-    assets: periodAssets, loading: distanceLoading, label: periodLabel,
-  } = useSegmentPeriod('today');
+  const { vehicles, scoreConfig } = useFleet();
+  const [period, setPeriod] = useState<SegmentPeriod>('today');
+  const [customRange, setCustomRange] = useState(defaultSegmentCustomRange);
+  const periodLabel = useMemo(() => segmentPeriodLabel(period, customRange), [period, customRange]);
+
   const fleet = useMemo(() => segmentVehicles(vehicles, 'tankers'), [vehicles]);
-  const segEvents = useMemo(() => segmentEvents(fleet, events), [fleet, events]);
-  const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
-
-  const periodBounds = useMemo(() => segmentPeriodBounds(period, customRange), [period, customRange]);
-  const prevBounds = useMemo(() => previousPeriodBounds(period, customRange), [period, customRange]);
-  const prevCustom = useMemo(() => ({
-    from: toLocalDateValue(new Date(prevBounds.fromMs)),
-    to: toLocalDateValue(new Date(Math.max(prevBounds.toMs - 1, prevBounds.fromMs))),
-  }), [prevBounds.fromMs, prevBounds.toMs]);
-  const { assets: prevPeriodAssets } = useDriverDistancePeriod('custom', prevCustom);
-
-  const recent = useMemo(
-    () => eventsInPeriod(segEvents, period, customRange),
-    [segEvents, period, customRange],
-  );
-  const prev = useMemo(() => {
-    return segEvents.filter(e => {
-      const t = new Date(e.eventTime || e.timestamp).getTime();
-      return t >= prevBounds.fromMs && t < prevBounds.toMs;
-    });
-  }, [segEvents, prevBounds.fromMs, prevBounds.toMs]);
-
-  const util = utilizationPct(fleet);
-  const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
-  const prevDistanceKm = Math.round(
-    segmentTripAssets(fleet, prevPeriodAssets).reduce((s, a) => s + a.totalDistanceKm, 0),
-  );
-
   const tankerIds = useMemo(
     () => fleet.map(v => v.id).filter(Boolean).map(String),
     [fleet],
   );
-  const census = useTankerCensus(
-    tankerIds,
-    periodBounds.fromIso,
-    periodBounds.toIso,
-    new Date(prevBounds.fromMs).toISOString(),
-    new Date(Math.max(prevBounds.toMs - 1, prevBounds.fromMs)).toISOString(),
-  );
+
+  const {
+    periodAssets,
+    censusCurrent,
+    censusPrevious,
+    periodEvents,
+    loading: bundleLoading,
+  } = useTankerPeriodBundle(tankerIds, period, customRange);
+
+  const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
+  const util = utilizationPct(fleet);
+  const distanceKm = Math.round(assets.reduce((s, a) => s + a.totalDistanceKm, 0));
 
   const { score, delta } = useMemo(() => {
-    if (census.current) {
-      return computeFleetScore(census.current, census.previous, scoreConfig);
+    if (censusCurrent) {
+      return computeFleetScore(censusCurrent, censusPrevious, scoreConfig);
     }
-    const now = scoreFromEvents(recent, distanceKm, scoreConfig);
-    const was = scoreFromEvents(prev, prevDistanceKm, scoreConfig);
-    return { score: now, delta: now - was };
-  }, [census.current, census.previous, scoreConfig, recent, distanceKm, prev, prevDistanceKm]);
+    return { score: 100, delta: 0 };
+  }, [censusCurrent, censusPrevious, scoreConfig]);
 
   const scoreColor = scoreBandColor(score, scoreConfig);
   const scoreLabel = scoreBandLabel(score, scoreConfig);
 
-  const overspeeds = recent.filter(e => e.label === 'Overspeeding' || e.label === 'Overspeed Tiered').length;
-  const harshBrakes = recent.filter(e => e.label === 'Harsh Braking').length;
+  // KPI counts from the same event list as "Recent HSE Events" so they cannot disagree.
+  const overspeeds = useMemo(
+    () => periodEvents.filter(e => e.type !== 'panic' && isOverspeedLabel(e.label)).length,
+    [periodEvents],
+  );
+  const harshBrakes = useMemo(
+    () => periodEvents.filter(e => e.label === 'Harsh Braking').length,
+    [periodEvents],
+  );
+  const incidentTotal = useMemo(
+    () => periodEvents.filter(e => e.type !== 'panic').length,
+    [periodEvents],
+  );
+  const eventsLoading = bundleLoading && !censusCurrent && periodEvents.length === 0;
+  const distanceLoading = bundleLoading && assets.length === 0 && distanceKm === 0;
+
+  const recentIncidents = periodEvents.filter(e => e.type !== 'panic').slice(0, 8);
 
   const corridors = useMemo(() => {
     const east: typeof fleet = [];
@@ -189,7 +270,7 @@ export default function Tankers() {
     return { east, west, other };
   }, [fleet]);
 
-  const eventDrivers = useMemo(() => latestDriverByAsset(recent), [recent]);
+  const eventDrivers = useMemo(() => latestDriverByAsset(periodEvents), [periodEvents]);
   const assetById = useMemo(() => {
     const map = new Map(assets.map(a => [a.assetId?.toString(), a]));
     return map;
@@ -224,8 +305,7 @@ export default function Tankers() {
     defaultDirForKey: key => (key === 'distanceKm' || key === 'avgSpeedKph' ? 'desc' : 'asc'),
   });
 
-  const recentIncidents = recent.filter(e => e.type !== 'panic').slice(0, 8);
-  const scoreTip = `Same Fleet Safety Score engine (100 − 1 × weighted IVMS+HOS harm per 100 km), scoped to bulk-tanker assets only. Uses tanker incidents, tanker kilometres, and tanker HOS for ${periodLabel} vs the prior window. Settings weights apply.`;
+  const scoreTip = `Fleet Safety Score (100 − ${SCORE_DROP_PER_IVMS_UNIT} × weighted IVMS points per 100 km), scoped to bulk-tanker assets only. IVMS incidents and tanker kilometres for ${periodLabel} vs the prior window. HOS is tracked separately. Settings weights apply.`;
 
   return (
     <div>
@@ -268,14 +348,14 @@ export default function Tankers() {
                 <circle cx="40" cy="40" r="34" fill="none" stroke="var(--cd-border)" strokeWidth="6" />
                 <circle cx="40" cy="40" r="34" fill="none" stroke={eventsLoading ? 'var(--cd-border)' : scoreColor} strokeWidth="6"
                   strokeDasharray={`${2 * Math.PI * 34}`}
-                  strokeDashoffset={`${2 * Math.PI * 34 * (1 - (eventsLoading ? 0 : score) / 100)}`}
+                  strokeDashoffset={`${2 * Math.PI * 34 * (1 - (eventsLoading ? 0 : score) / FLEET_SCORE_SCALE)}`}
                   strokeLinecap="round" />
               </svg>
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
                 <span style={{ fontSize: 22, fontWeight: 700, color: eventsLoading ? 'var(--cd-text-muted)' : scoreColor, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
                   {eventsLoading ? <SkelValue /> : score}
                 </span>
-                {!eventsLoading && <span style={{ fontSize: 9, color: 'var(--cd-text-muted)' }}>/100</span>}
+                {!eventsLoading && <span style={{ fontSize: 9, color: 'var(--cd-text-muted)' }}>/{FLEET_SCORE_SCALE}</span>}
               </div>
             </div>
             <div>
@@ -292,7 +372,7 @@ export default function Tankers() {
                   : <><Minus size={12} color="var(--cd-text-muted)" /><span style={{ color: 'var(--cd-text-muted)' }}>No change</span></>}
               </div>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 8 }}>
-                {eventsLoading ? <SkelValue wide /> : `${recent.length} tanker incidents ${periodLabel} · ${overspeeds} overspeed`}
+                {eventsLoading ? <SkelValue wide /> : `${incidentTotal} tanker incidents ${periodLabel} · ${overspeeds} overspeed`}
               </div>
             </div>
           </div>
@@ -305,7 +385,7 @@ export default function Tankers() {
             sub={`${fleet.filter(v => v.status === 'Moving').length} tankers moving`}
             color="#0078D4"
             icon={Truck}
-            tip="Share of bulk-tanker vehicles currently Moving. Formula: Moving ÷ tanker fleet size × 100."
+            tip="Share of bulk-tanker vehicles currently Moving (live GPS status). Separate from period trip kilometres below."
           />
           <KpiCard
             label="Fleet Size"
@@ -321,7 +401,7 @@ export default function Tankers() {
             sub="Long-haul total"
             color="#0369a1"
             icon={Navigation}
-            tip={`Sum of MiX trip distance ${periodLabel} for bulk-tanker assets only.`}
+            tip={`Sum of MiX trip distance ${periodLabel} for bulk-tanker assets (same period fetch as score and events). Live “Moving” can be > 0 while trip km is still catching up.`}
           />
           <KpiCard
             label={`Overspeed (${periodLabel})`}
@@ -329,7 +409,7 @@ export default function Tankers() {
             sub={eventsLoading ? '—' : `${harshBrakes} harsh braking events`}
             color={overspeeds > 5 ? '#CC0000' : '#d97706'}
             icon={Gauge}
-            tip={`Count of overspeed events on tanker assets ${periodLabel} (MiX events filtered to this segment). Sub-line = harsh braking in the same window.`}
+            tip={`Overspeed and harsh-braking counts from the same tanker event list shown under Recent HSE Events (${periodLabel}).`}
           />
         </div>
       </div>

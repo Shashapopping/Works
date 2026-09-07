@@ -4,6 +4,8 @@ import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVerti
 import { useFleet } from '../context/FleetContext';
 import {
   DEFAULT_FLEET_SCORE_CONFIG,
+  SCORE_DROP_PER_IVMS_UNIT,
+  FLEET_SCORE_SCALE,
   type FleetScoreConfig,
 } from '../lib/fleetSafetyScore';
 import {
@@ -23,9 +25,9 @@ import {
 import {
   ApiError,
   createUserApi,
-  fetchRoles,
-  fetchUsers,
+  fetchAuthJsonCached,
   patchUserApi,
+  peekAuthJson,
   putRoles,
   type AuthUser,
   type SeatInfo,
@@ -35,7 +37,7 @@ import LicenseUpgradeModal from '../components/LicenseUpgradeModal';
 import { clientName as brandClientName, productName } from '../lib/branding';
 import { SkelTable, SkelValue } from '../components/data/DataBusy';
 
-type Tab = 'general' | 'thresholds' | 'roles' | 'users' | 'dev';
+type Tab = 'general' | 'scoring' | 'roles' | 'users' | 'dev';
 
 const DEV_PASSWORD = 'BplAnalyst26';
 const DEV_UNLOCK_KEY = 'bpl-dev-unlocked';
@@ -147,7 +149,12 @@ function GeneralSettings() {
   );
 }
 
-function ThresholdSettings() {
+const calloutStyle: React.CSSProperties = {
+  fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55,
+  background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 8, padding: '10px 12px',
+};
+
+function ScoringSettings() {
   const { scoreConfig, updateScoreConfig } = useFleet();
   const location = useLocation();
   const [form, setForm] = useState<FleetScoreConfig>(scoreConfig);
@@ -157,11 +164,12 @@ function ThresholdSettings() {
   useEffect(() => { setForm(scoreConfig); }, [scoreConfig]);
 
   useEffect(() => {
-    if (location.hash !== '#consequence-bands' && location.pathname !== '/consequence-management') return;
-    const el = document.getElementById('consequence-bands');
+    const hash = location.hash.replace('#', '');
+    if (!hash) return;
+    const el = document.getElementById(hash);
     if (!el) return;
     requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  }, [location.hash]);
+  }, [location.hash, location.pathname]);
 
   const setWeight = (key: keyof FleetScoreConfig['weights'], value: number) => {
     setForm(p => ({ ...p, weights: { ...p.weights, [key]: value } }));
@@ -190,66 +198,15 @@ function ThresholdSettings() {
           Fleet Safety Score
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
-          The score starts at <strong style={{ color: 'var(--cd-text)' }}>100</strong> (no harm).
-          Harm is counted per 100 km driven. Every 1 point of harm per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>1</strong> point off the score.
+          Whole-fleet overview on Home and Safety. IVMS incidents only — overspeed, harsh brake/accel, cornering.
+          Fatigue and HOS are tracked separately and do <strong style={{ color: 'var(--cd-text)' }}>not</strong> change this score.
         </div>
-        <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16,
-        }}>
-          <div>
-            <label style={labelStyle}>HOS slice length</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="number"
-                step={1}
-                min={1}
-                max={60}
-                style={{ ...fieldStyle, width: 80 }}
-                value=""
-                placeholder="Soon"
-                disabled
-                title="Coming soon"
-              />
-              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }} title="Coming soon">minutes held</span>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              HOS scoring configuration is coming soon.
-            </div>
-          </div>
-          <div>
-            <label style={labelStyle}>Points per HOS slice</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="number"
-                step={0.1}
-                min={0}
-                max={20}
-                style={{ ...fieldStyle, width: 80 }}
-                value=""
-                placeholder="Soon"
-                disabled
-                title="Coming soon"
-              />
-              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }} title="Coming soon">pts</span>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
-              HOS point weighting is coming soon.
-            </div>
-          </div>
-        </div>
-        <div style={{
-          fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55,
-          background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 8, padding: '10px 12px',
-        }}>
-          <strong>The score impact:</strong> 1 harm point per 100 km → lose 1 score point.
+        <div style={calloutStyle}>
+          <strong>Formula:</strong> score = 100 − {SCORE_DROP_PER_IVMS_UNIT} × (weighted IVMS points ÷ (km ÷ 100)), rounded, clamped 0–{FLEET_SCORE_SCALE}.
           <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
-            No harm → <strong style={{ color: 'var(--cd-text)' }}>100</strong>.
-            {' '}4 harm points per 100 km → 100 − 4 = <strong style={{ color: 'var(--cd-text)' }}>96</strong>.
-            {' '}20 per 100 km → <strong style={{ color: 'var(--cd-text)' }}>80</strong> before the fleet ceiling is applied.
-            The score cannot go above 100 or below 0.
-          </div>
-          <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
-            HOS presence is reserved here; scoring details are coming soon.
+            No scored IVMS incidents → <strong style={{ color: 'var(--cd-text)' }}>100</strong>.
+            {' '}2 weighted IVMS pts per 100 km → 100 − {SCORE_DROP_PER_IVMS_UNIT * 2} = <strong style={{ color: 'var(--cd-text)' }}>{100 - SCORE_DROP_PER_IVMS_UNIT * 2}</strong>.
+            {' '}10 per 100 km → <strong style={{ color: 'var(--cd-text)' }}>{Math.max(0, 100 - SCORE_DROP_PER_IVMS_UNIT * 10)}</strong>.
           </div>
         </div>
       </div>
@@ -259,8 +216,7 @@ function ThresholdSettings() {
           Fleet Safety Score — event weights
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.55 }}>
-          Each incident adds these points. HOS presence is reserved and will be completed later.
-          That number is the rate. Then: start at 100, minus 1 for every 1 on the rate.
+          Each scored IVMS incident adds these weighted points before the per-100 km rate is calculated.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           {[
@@ -286,12 +242,12 @@ function ThresholdSettings() {
         </div>
       </div>
 
-      <div className="bpl-card" style={{ padding: 24 }}>
+      <div id="fleet-bands" className="bpl-card" style={{ padding: 24, scrollMarginTop: 88 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
           Fleet status bands
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-          Colour / label cutoffs on the 0–100 score. Score at or above each value uses that band.
+          Colour and label cutoffs on the 0–{FLEET_SCORE_SCALE} fleet score. Score at or above each value uses that band.
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           {[
@@ -317,25 +273,22 @@ function ThresholdSettings() {
         </div>
       </div>
 
-      <div id="consequence-bands" className="bpl-card" style={{ padding: 24, scrollMarginTop: 88 }}>
+      <div id="driver-discipline" className="bpl-card" style={{ padding: 24, scrollMarginTop: 88 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
-          Driver discipline bands (Consequence/Fatigue Management)
+          Driver discipline score
         </div>
         <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
-          This is <strong style={{ color: 'var(--cd-text)' }}>not</strong> the Fleet Safety Score on Home.
-          It grades each driver after IVMS violations (harsh brake, overspeed, etc.): On track → Needs coaching → Suspension review → Critical.
+          Separate from the fleet score. Grades each driver on scored IVMS violations per 100 km:
+          On track → Needs coaching → Suspension review → Critical.
         </div>
-        <div style={{
-          fontSize: 12, color: 'var(--cd-text)', lineHeight: 1.55, marginBottom: 16,
-          background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 8, padding: '10px 12px',
-        }}>
+        <div style={calloutStyle}>
           <strong>How it works:</strong> every scored event costs points. Those points are divided by how far the driver drove
           (per 100 km), so a driver with 1 event in 50 km looks worse than 1 event in 500 km.
           <div style={{ marginTop: 8, color: 'var(--cd-text-muted)' }}>
             Example with default 2: 34 events × −2 = −68 points. Drove 600 km → that’s 600÷100 = <strong>6</strong> blocks of 100 km → −68 ÷ 6 = <strong style={{ color: '#d97706' }}>−11.3 → Suspension review</strong>.
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
           <div style={{ gridColumn: '1 / -1' }}>
             <label style={labelStyle}>Points lost per violation</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -401,6 +354,80 @@ function ThresholdSettings() {
         </div>
       </div>
 
+      <div id="fatigue" className="bpl-card" style={{ padding: 24, scrollMarginTop: 88 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', marginBottom: 4, fontFamily: 'var(--cd-font-display)' }}>
+          Fatigue &amp; hours of service
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 16, lineHeight: 1.55 }}>
+          HOS rules are tracked on the Fatigue page and the Home HOS Violations card.
+          They do <strong style={{ color: 'var(--cd-text)' }}>not</strong> reduce the fleet safety score.
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+          {[
+            {
+              title: '4-hour continuous driving',
+              body: 'Max 4 hours of continuous driving. A parked gap of ≥30 minutes (engine off or between trips) resets the block.',
+            },
+            {
+              title: 'Daily rest (8 hours in 24 hours)',
+              body: 'No more than 8 hours of continuous driving inside a rolling 24-hour window. Breach means daily rest was missed.',
+            },
+            {
+              title: 'Weekly rest',
+              body: 'At least 24 hours of continuous off-duty rest required in every rolling 7-day week.',
+            },
+          ].map(rule => (
+            <div key={rule.title} style={calloutStyle}>
+              <strong>{rule.title}</strong>
+              <div style={{ marginTop: 6, color: 'var(--cd-text-muted)' }}>{rule.body}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 12, lineHeight: 1.55 }}>
+          When a driver holds an HOS breach, fatigue points accrue in slices. These apply to driver coaching — not the fleet score.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div>
+            <label style={labelStyle}>HOS slice length</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number"
+                step={1}
+                min={1}
+                max={60}
+                style={{ ...fieldStyle, width: 80 }}
+                value={form.hosSliceMinutes}
+                onChange={e => setForm(p => ({ ...p, hosSliceMinutes: Number(e.target.value) }))}
+              />
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>minutes held past limit</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+              Default 10 — each full slice held in breach mints fatigue points.
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Points per HOS slice</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={20}
+                style={{ ...fieldStyle, width: 80 }}
+                value={form.hosPointsPer10Min}
+                onChange={e => setForm(p => ({ ...p, hosPointsPer10Min: Number(e.target.value) }))}
+              />
+              <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>pts per slice</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 4 }}>
+              Default 1.5 — same weight band as overspeeding.
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
         <button
           type="button"
@@ -413,7 +440,7 @@ function ThresholdSettings() {
           Reset defaults
         </button>
         <button className="bpl-btn-primary" onClick={save}>
-          {saved ? <><Check size={14} /> Saved — scores updated</> : 'Save Thresholds'}
+          {saved ? <><Check size={14} /> Saved — scoring updated</> : 'Save scoring'}
         </button>
       </div>
     </div>
@@ -599,9 +626,27 @@ function RoleSettings() {
 
   useEffect(() => {
     let cancelled = false;
+    const url = '/api/roles';
+    const cached = peekAuthJson<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>(url);
+    if (cached?.roles) {
+      const roles = cached.roles.map(r => ({
+        id: r.id,
+        name: r.name,
+        desc: r.desc,
+        permissions: r.permissions,
+      }));
+      setConfig({ roles });
+      setBaseline(serialize(roles));
+      setLoading(false);
+    }
     (async () => {
       try {
-        const data = await fetchRoles();
+        const data = await fetchAuthJsonCached<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>(url)
+          ?? cached;
+        if (!data?.roles) {
+          if (!cached) throw new Error('Failed to load roles');
+          return;
+        }
         if (!cancelled) {
           const roles = data.roles.map(r => ({
             id: r.id,
@@ -613,7 +658,7 @@ function RoleSettings() {
           setBaseline(serialize(roles));
         }
       } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load roles');
+        if (!cancelled && !cached) setLoadError(e instanceof Error ? e.message : 'Failed to load roles');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -997,7 +1042,13 @@ function UserSettings() {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const reload = async () => {
-    const data = await fetchUsers('client');
+    const url = '/api/users';
+    const data = await fetchAuthJsonCached<{
+      users: AuthUser[];
+      roles: Array<{ id: string; name: string; desc: string }>;
+      seats: SeatInfo;
+    }>(url) ?? peekAuthJson(url);
+    if (!data) throw new Error('Failed to load users');
     setUsers(data.users);
     setRoles(data.roles);
     if (data.seats) setSeats(data.seats);
@@ -1008,11 +1059,23 @@ function UserSettings() {
 
   useEffect(() => {
     let cancelled = false;
+    const url = '/api/users';
+    const cached = peekAuthJson<{
+      users: AuthUser[];
+      roles: Array<{ id: string; name: string; desc: string }>;
+      seats: SeatInfo;
+    }>(url);
+    if (cached) {
+      setUsers(cached.users);
+      setRoles(cached.roles);
+      if (cached.seats) setSeats(cached.seats);
+      setLoading(false);
+    }
     (async () => {
       try {
         await reload();
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load users');
+        if (!cancelled && !cached) setError(e instanceof Error ? e.message : 'Failed to load users');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1235,14 +1298,26 @@ function PlatformUsersDev() {
   const [canManageOrg, setCanManageOrg] = useState(!!me?.isOrganisational);
 
   const reload = useCallback(async () => {
+    const allUrl = '/api/users?scope=all';
+    const clientUrl = '/api/users';
     try {
-      const data = await fetchUsers('all');
+      const data = await fetchAuthJsonCached<{
+        users: AuthUser[];
+        roles: Array<{ id: string; name: string; desc: string }>;
+        seats?: SeatInfo;
+      }>(allUrl) ?? peekAuthJson(allUrl);
+      if (!data) throw new Error('missing');
       setUsers(data.users);
       setRoles(data.roles);
       if (data.seats) setSeats(data.seats);
       setCanManageOrg(true);
     } catch {
-      const data = await fetchUsers('client');
+      const data = await fetchAuthJsonCached<{
+        users: AuthUser[];
+        roles: Array<{ id: string; name: string; desc: string }>;
+        seats?: SeatInfo;
+      }>(clientUrl) ?? peekAuthJson(clientUrl);
+      if (!data) throw new Error('Failed to load users');
       setUsers(data.users);
       setRoles(data.roles);
       if (data.seats) setSeats(data.seats);
@@ -1252,11 +1327,22 @@ function PlatformUsersDev() {
 
   useEffect(() => {
     let cancelled = false;
+    const cached = peekAuthJson<{
+      users: AuthUser[];
+      roles: Array<{ id: string; name: string; desc: string }>;
+      seats?: SeatInfo;
+    }>('/api/users?scope=all') ?? peekAuthJson('/api/users');
+    if (cached) {
+      setUsers(cached.users);
+      setRoles(cached.roles);
+      if (cached.seats) setSeats(cached.seats);
+      setLoading(false);
+    }
     (async () => {
       try {
         await reload();
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load users');
+        if (!cancelled && !cached) setError(e instanceof Error ? e.message : 'Failed to load users');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1386,7 +1472,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const TAB_TITLES: Record<Tab, string> = {
     general: 'General',
-    thresholds: 'Safety & Consequence',
+    scoring: 'Scoring',
     roles: 'Roles & Permissions',
     users: 'Users',
     dev: 'Developers',
@@ -1394,7 +1480,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const TAB_SUBTITLES: Record<Tab, string> = {
     general: 'Client name, timezone, currency, and display preferences',
-    thresholds: 'Fleet safety score weights, driver discipline bands, and Consequence/Fatigue Management',
+    scoring: 'Fleet safety score, driver discipline, status bands, and fatigue rules',
     roles: 'Define roles and drag access permissions onto each one',
     users: 'Create accounts, assign roles, enable or disable access',
     dev: 'Developer tools and API connection status',
@@ -1402,7 +1488,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const tabs: { id: Tab; path: string; label: string }[] = [
     { id: 'general', path: '/settings/general', label: 'General' },
-    { id: 'thresholds', path: '/settings/thresholds', label: 'Safety & Consequence' },
+    { id: 'scoring', path: '/settings/scoring', label: 'Scoring' },
     { id: 'roles', path: '/settings/roles', label: 'Roles' },
     ...(hasPermission('user-management') ? [{ id: 'users' as const, path: '/settings/users', label: 'Users' }] : []),
     { id: 'dev', path: '/settings/dev', label: 'Dev' },
@@ -1438,7 +1524,7 @@ export default function Settings({ tab }: { tab: Tab }) {
       </div>
 
       {tab === 'general' && <GeneralSettings />}
-      {tab === 'thresholds' && <ThresholdSettings />}
+      {tab === 'scoring' && <ScoringSettings />}
       {tab === 'roles' && <RoleSettings />}
       {tab === 'users' && <UserSettings />}
       {tab === 'dev' && (

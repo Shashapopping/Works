@@ -14,6 +14,16 @@ export const SCORING_LABELS = [
   'Harsh Cornering',
 ];
 
+/** Labels plotted on incident trend charts (excludes panic / excessive-speed variant). */
+export const TREND_LABELS = [
+  'Harsh Braking',
+  'Harsh Acceleration',
+  'Overspeeding',
+  'Overspeed Tiered',
+  'Road Speed Overspeeding',
+  'Harsh Cornering',
+];
+
 const OS_SQL_LABELS = [
   'Overspeeding',
   'Overspeed Tiered',
@@ -41,6 +51,8 @@ export function countMatchingEvents(filters = {}) {
   const database = getDb();
   const { from, to, types, driver } = filters;
   const { conditions, params } = rangeConditions(from, to);
+  const assetFilter = pushAssetIdFilter(conditions, params, filters.assetIds);
+  if (assetFilter.empty) return 0;
   if (driver) {
     conditions.push('driver_name = ?');
     params.push(driver);
@@ -145,40 +157,74 @@ export function queryRiskAggregates({ from = null, to = null, groupBy = 'driver'
   conditions.push(osKeep.sql);
   params.push(...osKeep.params);
   const where = `WHERE ${conditions.join(' AND ')}`;
-  const keyCol = groupBy === 'asset' ? 'asset_id' : 'driver_id';
+
+  const byAsset = groupBy === 'asset';
+  const groupExpr = byAsset
+    ? `COALESCE(NULLIF(asset_id, ''), 'unknown')`
+    : `COALESCE(NULLIF(driver_id, ''), NULLIF(driver_name, ''), NULLIF(asset_id, ''), 'unknown')`;
+
   const rows = database.prepare(`
-    SELECT ${keyCol} AS id, driver_id, driver_name, asset_id, label, COUNT(*) n
+    SELECT
+      ${groupExpr} AS id,
+      MAX(driver_id) AS driver_id,
+      MAX(driver_name) AS driver_name,
+      MAX(asset_id) AS asset_id,
+      SUM(CASE WHEN label = 'Harsh Braking' THEN 1 ELSE 0 END) AS harshBraking,
+      SUM(CASE WHEN label = 'Harsh Acceleration' THEN 1 ELSE 0 END) AS harshAcceleration,
+      SUM(CASE WHEN label = 'Harsh Cornering' THEN 1 ELSE 0 END) AS harshCornering,
+      SUM(CASE WHEN label = 'Overspeed Tiered' THEN 1 ELSE 0 END) AS overspeedTiered,
+      SUM(CASE WHEN label IN ('Overspeeding', 'Road Speed Overspeeding', 'Overspeeding — Excessive Speed') THEN 1 ELSE 0 END) AS overspeeding,
+      COUNT(*) AS total
     FROM events ${where}
-    GROUP BY ${keyCol}, driver_id, driver_name, asset_id, label
+    GROUP BY ${groupExpr}
   `).all(...params);
 
-  const map = new Map();
-  for (const r of rows) {
-    const id = (r.id || r.driver_name || r.asset_id || 'unknown').toString();
-    if (!map.has(id)) {
-      map.set(id, {
-        id,
-        driverId: r.driver_id || null,
-        driverName: r.driver_name || 'N/A',
-        assetId: r.asset_id || null,
-        harshBraking: 0,
-        harshAcceleration: 0,
-        overspeeding: 0,
-        overspeedTiered: 0,
-        harshCornering: 0,
-        total: 0,
-      });
-    }
-    const row = map.get(id);
-    if (r.driver_name && r.driver_name !== 'N/A') row.driverName = r.driver_name;
-    if (r.asset_id) row.assetId = r.asset_id;
-    const n = r.n || 0;
-    row.total += n;
-    if (r.label === 'Harsh Braking') row.harshBraking += n;
-    else if (r.label === 'Harsh Acceleration') row.harshAcceleration += n;
-    else if (r.label === 'Harsh Cornering') row.harshCornering += n;
-    else if (r.label === 'Overspeed Tiered') row.overspeedTiered += n;
-    else row.overspeeding += n;
-  }
-  return [...map.values()].sort((a, b) => b.total - a.total);
+  return rows
+    .map(r => ({
+      id: String(r.id),
+      driverId: r.driver_id || null,
+      driverName: r.driver_name || 'N/A',
+      assetId: r.asset_id || null,
+      harshBraking: r.harshBraking || 0,
+      harshAcceleration: r.harshAcceleration || 0,
+      harshCornering: r.harshCornering || 0,
+      overspeedTiered: r.overspeedTiered || 0,
+      overspeeding: r.overspeeding || 0,
+      total: r.total || 0,
+    }))
+    .sort((a, b) => b.total - a.total);
+}
+
+/**
+ * Daily event counts by label (Africa/Lagos calendar day via UTC+1 offset).
+ * Returns sparse rows: { dayKey, label, count }.
+ */
+export function queryEventTrendBuckets({ from = null, to = null, assetIds = null, types = null } = {}) {
+  const database = getDb();
+  const { conditions, params } = rangeConditions(from, to);
+  const assetFilter = pushAssetIdFilter(conditions, params, assetIds);
+  if (assetFilter.empty) return [];
+
+  const labelList = (types && types.length)
+    ? types.filter(t => TREND_LABELS.includes(t))
+    : TREND_LABELS;
+  if (!labelList.length) return [];
+
+  conditions.push(`label IN (${labelList.map(() => '?').join(',')})`);
+  params.push(...labelList);
+  const osKeep = overspeedKeepSql();
+  conditions.push(osKeep.sql);
+  params.push(...osKeep.params);
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  return database.prepare(`
+    SELECT date(datetime(event_time, '+1 hour')) AS day_key, label, COUNT(*) AS n
+    FROM events ${where}
+    GROUP BY day_key, label
+    ORDER BY day_key ASC
+  `).all(...params).map(r => ({
+    dayKey: r.day_key,
+    label: r.label,
+    count: r.n,
+  }));
 }

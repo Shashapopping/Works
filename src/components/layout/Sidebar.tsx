@@ -1,130 +1,15 @@
 import { useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Users, User, GraduationCap, BadgeCheck,
-  AlertTriangle, Search, ListChecks, TrendingUp,
-  Shield, Wrench, FileBarChart2, BarChart3, Fuel, Bot,
-  Truck, Map, Navigation, Route, Brain, Lock, Gauge,
-  Mountain, Package, Droplets, Settings, ChevronDown, Sun, Moon, LogOut, Camera,
+  Settings, ChevronDown, Sun, Moon, Lock,
 } from 'lucide-react';
 import { useFleet } from '../../context/FleetContext';
-
-const PRIORITY_ROUTE_LOADERS: Record<string, () => Promise<unknown>> = {
-  '/drivers': () => import('../../pages/DriverManagement'),
-  '/drivers/coaching': () => import('../../pages/driver/CoachingPage'),
-  '/drivers/training': () => import('../../pages/driver/CoachingPage'),
-  '/drivers/certifications': () => import('../../pages/driver/CertificatesPage'),
-  '/incidents': () => import('../../pages/IncidentIntelligence'),
-  '/incidents/response': () => import('../../pages/IncidentIntelligence'),
-  '/safety': () => import('../../pages/Safety'),
-  '/fuel/monitoring': () => import('../../pages/FuelMonitoring'),
-  '/reports': () => import('../../pages/ReportsPage'),
-  '/reports/automation': () => import('../../pages/ReportsAutomationPage'),
-};
-const preloadedRoutes = new Set<string>();
-function preloadRoute(path: string) {
-  const load = PRIORITY_ROUTE_LOADERS[path];
-  if (!load || preloadedRoutes.has(path)) return;
-  preloadedRoutes.add(path);
-  void load().catch(() => preloadedRoutes.delete(path));
-}
-
-async function preloadRoutesSequentially(paths: string[]) {
-  for (const path of paths) {
-    const load = PRIORITY_ROUTE_LOADERS[path];
-    if (!load || preloadedRoutes.has(path)) continue;
-    preloadedRoutes.add(path);
-    try {
-      await load();
-    } catch {
-      preloadedRoutes.delete(path);
-    }
-  }
-}
+import { SIDEBAR_NAV, type NavGroup } from '../../config/nav';
 import { useAuth } from '../../context/AuthContext';
 import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
-import { brandLogoAlt, brandLogoSrc } from '../../lib/branding';
-import { TRENDS_ENABLED } from '../../config/trends';
-import { FATIGUE_ENABLED } from '../../config/fatigue';
+import { brandLogoAlt, brandLogoMarkSrc, clientName, platformName } from '../../lib/branding';
 
-interface SubItem {
-  path: string;
-  label: string;
-  icon: React.ElementType;
-  locked?: boolean;
-}
-
-interface NavGroup {
-  path: string;
-  icon: React.ElementType;
-  label: string;
-  children?: SubItem[];
-  pinned?: boolean;
-  locked?: boolean;
-  /** Accent color for fleet-segment icon badge */
-  accent?: string;
-}
-
-const NAV: NavGroup[] = [
-  { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/fleet', icon: Map, label: 'Fleet' },
-  {
-    path: '/drivers', icon: Users, label: 'Driver Management',
-    children: [
-      { path: '/drivers', label: 'Drivers', icon: User },
-      { path: '/drivers/coaching', label: 'Coaching & Training', icon: GraduationCap },
-      { path: '/consequence-management', label: 'Consequence/Fatigue Management', icon: Shield, locked: true },
-      { path: '/drivers/certifications', label: 'Certificates', icon: BadgeCheck },
-      ...(FATIGUE_ENABLED ? [{ path: '/drivers/fatigue', label: 'Fatigue Management', icon: Moon }] : []),
-      { path: '/drivers/vision', label: 'Vision', icon: Camera, locked: true },
-    ],
-  },
-  {
-    path: '/incidents', icon: AlertTriangle, label: 'Incident Intelligence',
-    children: [
-      { path: '/incidents', label: 'Event Explorer', icon: Search },
-      { path: '/incidents/response', label: 'Response Tracking', icon: ListChecks },
-    ],
-  },
-  ...(TRENDS_ENABLED
-    ? [{ path: '/trends', icon: TrendingUp, label: 'Trends' } as NavGroup]
-    : []),
-  { path: '/tankers', icon: Truck, label: 'Bulk Tankers', accent: '#f59e0b' },
-  {
-    path: '/quarry', icon: Mountain, label: 'Quarry', accent: '#84cc16',
-    children: [
-      { path: '/quarry', label: 'Overview', icon: Mountain },
-      { path: '/quarry/kpi', label: 'Utilization & KPIs', icon: Gauge },
-    ],
-  },
-  { path: '/cement', icon: Package, label: 'Cement', accent: '#94a3b8' },
-  { path: '/ready-mix', icon: Droplets, label: 'Ready Mix', accent: '#22d3ee' },
-  { path: '/safety', icon: Shield, label: 'Safety' },
-  { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
-  {
-    path: '/fuel', icon: Fuel, label: 'Fuel',
-    children: [
-      { path: '/fuel/monitoring', label: 'Monitoring', icon: Fuel },
-      { path: '/fuel/consumption', label: 'Consumption', icon: BarChart3, locked: true },
-    ],
-  },
-  {
-    path: '/reports', icon: FileBarChart2, label: 'Reports',
-    children: [
-      { path: '/reports', label: 'Reports', icon: FileBarChart2 },
-      { path: '/reports/automation', label: 'Automation', icon: Bot },
-    ],
-  },
-  // Locked / upcoming — keep at bottom of nav
-  {
-    path: '/trips', icon: Route, label: 'Journey Management', locked: true,
-    children: [
-      { path: '/trips', label: 'Journeys', icon: Route, locked: true },
-      { path: '/trips/dispatch', label: 'Dispatch', icon: Navigation, locked: true },
-    ],
-  },
-  { path: '/aria', icon: Brain, label: 'AI Insights', locked: true },
-];
+const NAV: NavGroup[] = SIDEBAR_NAV;
 
 function NavIcon({
   Icon,
@@ -167,8 +52,8 @@ interface Props {
 }
 
 export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
-  const { theme, setTheme, redAlertCount, fleetSafetyScore, scoreConfig } = useFleet();
-  const { user, hasPermission, logout } = useAuth();
+  const { theme, setTheme, redAlertCount } = useFleet();
+  const { user, hasPermission } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const jwtToken = getAuthMode() === 'jwt' ? getStoredToken() : null;
@@ -201,85 +86,34 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
       setOpenGroup(null);
     } else {
       setOpenGroup(path);
-      const children = visibleNav.find(group => group.path === path)?.children ?? [];
-      void preloadRoutesSequentially(children.filter(child => !child.locked).map(child => child.path));
       if (defaultChild) {
-        preloadRoute(defaultChild);
         navigate(defaultChild);
       }
     }
   };
 
-  const scoreColor = fleetSafetyScore >= scoreConfig.bandGood
-    ? '#33d38d'
-    : fleetSafetyScore >= scoreConfig.bandAttention
-    ? '#f5b453'
-    : fleetSafetyScore >= scoreConfig.bandBelow
-    ? '#e05c2a'
-    : '#ff6b6b';
-
   return (
     <aside className={`bpl-sidebar${mobileOpen ? ' mobile-open' : ''}`}
       style={{ background: '#0a1520', width: 220 }}
     >
-      <div style={{ padding: '16px 16px 12px', borderBottom: '0.5px solid rgba(255,255,255,0.08)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {brandLogoSrc() ? (
-            <div style={{
-              background: '#fff',
-              borderRadius: 6,
-              padding: '5px 10px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-            }}>
-              <img
-                src={brandLogoSrc()!}
-                alt={brandLogoAlt()}
-                style={{ height: 32, width: 'auto', objectFit: 'contain', display: 'block' }}
-              />
+      <div className="bpl-sidebar-logo">
+        <div className="bpl-sidebar-brand-header">
+          {brandLogoMarkSrc() ? (
+            <div className="bpl-sidebar-logo-badge">
+              <img src={brandLogoMarkSrc()!} alt={brandLogoAlt()} />
             </div>
           ) : (
-            <div style={{
-              width: 40, height: 40, borderRadius: 8, flexShrink: 0,
-              background: '#0078D4',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#fff', fontWeight: 700, fontSize: 16,
+            <div className="bpl-sidebar-logo-badge" style={{
+              background: '#0078D4', borderRadius: 12, color: '#fff',
+              fontWeight: 700, fontSize: 22,
             }}>
-              F
+              H
             </div>
           )}
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', lineHeight: 1.4 }}>
-            Fleet Intelligence<br />Platform
+          <div className="bpl-sidebar-brand-block">
+            <div className="bpl-sidebar-brand-name">{clientName()}</div>
+            <div className="bpl-sidebar-brand-text">{platformName()}</div>
           </div>
-        </div>
-
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          marginTop: 12, padding: '8px 10px',
-          background: 'rgba(255,255,255,0.04)',
-          border: '0.5px solid rgba(255,255,255,0.07)',
-          borderRadius: 8,
-        }}>
-          <div>
-            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 2 }}>
-              Safety Score
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: scoreColor, lineHeight: 1, fontFamily: 'var(--cd-font-display)' }}>
-              {fleetSafetyScore}
-              <span style={{ fontSize: 10, fontWeight: 400, color: 'rgba(255,255,255,0.3)', marginLeft: 1 }}>/100</span>
-            </div>
-          </div>
-          {redAlertCount > 0 && (
-            <div style={{
-              background: '#CC0000', color: '#fff', borderRadius: 6,
-              padding: '3px 7px', textAlign: 'center',
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>{redAlertCount}</div>
-              <div style={{ fontSize: 8, letterSpacing: '0.04em' }}>RED</div>
-            </div>
-          )}
         </div>
       </div>
 
@@ -300,9 +134,9 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                 key={group.path}
                 to={group.path}
                 end
-                onPointerEnter={() => preloadRoute(group.path)}
-                onFocus={() => preloadRoute(group.path)}
-                onClick={onCloseMobile}
+                onClick={() => {
+                  onCloseMobile();
+                }}
                 style={({ isActive: navActive }) => ({
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '8px 14px', cursor: 'pointer',
@@ -336,8 +170,10 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
           return (
             <div key={group.path} style={{ marginBottom: 2 }}>
               <div
-                onClick={() => toggleGroup(group.path, group.children![0].path)}
-                onPointerEnter={() => preloadRoute(group.children![0].path)}
+                onClick={() => {
+                  const target = group.children![0].path;
+                  toggleGroup(group.path, target);
+                }}
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '8px 14px', cursor: 'pointer',
@@ -380,16 +216,15 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
               }}>
                 {group.children!.map(child => {
                   const SubIcon = child.icon;
-                  const childActive = location.pathname === child.path
-                    || (child.path === '/drivers/coaching' && location.pathname === '/drivers/training');
+                  const childActive = location.pathname === child.path;
                   return (
                     <NavLink
                       key={child.path}
                       to={child.path}
                       end
-                      onPointerEnter={() => preloadRoute(child.path)}
-                      onFocus={() => preloadRoute(child.path)}
-                      onClick={onCloseMobile}
+                      onClick={() => {
+                        onCloseMobile();
+                      }}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 8,
                         padding: '6px 14px 6px 38px',
@@ -428,7 +263,9 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
               textDecoration: 'none',
               transition: 'background 0.15s, color 0.15s',
             })}
-            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)';
+            }}
             onMouseLeave={e => {
               const active = location.pathname.startsWith('/settings');
               (e.currentTarget as HTMLElement).style.background = active ? 'rgba(0,120,212,0.18)' : 'transparent';
@@ -498,20 +335,6 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             title="Toggle theme"
           >
             {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
-          </button>
-          <button
-            onClick={async () => {
-              await logout();
-              navigate('/login');
-            }}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'rgba(255,255,255,0.3)', padding: 2,
-              display: 'flex', alignItems: 'center',
-            }}
-            title="Log out"
-          >
-            <LogOut size={12} />
           </button>
         </div>
       </div>

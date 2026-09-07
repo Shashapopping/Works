@@ -117,6 +117,10 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_events_event_time ON events(event_time);
     CREATE INDEX IF NOT EXISTS idx_events_asset_id ON events(asset_id);
     CREATE INDEX IF NOT EXISTS idx_events_label ON events(label);
+    CREATE INDEX IF NOT EXISTS idx_events_event_time_label ON events(event_time, label);
+    CREATE INDEX IF NOT EXISTS idx_events_label_event_time ON events(label, event_time);
+    CREATE INDEX IF NOT EXISTS idx_events_driver_event_time ON events(driver_name, event_time);
+    CREATE INDEX IF NOT EXISTS idx_events_asset_event_time ON events(asset_id, event_time);
     CREATE INDEX IF NOT EXISTS idx_panic_timestamp ON panic(timestamp);
     CREATE INDEX IF NOT EXISTS idx_panic_event_time ON panic(event_time);
     CREATE INDEX IF NOT EXISTS idx_panic_asset_id ON panic(asset_id);
@@ -132,6 +136,8 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_kpi_event_time ON kpi_events(event_time);
     CREATE INDEX IF NOT EXISTS idx_kpi_category ON kpi_events(category);
     CREATE INDEX IF NOT EXISTS idx_kpi_asset ON kpi_events(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_kpi_event_id ON kpi_events(event_id);
+    CREATE INDEX IF NOT EXISTS idx_kpi_label_event_time ON kpi_events(label, event_time);
 
     CREATE TABLE IF NOT EXISTS roles (
       id TEXT PRIMARY KEY,
@@ -418,6 +424,16 @@ export function promoteKpiOverspeedVariantsToEvents() {
   return result.changes || 0;
 }
 
+function normalizeAssetIds(assetIds) {
+  if (assetIds == null) return null;
+  const ids = [...new Set(
+    (Array.isArray(assetIds) ? assetIds : String(assetIds).split(','))
+      .map(id => String(id || '').trim())
+      .filter(Boolean),
+  )];
+  return ids;
+}
+
 export function getAllEvents(filters = {}) {
   promoteKpiOverspeedVariantsToEvents();
   const database = getDb();
@@ -428,11 +444,17 @@ export function getAllEvents(filters = {}) {
     : Math.min(Math.max(Number.isFinite(Number(limit)) ? Number(limit) : 5000, 1), 20000);
   const offset = Math.max(Number(filters.offset) || 0, 0);
   const driver = filters.driver || null;
+  const assetIds = normalizeAssetIds(filters.assetIds);
 
   const conditions = [];
   const params = [];
   if (from) { conditions.push('event_time >= ?'); params.push(from); }
   if (to) { conditions.push('event_time <= ?'); params.push(to); }
+  if (assetIds) {
+    if (assetIds.length === 0) return [];
+    conditions.push(`asset_id IN (${assetIds.map(() => '?').join(',')})`);
+    params.push(...assetIds);
+  }
   if (types && types.length > 0) {
     conditions.push(`label IN (${types.map(() => '?').join(', ')})`);
     params.push(...types);
@@ -917,4 +939,31 @@ export function countTripsInRange(fromIso, toIso) {
   const { conditions, params } = tripRangeWhere(fromIso, toIso);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   return database.prepare(`SELECT COUNT(*) AS c FROM trips ${where}`).get(...params)?.c || 0;
+}
+
+export function loadTripTotalsInRange(fromIso, toIso) {
+  const database = getDb();
+  const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  return database.prepare(`
+    WITH asset_rollups AS (
+      SELECT asset_id AS assetId,
+             COALESCE(SUM(distance_km), 0) AS totalDistanceKm
+      FROM trips
+      ${where}
+      GROUP BY asset_id
+    ),
+    driver_rollups AS (
+      SELECT driver_id AS driverId,
+             COALESCE(SUM(distance_km), 0) AS totalDistanceKm
+      FROM trips
+      ${where}
+      GROUP BY driver_id
+    )
+    SELECT
+      (SELECT COUNT(*) FROM trips ${where}) AS rawTripCount,
+      (SELECT COALESCE(SUM(totalDistanceKm), 0) FROM asset_rollups WHERE totalDistanceKm >= 0.5) AS totalDistanceKm,
+      (SELECT COUNT(*) FROM asset_rollups WHERE totalDistanceKm >= 0.5) AS assetCount,
+      (SELECT COUNT(*) FROM driver_rollups WHERE totalDistanceKm > 0) AS driverCount
+  `).get(...params, ...params, ...params);
 }

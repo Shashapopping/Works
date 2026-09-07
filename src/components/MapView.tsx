@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import 'leaflet.markercluster';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { useFleet } from '../context/FleetContext';
 import { SkelValue } from './data/DataBusy';
 import { statusDisplayLabel } from '../lib/metricDefinitions';
 
@@ -135,10 +135,10 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const clusterGroupRef = useRef<any>(null);
-  const [vehicles, setVehicles] = useState<Vehicle[]>(() =>
-    cachePeek<Vehicle[]>(CACHE_KEYS.fleetData) ?? [],
-  );
-  const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.fleetData));
+  const { vehicles: sharedVehicles, vehiclesLoading } = useFleet();
+  void authFetch;
+  const vehicles = sharedVehicles as unknown as Vehicle[];
+  const loading = vehiclesLoading && vehicles.length === 0;
   const [searchTerm, setSearchTerm] = useState('');
   const prevWarningIds = useRef<Set<string>>(new Set());
 
@@ -213,30 +213,6 @@ export default function MapView({ authFetch, statusFilter, onAcknowledge, compac
     const t = setTimeout(() => mapRef.current?.invalidateSize(), 100);
     return () => clearTimeout(t);
   }, [compact, vehicles.length]);
-
-  // Load vehicle data
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const data = await cachedFetchJson<Vehicle[]>(
-          CACHE_KEYS.fleetData,
-          CACHE_TTL.fleetData,
-          async () => {
-            const res = await authFetch('/api/data');
-            if (!res.ok) return null;
-            return res.json();
-          },
-        );
-        if (data) setVehicles(Array.isArray(data) ? data : []);
-        setLoading(false);
-      } catch {
-        setLoading(false);
-      }
-    };
-    load();
-    const interval = setInterval(load, 10_000);
-    return () => clearInterval(interval);
-  }, []);
 
   // Expose acknowledge function globally for popup button
   useEffect(() => {

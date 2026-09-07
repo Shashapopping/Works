@@ -207,23 +207,23 @@ export function deriveFromConsumptionData(data: ConsumptionData, period: PeriodM
   return { summary, chartData, fuelSeries };
 }
 
-export type DistanceFuelRange = '24h' | 'currentMonth' | 'lastMonth';
+export type DistanceFuelRange = 'day' | 'week' | 'month' | 'custom';
 
-export function distanceRangeToConsumptionRequest(range: DistanceFuelRange): {
+export function distanceRangeToConsumptionRequest(
+  range: DistanceFuelRange,
+  custom?: { from: string; to: string },
+): {
   period: PeriodMode;
   customFrom?: string;
   customTo?: string;
 } {
-  if (range === '24h') return { period: 'day' };
-  if (range === 'currentMonth') return { period: 'month' };
-  const now = new Date();
-  const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const to = new Date(now.getFullYear(), now.getMonth(), 0);
-  return {
-    period: 'custom',
-    customFrom: from.toISOString().slice(0, 10),
-    customTo: to.toISOString().slice(0, 10),
-  };
+  if (range === 'day') return { period: 'day' };
+  if (range === 'week') return { period: 'week' };
+  if (range === 'month') return { period: 'month' };
+  if (range === 'custom' && custom?.from && custom?.to) {
+    return { period: 'custom', customFrom: custom.from, customTo: custom.to };
+  }
+  return { period: 'week' };
 }
 
 export function defaultCustomRange() {

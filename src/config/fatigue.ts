@@ -1,1 +1,1 @@
-export const FATIGUE_ENABLED = false;
+export const FATIGUE_ENABLED = true;

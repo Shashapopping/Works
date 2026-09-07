@@ -88,3 +88,68 @@ rows into the browser, and they don't have to be:
 Doing this properly means touching Driver Management, Incident Intelligence,
 Response Tracking, and Safety together, which is more change than wanted
 right now — documented here so it isn't lost.
+
+## Speed plan (keep / do) — 2026-08-31
+
+### Leave trip storage as-is
+
+| App | Keep |
+|-----|------|
+| **HBM** | SQLite columns only; no full-trip JSON payload; no CNL-style trip RAM cache |
+| **CNL** | 1-day RAM cache + slim JSON `payload` (right for smaller fleet / richer trip UI) |
+
+Do **not** copy CNL’s trip-in-RAM or payload-blob model into HBM for speed — at HBM volume (~36k trips/day, ~878k in DB) that adds memory risk without fixing the real UI slowness.
+
+HBM already slims trips on ingest (`slimTrip` → flat columns). CNL slims too but still keeps a ~1.3 KB avg JSON payload for SubTrips/positions/fuel detail.
+
+### What will make HBM much faster
+
+1. **Aggregates in SQLite, not in the browser** — KPIs/summaries via endpoints like `GET /api/safety/summary?from=&to=` (`COUNT` / `GROUP BY`), not downloading tens of thousands of event rows for totals.
+2. **Paginate row tables** — Event Explorer / long lists: server `limit` + `offset` (and `total`), not full 7–30 day dumps.
+3. **Keep the boot feed small** — `FleetContext` capped events for first paint; heavy pages fetch their own scoped data (Incident Intelligence pattern).
+4. **Only add a 1-day trip RAM cache if measured** — if a specific page is slow from repeated SQLite trip reads; not as a default “make it fast” move.
+
+### Also planned (broader work)
+
+- UI changes and new pages (separate from trip-storage decisions)
+- Wire more pages off the capped shared `events` array onto summary + paginated APIs (Driver Management, Safety trends, etc. — see sections above)
+
+### Address cache (HBM-only, keep)
+
+`public/address-cache.json` (~1.5 MB): Nominatim reverse-geocode grid + sticky per-asset addresses. Feeds `data.json` `position.address` (map, fleet tables, etc.). Dirty-flag saves; skips re-geocode when grid/asset already has a usable address. Valid — do not drop when porting CNL UI.
+
+## Implemented on `rough` (2026-08-31)
+
+Chevron-style speed pass (safe, no trip-RAM change):
+
+1. **Boot events capped at 500** (`fleet:events:boot-v4`) — Chevron-scale first paint; heavy pages use summary / paginated APIs.
+2. **Boot prefetch expanded** — distance ranges, safety summary (+ prev30d), risk drivers, fuel week, KPI, HOS, trips/session.
+3. **Peek-first revisit** — FleetContext safety exposure; ReadyMix trips/session; Tankers census; Reports default preview; Fatigue already had HOS peek.
+4. **Incident Intelligence**
+   - KPIs → `/api/safety/summary` (SQL aggregates)
+   - Event Explorer → server `format=page` pagination
+   - By Driver → `/api/risk/drivers`
+   - Response Tracking → `/api/risk/drivers` (+ 7d window totals); **lazy expand** loads 10 events per driver
+5. **Safety Worst Performers** → `/api/risk/drivers?range=30d` (not capped boot events)
+6. **Driver Management** → scores from `/api/risk/drivers` + trip distance; **lazy expand** loads recent events
+7. **Sidebar hover** → JS chunk preload **and** sequential API warm for heavy routes
+
+### Still deferred
+
+- Documents / Settings admin fetches — lower priority.
+- Safety weekly trend could move to SQL day-buckets later (already uncapped for selected weeks).
+
+### Accuracy pass (boot feed must not undercount)
+
+Pages that need period truth no longer read `FleetContext` boot events:
+
+| Page | Source |
+|------|--------|
+| Coaching / Training | `/api/risk/drivers?range=30d` + trip distance |
+| Trends | `/api/events/log?…&limit=all` for selected period |
+| Tankers KPIs | `/api/safety/summary` census; list uses `limit=all` then filter |
+| Fleet segments | summary 30d + `limit=all` events filtered to assets |
+| Reports & Reviews | 90d `limit=all` for weekly UI + exports |
+| ARIA Intelligence | risk drivers + safety summary + paginated recent rows |
+
+Boot `limit=500` remains for first paint / live widgets only.

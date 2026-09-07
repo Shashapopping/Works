@@ -1,6 +1,6 @@
 /**
  * Shared /api/events/log behaviour (prod server + Vite middleware).
- * format=page → { entries, total }. No limit + from/to → full range export.
+ * format=page → { entries, total }. Supports q / assetId / assetIds search.
  */
 import fs from 'fs';
 import path from 'path';
@@ -73,22 +73,67 @@ function parseTypes(raw) {
   return list.length ? list : null;
 }
 
+function parseAssetIds(raw, singleRaw) {
+  if (raw) {
+    const list = String(raw).split(',').map(t => t.trim()).filter(Boolean);
+    return list.length ? list : null;
+  }
+  const single = (singleRaw || '').trim();
+  return single ? [single] : null;
+}
+
+function matchesSearch(entry, q) {
+  if (!q) return true;
+  const s = q.toLowerCase();
+  return (
+    (entry.regNo && entry.regNo !== 'N/A' && entry.regNo.toLowerCase().includes(s))
+    || (entry.assetName && entry.assetName.toLowerCase().includes(s))
+    || (entry.assetId && String(entry.assetId).toLowerCase().includes(s))
+    || (entry.driverName && entry.driverName !== 'N/A' && entry.driverName.toLowerCase().includes(s))
+  );
+}
+
 /**
- * @param {{ from?: string|null, to?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null }} query
+ * @param {{ from?: string|null, to?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null }} query
  */
 export function handleEventsLogQuery(query = {}) {
   const from = query.from || null;
   const to = query.to || null;
   const types = parseTypes(query.types);
   const driver = query.driver ? String(query.driver) : null;
+  const q = (query.q || query.search || '').trim();
+  const assetIds = parseAssetIds(query.assetIds, query.assetId);
   const format = String(query.format || '').toLowerCase();
   const lookup = vehicleLookup();
+
+  const needsPostFilter = Boolean(q);
+  const fetchLimit = needsPostFilter ? null : undefined;
 
   if (format === 'page') {
     const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 500);
     const offset = Math.max(Number(query.offset) || 0, 0);
-    const total = countMatchingEvents({ from, to, types, driver });
-    const entries = getAllEvents({ from, to, types, limit, offset, driver }).map(e => enrichEvent(e, lookup));
+
+    let entries = getAllEvents({
+      from,
+      to,
+      types,
+      limit: needsPostFilter ? null : limit,
+      offset: needsPostFilter ? 0 : offset,
+      driver,
+      assetIds,
+    }).map(e => enrichEvent(e, lookup));
+
+    if (q) {
+      entries = entries.filter(e => matchesSearch(e, q));
+    }
+
+    let total;
+    if (needsPostFilter) {
+      total = entries.length;
+      entries = entries.slice(offset, offset + limit);
+    } else {
+      total = countMatchingEvents({ from, to, types, driver, assetIds });
+    }
     return { entries, total };
   }
 
@@ -101,5 +146,18 @@ export function handleEventsLogQuery(query = {}) {
     limit = Math.min(Math.max(Number(limitRaw) || 500, 1), 20000);
   }
 
-  return getAllEvents({ from, to, types, limit, driver }).map(e => enrichEvent(e, lookup));
+  let entries = getAllEvents({
+    from,
+    to,
+    types,
+    limit: fetchLimit ?? limit,
+    driver,
+    assetIds,
+  }).map(e => enrichEvent(e, lookup));
+
+  if (q) {
+    entries = entries.filter(e => matchesSearch(e, q));
+  }
+
+  return entries;
 }

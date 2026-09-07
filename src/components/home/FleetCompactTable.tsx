@@ -1,8 +1,12 @@
+import { useMemo, useRef } from 'react';
 import type { FleetVehicle } from '../../context/FleetContext';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../../lib/placeAddress';
 import { statusDisplayLabel } from '../../lib/metricDefinitions';
+import { useVirtualWindow } from '../../hooks/useVirtualWindow';
 
 const GRID_COLS = 'minmax(72px,1fr) minmax(80px,1.2fr) minmax(90px,1.8fr) minmax(72px,1fr) minmax(90px,1.4fr) minmax(72px,1fr)';
+const ROW_HEIGHT = 46;
+const ROW_GAP = 6;
 
 function getStatusColor(status: string) {
   const map: Record<string, { bg: string; text: string; border: string }> = {
@@ -39,23 +43,73 @@ function placeLabel(v: FleetVehicle) {
   return raw || '—';
 }
 
+function FleetRow({ v, gridCols }: { v: FleetVehicle; gridCols: string }) {
+  const colors = getStatusColor(v.status);
+  const isExcess = v.status === 'Excessive Idle';
+  const rowBg = isExcess ? '#fefce8' : 'var(--cd-surface)';
+  const loc = placeLabel(v);
+
+  return (
+    <div
+      className="bpl-fleet-table-row"
+      style={{
+        gridTemplateColumns: gridCols,
+        backgroundColor: rowBg,
+        borderColor: isExcess ? '#fcd34d' : 'var(--cd-border)',
+        minHeight: ROW_HEIGHT,
+      }}
+    >
+      <div className="bpl-fleet-cell-reg">{v.regNo}</div>
+      <div className="bpl-fleet-cell-transporter">
+        <span className="bpl-fleet-dot" style={{ background: 'var(--bpl-blue)' }} />
+        {v.transporter}
+      </div>
+      <div className="bpl-fleet-cell-asset">{v.assetName}</div>
+      <div>
+        <span
+          className="bpl-fleet-status-badge"
+          style={{ backgroundColor: colors.bg, color: colors.text, borderColor: colors.border }}
+        >
+          <span className="bpl-fleet-status-dot" style={{ backgroundColor: colors.text }} />
+          {statusDisplayLabel(v.status)}
+        </span>
+      </div>
+      <div className="bpl-fleet-cell-loc" title={loc}>{loc}</div>
+      <div className="bpl-fleet-cell-date">{formatDate(v.date)}</div>
+    </div>
+  );
+}
+
 interface Props {
   vehicles: FleetVehicle[];
 }
 
 export default function FleetCompactTable({ vehicles }: Props) {
-  const rows = [...vehicles]
-    .filter(v => vehicleHasResolvedPlace(v as any) || isUsablePlaceAddress(v.address))
-    .sort((a, b) => {
-      const aOk = vehicleHasResolvedPlace(a as any) || isUsablePlaceAddress(a.address);
-      const bOk = vehicleHasResolvedPlace(b as any) || isUsablePlaceAddress(b.address);
-      if (aOk !== bOk) return aOk ? -1 : 1;
-      return 0;
-    });
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const rows = useMemo(
+    () => [...vehicles]
+      .filter(v => vehicleHasResolvedPlace(v as any) || isUsablePlaceAddress(v.address))
+      .sort((a, b) => {
+        const aOk = vehicleHasResolvedPlace(a as any) || isUsablePlaceAddress(a.address);
+        const bOk = vehicleHasResolvedPlace(b as any) || isUsablePlaceAddress(b.address);
+        if (aOk !== bOk) return aOk ? -1 : 1;
+        return 0;
+      }),
+    [vehicles],
+  );
+
+  const { start, end, paddingTop, paddingBottom } = useVirtualWindow({
+    count: rows.length,
+    rowHeight: ROW_HEIGHT,
+    gap: ROW_GAP,
+    containerRef: bodyRef,
+  });
 
   if (!rows.length) {
     return <div className="bpl-fleet-table-empty">No vehicles with resolved location yet.</div>;
   }
+
+  const visible = rows.slice(start, end);
 
   return (
     <div className="bpl-fleet-table-wrap">
@@ -67,43 +121,12 @@ export default function FleetCompactTable({ vehicles }: Props) {
         <div>Location</div>
         <div>Date</div>
       </div>
-      <div className="bpl-fleet-table-body">
-        {rows.map(v => {
-          const colors = getStatusColor(v.status);
-          const isExcess = v.status === 'Excessive Idle';
-          const rowBg = isExcess ? '#fefce8' : 'var(--cd-surface)';
-          const loc = placeLabel(v);
-
-          return (
-            <div
-              key={v.id}
-              className="bpl-fleet-table-row"
-              style={{
-                gridTemplateColumns: GRID_COLS,
-                backgroundColor: rowBg,
-                borderColor: isExcess ? '#fcd34d' : 'var(--cd-border)',
-              }}
-            >
-              <div className="bpl-fleet-cell-reg">{v.regNo}</div>
-              <div className="bpl-fleet-cell-transporter">
-                <span className="bpl-fleet-dot" style={{ background: 'var(--bpl-blue)' }} />
-                {v.transporter}
-              </div>
-              <div className="bpl-fleet-cell-asset">{v.assetName}</div>
-              <div>
-                <span
-                  className="bpl-fleet-status-badge"
-                  style={{ backgroundColor: colors.bg, color: colors.text, borderColor: colors.border }}
-                >
-                  <span className="bpl-fleet-status-dot" style={{ backgroundColor: colors.text }} />
-                  {statusDisplayLabel(v.status)}
-                </span>
-              </div>
-              <div className="bpl-fleet-cell-loc" title={loc}>{loc}</div>
-              <div className="bpl-fleet-cell-date">{formatDate(v.date)}</div>
-            </div>
-          );
-        })}
+      <div className="bpl-fleet-table-body" ref={bodyRef}>
+        {paddingTop > 0 && <div style={{ height: paddingTop, flexShrink: 0 }} aria-hidden />}
+        {visible.map(v => (
+          <FleetRow key={v.id} v={v} gridCols={GRID_COLS} />
+        ))}
+        {paddingBottom > 0 && <div style={{ height: paddingBottom, flexShrink: 0 }} aria-hidden />}
       </div>
     </div>
   );

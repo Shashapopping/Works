@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { Menu, Bell, Search, UserCircle, ShieldAlert, GraduationCap } from 'lucide-react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Menu, Bell, Settings, Power, ShieldAlert, GraduationCap } from 'lucide-react';
 import Sidebar from './Sidebar';
 import SiteSelector from './SiteSelector';
-import PageTransition from './PageTransition';
 import SafetyToast from '../SafetyToast';
 import SafetyIncidentModal from '../SafetyIncidentModal';
+import LogoutConfirmModal from '../LogoutConfirmModal';
 import { useFleet } from '../../context/FleetContext';
 import { useAuth } from '../../context/AuthContext';
 import type { SafetyNotification } from '../../hooks/useSafeIQ';
@@ -23,12 +23,15 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/trips/dispatch': { title: 'Journey Management', sub: '— dispatch & journey planning' },
     '/aria': { title: 'AI Insights', sub: '— SafeIQ analyses' },
     '/drivers': { title: 'Driver Management', sub: '— profiles and safety scores' },
-    '/drivers/coaching': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
-    '/drivers/training': { title: 'Coaching & Training', sub: '— score ≤70 and retraining' },
+    '/drivers/coaching': { title: 'Coaching', sub: '— coaching queue' },
+    '/drivers/training': { title: 'Training', sub: '— mandatory retraining' },
     '/consequence-management': { title: 'Consequence/Fatigue Management', sub: '— driver discipline and fatigue bands' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
     '/trends': { title: 'Trends', sub: '— visual event insights & history' },
     '/incidents/response': { title: 'Incident Intelligence', sub: '— response tracking' },
+    '/incidents/audit': { title: 'Incident Intelligence', sub: '— audit trail' },
+    '/assets': { title: 'Assets', sub: '— fleet asset risk profiles' },
+    '/operations/utilization': { title: 'Utilization', sub: '— fleet activity & utilization' },
     '/vault': { title: 'Safety Vault', sub: '— incident records' },
     '/vault/safeiq': { title: 'Safety Vault', sub: '— SafeIQ analysis' },
     '/vault/investigations': { title: 'Safety Vault', sub: '— investigations' },
@@ -46,7 +49,8 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/reports/documents': { title: 'Documents', sub: '— report repository' },
     '/maintenance': { title: 'Maintenance', sub: '— scheduling & service' },
     '/settings/general': { title: 'Settings', sub: '— general' },
-    '/settings/thresholds': { title: 'Settings', sub: '— safety & consequence' },
+    '/settings/scoring': { title: 'Settings', sub: '— scoring' },
+    '/settings/thresholds': { title: 'Settings', sub: '— scoring' },
     '/settings/dev': { title: 'Settings', sub: '— developers' },
     '/settings/roles': { title: 'Settings', sub: '— roles & permissions' },
     '/settings/users': { title: 'Settings', sub: '— users & access' },
@@ -130,7 +134,7 @@ function NotifPanel({
         </div>
       ) : (
         <div style={{ maxHeight: 420, overflowY: 'auto' }}>
-          {teamVisible.map((n, i) => (
+          {teamVisible.map((n) => (
             <div
               key={n.id}
               onClick={() => { onTeamOpen(n); onClose(); }}
@@ -218,11 +222,12 @@ function NotifPanel({
 export default function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [toastDismissed, setToastDismissed] = useState<Set<string>>(new Set());
   const notifRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const {
     notifications, dismissNotification, clearAllNotifications, selectedNotification,
     openNotification, closeNotification,
@@ -301,18 +306,6 @@ export default function AppShell() {
                 </span>
               </div>
             )}
-            <button
-              style={{
-                width: 32, height: 32, borderRadius: 8,
-                background: 'rgba(255,255,255,0.06)',
-                border: '0.5px solid rgba(255,255,255,0.1)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', color: 'rgba(255,255,255,0.5)',
-              }}
-              title="Search"
-            >
-              <Search size={14} />
-            </button>
             {user && (
             <div style={{ position: 'relative' }} ref={notifRef}>
               <button
@@ -364,15 +357,31 @@ export default function AppShell() {
               }}
               title="Settings"
             >
-              <UserCircle size={14} />
+              <Settings size={14} />
             </button>
+            {user && (
+              <button
+                onClick={() => setLogoutConfirmOpen(true)}
+                style={{
+                  width: 32, height: 32, borderRadius: 8,
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '0.5px solid rgba(255,255,255,0.1)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', color: 'rgba(255,255,255,0.5)',
+                }}
+                title="Log out"
+                aria-label="Log out"
+              >
+                <Power size={14} />
+              </button>
+            )}
           </div>
         </header>
 
-        {/* Page content — shell stays put; loader only in this region */}
+        {/* Page content */}
         <main style={{ flex: 1, overflow: 'auto' }}>
           <div className="bpl-page">
-            <PageTransition />
+            <Outlet />
           </div>
         </main>
       </div>
@@ -388,6 +397,15 @@ export default function AppShell() {
       {SAFEIQ_ENABLED && selectedNotification && (
         <SafetyIncidentModal notification={selectedNotification} onClose={closeNotification} />
       )}
+      <LogoutConfirmModal
+        open={logoutConfirmOpen}
+        onCancel={() => setLogoutConfirmOpen(false)}
+        onConfirm={async () => {
+          setLogoutConfirmOpen(false);
+          await logout();
+          navigate('/login');
+        }}
+      />
     </div>
   );
 }

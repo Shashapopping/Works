@@ -18,8 +18,14 @@ const MAX_ENTRIES = 80;
 // so serialising/parsing them during navigation stalls the browser main thread.
 const MEMORY_ONLY_PREFIXES = [
   'fleet:data',
+  'fleet:live',
   'fleet:events',
   '/api/driver-distance',
+  '/api/risk/drivers',
+  '/api/events/log',
+  '/api/events/trends',
+  '/api/safety/summary',
+  '/api/kpi',
   'driver:period:',
   'driver:assessment-distance',
   'fuel:consumption:',
@@ -47,21 +53,42 @@ export const CACHE_TTL = {
   pageRollup: 5 * 60_000,
   /** Current + last month trip km for driver consequence scores. */
   driverAssessment: 5 * 60_000,
+  /** Admin lists (roles, users, documents tree). */
+  admin: 60_000,
 } as const;
 
 export const CACHE_KEYS = {
   fleetData: 'fleet:data',
+  fleetLive: 'fleet:live',
   fleetMeta: 'fleet:metadata',
-  fleetEvents: 'fleet:events:unbounded-v2',
+  /** Boot feed only (capped). Bump suffix when boot limit/shape changes. */
+  fleetEvents: 'fleet:events:boot-v4',
   kpi: (url: string) => `kpi:${url}`,
   fuelConsumption: (url: string) => `fuel:consumption:${url}`,
   fuelHistory: (url: string) => `fuel:history:${url}`,
   hos: (url: string) => `hos:${url}`,
   safetyExposure: (range: string) => `safety-exposure:${range}`,
+  /** @deprecated Prefer safetySummaryUrl — URL is the canonical cache key. */
   safetySummary: (range: string) => `safety-summary:${range}`,
   riskDrivers: (range: string) => `risk-drivers:${range}`,
   driverAssessment: 'driver:assessment-distance',
 } as const;
+
+/** Canonical cache key for /api/safety/summary (matches nav warm + authCachedJson). */
+export function safetySummaryUrl(range: string): string {
+  if (range.startsWith('/api/safety/summary')) return range;
+  return `/api/safety/summary?range=${encodeURIComponent(range)}`;
+}
+
+export function peekSafetySummary<T>(range: string): T | null {
+  const url = safetySummaryUrl(range);
+  return cachePeek<T>(url) ?? cachePeek<T>(CACHE_KEYS.safetySummary(range));
+}
+
+/** Read cache whether warmed by URL or legacy prefixed key. */
+export function peekUrlOrLegacy<T>(url: string, legacyKey: string): T | null {
+  return cachePeek<T>(url) ?? cachePeek<T>(legacyKey);
+}
 
 function trimMemory() {
   if (memory.size <= MAX_ENTRIES) return;
@@ -208,16 +235,25 @@ export async function authCachedJson<T>(
   );
 }
 
-/** Warm these shortly after login so Fuel / KPI / Vision open faster. */
-export const BOOT_PREFETCH_URLS = [
-  '/api/driver-distance?range=30d&trips=0',
-  '/api/driver-distance?range=currentMonth&trips=0',
-  '/api/driver-distance?range=lastMonth&trips=0',
-  '/api/driver-distance?range=today&trips=0',
-  '/api/driver-distance?range=7d&trips=0',
+/** Warm first so Assets / Drivers / Fatigue rarely show a skeleton. */
+export const BOOT_PRIORITY_URLS = [
+  '/api/risk/drivers?range=7d&groupBy=asset',
+  '/api/risk/drivers?range=7d',
+  '/api/hos',
   '/api/safety/summary?range=30d',
-  '/api/fuel/consumption?period=week&trips=0',
-  '/api/kpi?period=week&scope=quarry',
+  '/api/driver-distance?range=7d&trips=0&summary=1',
+] as const;
+
+/** Warm shortly after login so common pages open from cache (Chevron-style). */
+export const BOOT_PREFETCH_URLS = [
+  ...BOOT_PRIORITY_URLS,
+  '/api/driver-distance?range=30d&trips=0&summary=1',
+  '/api/driver-distance?range=prev30d&trips=0&summary=1',
+  '/api/driver-distance?range=today&trips=0&summary=1',
+  '/api/fuel/consumption?period=week&trips=0&summary=1',
+  '/api/kpi?period=week&scope=all&summary=1',
+  '/api/safety/summary?range=prev30d',
+  '/api/risk/drivers?range=30d',
 ] as const;
 
 /** Warm heavy endpoints one at a time so opening a menu never creates a request burst. */

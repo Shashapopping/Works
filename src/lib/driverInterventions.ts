@@ -177,16 +177,20 @@ const DISMISSALS_KEY = 'bpl_intervention_dismissals';
 
 type DismissalStore = Record<InterventionQueue, Record<string, string>>;
 
-function getDismissalStore(): DismissalStore {
+export function getDismissalStore(): DismissalStore {
   return readJson<DismissalStore>(DISMISSALS_KEY, { coaching: {}, training: {} });
 }
 
+function getDismissalStoreInternal(): DismissalStore {
+  return getDismissalStore();
+}
+
 export function getDismissedCutoff(queue: InterventionQueue, key: string): string | null {
-  return getDismissalStore()[queue]?.[key] ?? null;
+  return getDismissalStoreInternal()[queue]?.[key] ?? null;
 }
 
 export function dismissFromQueue(queue: InterventionQueue, key: string): void {
-  const store = getDismissalStore();
+  const store = getDismissalStoreInternal();
   store[queue] = { ...store[queue], [key]: new Date().toISOString() };
   writeJson(DISMISSALS_KEY, store);
 }

@@ -6,6 +6,7 @@ import MockNamesBadge from '../../components/MockNamesBadge';
 import InfoTip from '../../components/InfoTip';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useHosRecords } from '../../hooks/useHosRecords';
+import { useFleet } from '../../context/FleetContext';
 import { fmtHosMinutes, hosRuleLabels, type HosRecord, type HosRuleId, type HosStatus } from '../../lib/hos';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 
@@ -235,19 +236,22 @@ export default function FatigueManagementPage() {
   const targetDate = daySel === 'today' ? lagosDateStr(0) : daySel === 'yesterday' ? lagosDateStr(1) : customDate;
   const isTodayView = targetDate === lagosDateStr(0);
 
-  const { records: hosRaw, loading: hosLoading, lastTripDay } = useHosRecords(targetDate);
-
-  // Today often has no trips if MiX trip sync is behind — jump once to the last day with data.
-  const [didAutoJump, setDidAutoJump] = useState(false);
-  useEffect(() => {
-    if (didAutoJump || hosLoading) return;
-    if (!isTodayView) return;
-    if (hosRaw.length > 0) return;
-    if (!lastTripDay || lastTripDay === targetDate) return;
-    setCustomDate(lastTripDay);
-    setDaySel('custom');
-    setDidAutoJump(true);
-  }, [didAutoJump, hosLoading, isTodayView, hosRaw.length, lastTripDay, targetDate]);
+  // Today stays on the shared live HOS feed; dated history is only for manual date changes.
+  const {
+    hosRecords: ctxHos,
+    hosLoading: ctxHosLoading,
+    hosLastTripDay: ctxLastTripDay,
+  } = useFleet();
+  const dated = useHosRecords(targetDate, { enabled: !isTodayView });
+  const hosRaw = isTodayView
+    ? ctxHos
+    : dated.records;
+  const hosLoading = isTodayView
+    ? (ctxHosLoading && hosRaw.length === 0)
+    : dated.loading;
+  const lastTripDay = isTodayView
+    ? ctxLastTripDay
+    : dated.lastTripDay;
 
   const hosRecords = useMemo(() => {
     return scrubHosRecords(hosRaw).filter(r => {
@@ -468,16 +472,6 @@ export default function FatigueManagementPage() {
         </div>
       )}
 
-      {didAutoJump && lastTripDay && targetDate === lastTripDay && (
-        <div style={{
-          marginBottom: 16, padding: '10px 14px', borderRadius: 8,
-          border: '1px solid rgba(0,120,212,0.3)', background: 'rgba(0,120,212,0.06)',
-          fontSize: 13, color: 'var(--cd-text)',
-        }}>
-          Showing the latest day with trip data ({new Date(lastTripDay + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}) because today has no synced trips yet.
-        </div>
-      )}
-
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
         {kpiCards.map(k => {
           const active = statusFilter === k.key;
@@ -502,9 +496,9 @@ export default function FatigueManagementPage() {
                 <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
               </div>
               <div
+                className={k.key === 'violation' && counts.violation > 0 ? 'bpl-hos-violation-pulse' : undefined}
                 style={{
                   fontSize: 20, fontWeight: 700, color: k.color,
-                  animation: k.key === 'violation' && counts.violation > 0 ? 'pulse 1.5s infinite' : 'none',
                 }}
               >
                 {hosLoading ? <SkelValue /> : k.value}

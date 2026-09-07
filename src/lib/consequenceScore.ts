@@ -157,7 +157,12 @@ export function countPenaltyEvents(
     const label = e.label || '';
     if (label === 'Harsh Braking') harshBraking++;
     else if (label === 'Harsh Acceleration') harshAccel++;
-    else if (label === 'Overspeeding' || label === 'Overspeed Tiered') overspeeding++;
+    else if (
+      label === 'Overspeeding'
+      || label === 'Overspeed Tiered'
+      || label === 'Road Speed Overspeeding'
+      || label === 'Overspeeding — Excessive Speed'
+    ) overspeeding++;
     else if (label === 'Harsh Cornering') cornering++;
   });
 
@@ -235,14 +240,46 @@ export function recommendedConsequence(
   }
 }
 
+export function penaltyTotalsFromCounts(
+  counts: {
+    harshBraking?: number;
+    harshAccel?: number;
+    overspeeding?: number;
+    cornering?: number;
+  },
+  config: ConsequenceScoreConfig = loadConsequenceConfig(),
+): PenaltyTotals {
+  const harshBraking = Math.max(0, Math.round(counts.harshBraking || 0));
+  const harshAccel = Math.max(0, Math.round(counts.harshAccel || 0));
+  const overspeeding = Math.max(0, Math.round(counts.overspeeding || 0));
+  const cornering = Math.max(0, Math.round(counts.cornering || 0));
+  const eventCount = harshBraking + harshAccel + overspeeding + cornering;
+  return {
+    harshBraking,
+    harshAccel,
+    overspeeding,
+    cornering,
+    eventCount,
+    penaltyPoints: -(eventCount * config.penaltyPerEvent),
+  };
+}
+
 export function buildDriverConsequenceCard(input: {
-  events: { label?: string | null; type?: string }[];
+  events?: { label?: string | null; type?: string }[];
+  counts?: {
+    harshBraking?: number;
+    harshAccel?: number;
+    overspeeding?: number;
+    cornering?: number;
+  };
   distanceKm: number;
   occurrenceIndex?: number;
   config?: ConsequenceScoreConfig;
 }): ConsequenceCard {
   const config = input.config ?? loadConsequenceConfig();
-  const totals = countPenaltyEvents(input.events, config);
+  const totals = input.counts
+    ? penaltyTotalsFromCounts(input.counts, config)
+    : countPenaltyEvents(input.events || [], config);
   const distanceKm = Math.max(0, input.distanceKm || 0);
   const driverScore = normalizeDriverScore(totals.penaltyPoints, distanceKm);
   const category = categorizeDriverScore(driverScore, config);

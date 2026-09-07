@@ -12,7 +12,8 @@ import {
   type ConsequenceScoreConfig,
 } from '../lib/consequenceScore';
 import {
-  SCORE_DROP_PER_HARM_UNIT,
+  SCORE_DROP_PER_IVMS_UNIT,
+  FLEET_SCORE_SCALE,
   scoreBandColor,
   scoreBandLabel,
   type FleetScoreConfig,
@@ -24,7 +25,7 @@ interface Props {
   fleetDelta: number;
   totalIncidents: number;
   vehicleCount: number;
-  /** Weighted harm (IVMS + HOS) per 100 km. */
+  /** Weighted IVMS points per 100 km. */
   actualWeightedRate?: number;
   distanceKm?: number;
   hosHeldMinutes?: number;
@@ -39,12 +40,12 @@ const SCORED_NOW = [
   { title: 'Harsh Braking' },
   { title: 'Harsh Acceleration' },
   { title: 'Harsh Cornering' },
-  { title: 'Hours of Service', note: '4h continuous — points for each slice held past the limit' },
 ];
 
-const NOT_YET = [
-  { title: 'Weekly rest shortfall', note: 'Shown on Fatigue, not duration-sliced here yet' },
-  { title: 'Night driving', note: '7pm–6am — no live feed' },
+const FATIGUE_RULES = [
+  { title: '4-hour continuous', note: '30-minute rest resets the block after 4h driving' },
+  { title: 'Daily rest', note: 'Max 8h continuous driving in a rolling 24h window' },
+  { title: 'Weekly rest', note: '≥24h continuous off-duty rest in every 7-day week' },
 ];
 
 function StepNum({ n }: { n: number }) {
@@ -79,7 +80,7 @@ export default function ConsequenceExplainerModal({
   const band = scoreBandLabel(fleetScore, scoreConfig);
   const rateLabel = actualWeightedRate != null ? actualWeightedRate.toFixed(2) : '—';
   const km = Math.round(distanceKm ?? 0);
-  const drop = SCORE_DROP_PER_HARM_UNIT;
+  const drop = SCORE_DROP_PER_IVMS_UNIT;
   const goodAt = Math.round((100 - scoreConfig.bandGood) / drop);
 
   const fleetWeights = [
@@ -87,7 +88,6 @@ export default function ConsequenceExplainerModal({
     { label: 'Overspeeding', weight: scoreConfig.weights.overspeeding, color: '#d97706', title: undefined },
     { label: 'Harsh Accel.', weight: scoreConfig.weights.harshAcceleration, color: '#f59e0b', title: undefined },
     { label: 'Cornering', weight: scoreConfig.weights.harshCornering, color: '#8b5cf6', title: undefined },
-    { label: 'HOS', weight: 'Soon', color: '#0d9488', title: 'Coming soon' },
   ];
 
   const fleetBands = [
@@ -187,7 +187,7 @@ export default function ConsequenceExplainerModal({
               <span style={{ fontSize: 36, fontWeight: 700, color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
                 {fleetScore}
               </span>
-              <span style={{ fontSize: 13, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/100</span>
+              <span style={{ fontSize: 13, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/{FLEET_SCORE_SCALE}</span>
               <span style={{ fontSize: 13, fontWeight: 700, color }}>{band}</span>
               <span style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--cd-text-muted)' }}>
                 {fleetDelta > 0
@@ -200,14 +200,14 @@ export default function ConsequenceExplainerModal({
               </span>
             </div>
             <p style={{ fontSize: 13, color: 'var(--cd-text)', lineHeight: 1.45, margin: '10px 0 0' }}>
-              Whole-fleet overview. Starts at <strong>100</strong> (zero harm). Harm per 100 km pulls it down.
+              Whole-fleet IVMS overview. Starts at <strong>100</strong> when there are no scored incidents. Fatigue / HOS is separate.
             </p>
             <div style={{
               marginTop: 10, fontSize: 13, fontWeight: 600, color: 'var(--cd-text)',
               background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)',
               borderRadius: 8, padding: '8px 10px', lineHeight: 1.4,
             }}>
-              100 − {drop} × {rateLabel} harm/100 km = <span style={{ color }}>{fleetScore}</span>
+              100 − {drop} × {rateLabel} IVMS pts/100 km = <span style={{ color }}>{fleetScore}</span>
             </div>
           </section>
 
@@ -253,10 +253,10 @@ export default function ConsequenceExplainerModal({
             <div style={{ background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 10, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <StepNum n={1} />
-                <strong style={{ fontSize: 13, color: 'var(--cd-text)' }}>Add harm points</strong>
+                <strong style={{ fontSize: 13, color: 'var(--cd-text)' }}>Add IVMS points</strong>
               </div>
               <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '0 0 8px', lineHeight: 1.4 }}>
-                Each incident (and each HOS slice) adds points. Heavier events count more.
+                Each scored IVMS incident adds weighted points. Heavier events count more.
               </p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                 {fleetWeights.map(w => (
@@ -265,7 +265,7 @@ export default function ConsequenceExplainerModal({
                     background: `${w.color}14`, border: `1px solid ${w.color}33`,
                     borderRadius: 999, padding: '2px 8px',
                   }} title={w.title}>
-                    {w.label === 'HOS' ? `${w.label} ${w.weight}` : `${w.label} +${w.weight}`}
+                    {`${w.label} +${w.weight}`}
                   </span>
                 ))}
               </div>
@@ -279,7 +279,7 @@ export default function ConsequenceExplainerModal({
                 <strong style={{ fontSize: 13, color: 'var(--cd-text)' }}>Per 100 km</strong>
               </div>
               <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: 0, lineHeight: 1.4 }}>
-                Total harm ÷ (km ÷ 100). More kilometres = the same events look milder.
+                Weighted IVMS points ÷ (km ÷ 100). More kilometres = the same events look milder.
               </p>
               <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--cd-text)', margin: '10px 0 0' }}>
                 {rateLabel} <span style={{ fontWeight: 500, color: 'var(--cd-text-muted)' }}>pts / 100 km now</span>
@@ -291,13 +291,13 @@ export default function ConsequenceExplainerModal({
             <div style={{ background: 'var(--cd-surface-2)', border: '1px solid var(--cd-border)', borderRadius: 10, padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <StepNum n={3} />
-                <strong style={{ fontSize: 13, color: 'var(--cd-text)' }}>Turn into 0–100</strong>
+                <strong style={{ fontSize: 13, color: 'var(--cd-text)' }}>Turn into 0–{FLEET_SCORE_SCALE}</strong>
               </div>
               <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: 0, lineHeight: 1.4 }}>
-                Every 1 harm point per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>{drop}</strong> off the score. Clamped 0–100.
+                Every 1 weighted IVMS point per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>{drop}</strong> off the score. Clamped 0–{FLEET_SCORE_SCALE}.
               </p>
               <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '10px 0 0', lineHeight: 1.4 }}>
-                0 harm → 100. ~{goodAt} / 100 km → {scoreConfig.bandGood} ({fleetBands[0].label}).
+                Zero IVMS points → 100. ~{goodAt} pts / 100 km → {scoreConfig.bandGood} ({fleetBands[0].label}).
               </p>
             </div>
           </div>
@@ -308,9 +308,6 @@ export default function ConsequenceExplainerModal({
           }}>
             <span><strong style={{ color: 'var(--cd-text)' }}>{totalIncidents}</strong> incidents</span>
             <span><strong style={{ color: 'var(--cd-text)' }}>{km.toLocaleString()}</strong> km</span>
-            <span title="Coming soon">
-              <strong style={{ color: 'var(--cd-text-muted)' }}>Soon</strong> HOS slices
-            </span>
             <span>{vehicleCount} vehicles</span>
           </div>
 
@@ -326,7 +323,7 @@ export default function ConsequenceExplainerModal({
             ))}
           </div>
           <p style={{ fontSize: 11, color: 'var(--cd-text-muted)', margin: '8px 0 8px', lineHeight: 1.4 }}>
-            HOS presence is reserved in this scoring view; detailed HOS figures are coming soon.
+            Fatigue / HOS rules live on the Fatigue page and in Settings → Scoring. They do not change this fleet number.
           </p>
         </div>
 
@@ -382,10 +379,10 @@ export default function ConsequenceExplainerModal({
               ))}
             </div>
             <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cd-text-muted)', marginBottom: 6 }}>Not scored yet</div>
-              {NOT_YET.map(item => (
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#0d9488', marginBottom: 6 }}>Fatigue rules (separate)</div>
+              {FATIGUE_RULES.map(item => (
                 <div key={item.title} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 13, color: 'var(--cd-text)', marginBottom: 6 }}>
-                  <Circle size={12} color="var(--cd-text-muted)" style={{ flexShrink: 0, marginTop: 3 }} />
+                  <Circle size={12} color="#0d9488" style={{ flexShrink: 0, marginTop: 3 }} />
                   <span>
                     {item.title}
                     {item.note && <span style={{ color: 'var(--cd-text-muted)', fontSize: 12 }}> — {item.note}</span>}
@@ -427,7 +424,7 @@ export default function ConsequenceExplainerModal({
             Response Tracking <ArrowRight size={13} />
           </Link>
           <Link
-            to="/consequence-management"
+            to="/settings/scoring#driver-discipline"
             onClick={onClose}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 36,

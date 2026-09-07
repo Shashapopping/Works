@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import FeatureGate from '../components/FeatureGate';
+import TablePaginationBar from '../components/TablePaginationBar';
 import { useFleet } from '../context/FleetContext';
+import { useClientPagination } from '../hooks/useClientPagination';
 
 type TripTab = 'all' | 'ongoing' | 'completed';
 
@@ -10,6 +12,8 @@ const TAB_LABELS: Record<TripTab, string> = {
   ongoing: 'Ongoing',
   completed: 'Completed',
 };
+
+const TRIPS_PAGE_SIZE = 50;
 
 const STATUS_STYLE = {
   'On Time': { bg: 'rgba(22,163,74,0.12)', color: '#16a34a' },
@@ -26,6 +30,8 @@ export default function TripsPage() {
     if (tab === 'ongoing') return trips.filter(t => t.status !== 'Completed');
     return trips.filter(t => t.status === 'Completed');
   }, [trips, tab]);
+
+  const pagination = useClientPagination(filtered, TRIPS_PAGE_SIZE, tab);
 
   return (
     <FeatureGate featureId="dispatch">
@@ -53,7 +59,7 @@ export default function TripsPage() {
           <Link to="/trips/dispatch" className="bpl-card-link">Open dispatch</Link>
         </div>
         <div className="bpl-card-body">
-          {filtered.map(trip => {
+          {pagination.pageRows.map(trip => {
             const statusStyle = STATUS_STYLE[trip.timing];
             return (
               <div key={trip.id} className="bpl-trip-item">
@@ -75,6 +81,18 @@ export default function TripsPage() {
             );
           })}
         </div>
+        <TablePaginationBar
+          from={pagination.from}
+          to={pagination.to}
+          total={pagination.total}
+          page={pagination.page}
+          pageCount={pagination.pageCount}
+          hasPrev={pagination.hasPrev}
+          hasNext={pagination.hasNext}
+          prev={pagination.prev}
+          next={pagination.next}
+          minTotal={0}
+        />
       </div>
     </FeatureGate>
   );

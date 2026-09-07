@@ -14,8 +14,8 @@ async function loadAssessmentTrips(): Promise<TripDriver[] | null> {
     CACHE_TTL.driverAssessment,
     async () => {
       const [cur, last] = await Promise.all([
-        authCachedJson<any>('/api/driver-distance?range=currentMonth&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
-        authCachedJson<any>('/api/driver-distance?range=lastMonth&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
+        authCachedJson<any>('/api/driver-distance?range=30d&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
+        authCachedJson<any>('/api/driver-distance?range=prev30d&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
       ]);
       const batches: TripDriver[][] = [];
       for (const data of [cur, last]) {
@@ -27,16 +27,22 @@ async function loadAssessmentTrips(): Promise<TripDriver[] | null> {
   );
 }
 
-async function loadPeriodTrips(period: DriverPeriod, custom: { from: string; to: string }): Promise<TripDriver[] | null> {
+async function loadPeriodTrips(
+  period: DriverPeriod,
+  custom: { from: string; to: string },
+  force = false,
+): Promise<TripDriver[] | null> {
   const spec = periodDistanceSpec(period, custom);
-  if (spec.kind === 'assessment') return loadAssessmentTrips();
   return cachedFetchJson<TripDriver[]>(
     `driver:period:${spec.url}`,
     CACHE_TTL.driverAssessment,
     async () => {
-      const data = await authCachedJson<any>(spec.url, authFetch, { ttlMs: CACHE_TTL.driverAssessment });
+      const data = await authCachedJson<any>(spec.url, authFetch, {
+        ttlMs: CACHE_TTL.driverAssessment,
+      });
       return mergeAssessmentTripDrivers([((data?.drivers || []) as TripDriver[])]);
     },
+    { force },
   );
 }
 
@@ -44,12 +50,12 @@ export function useAssessmentTripDrivers() {
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
     () => cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment) ?? [],
   );
-  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment)?.length);
+  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment));
 
   useEffect(() => {
     let cancelled = false;
     const cached = cachePeek<TripDriver[]>(CACHE_KEYS.driverAssessment);
-    if (cached?.length) {
+    if (cached) {
       setTripDrivers(cached);
       setLoading(false);
     } else {
@@ -67,23 +73,23 @@ export function useAssessmentTripDrivers() {
     return () => { cancelled = true; };
   }, []);
 
-  return { tripDrivers, loading };
+  return { tripDrivers, loading: loading && tripDrivers.length === 0 };
 }
 
 export function usePeriodTripDrivers(period: DriverPeriod, custom: { from: string; to: string }) {
   const spec = periodDistanceSpec(period, custom);
-  const cacheKey = spec.kind === 'assessment' ? CACHE_KEYS.driverAssessment : `driver:period:${spec.url}`;
+  const cacheKey = `driver:period:${spec.url}`;
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
     () => cachePeek<TripDriver[]>(cacheKey) ?? [],
   );
-  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(cacheKey)?.length);
+  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(cacheKey));
 
   useEffect(() => {
     let cancelled = false;
     const nextSpec = periodDistanceSpec(period, custom);
-    const key = nextSpec.kind === 'assessment' ? CACHE_KEYS.driverAssessment : `driver:period:${nextSpec.url}`;
+    const key = `driver:period:${nextSpec.url}`;
     const cached = cachePeek<TripDriver[]>(key);
-    if (cached?.length) {
+    if (cached) {
       setTripDrivers(cached);
       setLoading(false);
     } else {
@@ -91,7 +97,7 @@ export function usePeriodTripDrivers(period: DriverPeriod, custom: { from: strin
     }
     (async () => {
       try {
-        const next = await loadPeriodTrips(period, custom);
+        const next = await loadPeriodTrips(period, custom, false);
         if (!cancelled && next) setTripDrivers(next);
       } catch { /* keep prior */ }
       finally {
@@ -101,5 +107,5 @@ export function usePeriodTripDrivers(period: DriverPeriod, custom: { from: strin
     return () => { cancelled = true; };
   }, [period, custom.from, custom.to]);
 
-  return { tripDrivers, loading };
+  return { tripDrivers, loading: loading && tripDrivers.length === 0 };
 }

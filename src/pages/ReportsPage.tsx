@@ -38,6 +38,7 @@ import { reportTitle as brandReportTitle } from '../lib/branding';
 import { authFetchInit } from '../lib/authApi';
 import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
+import { startJitteredInterval } from '../lib/pollSchedule';
 
 interface TrendDay {
   date: string;
@@ -334,9 +335,40 @@ export default function ReportsPage() {
   vehiclesRef.current = vehicles;
   fleetEventsRef.current = fleetEvents;
 
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [eventCensusTotal, setEventCensusTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [entries, setEntries] = useState<LogEntry[]>(() => {
+    const { from, to } = getDateBounds('7days', '', '');
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    params.set('format', 'page');
+    params.set('limit', String(EVENT_PREVIEW_LIMIT));
+    const url = `/api/events/log?${params}`;
+    const cached = cachePeek<any>(url);
+    if (!cached) return [];
+    const rows = Array.isArray(cached) ? cached : cached?.entries ?? [];
+    return rows;
+  });
+  const [eventCensusTotal, setEventCensusTotal] = useState(() => {
+    const { from, to } = getDateBounds('7days', '', '');
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    params.set('format', 'page');
+    params.set('limit', String(EVENT_PREVIEW_LIMIT));
+    const url = `/api/events/log?${params}`;
+    const cached = cachePeek<any>(url);
+    if (cached && typeof cached.total === 'number') return cached.total;
+    return Array.isArray(cached) ? cached.length : (cached?.entries?.length ?? 0);
+  });
+  const [loading, setLoading] = useState(() => {
+    const { from, to } = getDateBounds('7days', '', '');
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    params.set('format', 'page');
+    params.set('limit', String(EVENT_PREVIEW_LIMIT));
+    return !cachePeek(`/api/events/log?${params}`);
+  });
   const [downloading, setDownloading] = useState(false);
   const [emailing, setEmailing] = useState(false);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
@@ -418,10 +450,13 @@ export default function ReportsPage() {
       }
     };
     void load(false);
-    const interval = setInterval(() => void load(true), EVENTS_REFRESH_MS);
+    const stop = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void load(true);
+    }, EVENTS_REFRESH_MS, 8_000);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      stop();
     };
   }, [dateRange, fromDate, toDate, selectedEventTypes]);
 

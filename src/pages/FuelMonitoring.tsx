@@ -11,6 +11,7 @@ import FuelChart, {
 } from '../components/FuelChart';
 import { fetchFuelConsumptionCached, peekFuelConsumption } from '../hooks/useFuelConsumption';
 import { SkelValue } from '../components/data/DataBusy';
+import { startJitteredInterval } from '../lib/pollSchedule';
 
 const STATUS_COLOR: Record<string, string> = {
   Moving: '#16a34a',
@@ -128,8 +129,11 @@ export default function FuelMonitoring() {
       }
     };
     void load(false);
-    const id = setInterval(() => void load(true), 60_000);
-    return () => { cancelled = true; clearInterval(id); };
+    const stop = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void load(true);
+    }, eventsPeriod === 'day' ? 60_000 : 5 * 60_000);
+    return () => { cancelled = true; stop(); };
   }, [eventsPeriod]);
 
   const fuelEventsByAsset = useMemo(

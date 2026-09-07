@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { authFetch } from '../context/FleetContext';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { startJitteredInterval } from '../lib/pollSchedule';
 import {
   type PeriodMode,
   type ConsumptionData,
@@ -18,7 +19,7 @@ export async function fetchFuelConsumptionCached(
   opts?: { force?: boolean },
 ): Promise<ConsumptionData | null> {
   return cachedFetchJson<ConsumptionData>(
-    CACHE_KEYS.fuelConsumption(url),
+    url,
     CACHE_TTL.fuelConsumption,
     async () => {
       const res = await authFetch(url);
@@ -30,7 +31,8 @@ export async function fetchFuelConsumptionCached(
 }
 
 export function peekFuelConsumption(url: string): ConsumptionData | null {
-  return cachePeek<ConsumptionData>(CACHE_KEYS.fuelConsumption(url));
+  return cachePeek<ConsumptionData>(url)
+    ?? cachePeek<ConsumptionData>(CACHE_KEYS.fuelConsumption(url));
 }
 
 export async function fetchFuelHistoryCached<T = unknown>(
@@ -69,7 +71,6 @@ export function useFuelConsumption(
         setData(cached);
         setLoading(false);
       } else {
-        setData(null);
         setLoading(true);
       }
     }
@@ -86,8 +87,8 @@ export function useFuelConsumption(
 
   useEffect(() => {
     void fetchData(false);
-    const id = setInterval(() => void fetchData(true), 60_000);
-    return () => clearInterval(id);
+    const stop = startJitteredInterval(() => void fetchData(true));
+    return stop;
   }, [fetchData]);
 
   const derived = useMemo(
@@ -102,16 +103,67 @@ export function useFuelConsumption(
     totalLiters: Math.round(derived?.summary.fuel ?? 0),
     totalDistanceKm: Math.round(derived?.summary.distance ?? 0),
     fuelSeries: derived?.fuelSeries ?? [],
-    loading,
+    loading: loading && !data,
     refetch: fetchData,
   };
 }
 
-/** Dashboard metric row — maps 24h / this month / last month to consumption API periods. */
-export function useFuelConsumptionByDistanceRange(range: DistanceFuelRange) {
-  const { period, customFrom, customTo } = distanceRangeToConsumptionRequest(range);
+/** Dashboard metric row — maps day/week/month/custom to consumption API periods. */
+export function useFuelConsumptionByDistanceRange(
+  range: DistanceFuelRange,
+  custom?: { from: string; to: string },
+) {
+  const { period, customFrom, customTo } = distanceRangeToConsumptionRequest(range, custom);
   const customRange = period === 'custom' && customFrom && customTo
     ? { from: customFrom, to: customTo }
     : undefined;
-  return useFuelConsumption(period, customRange);
+  const base = buildConsumptionUrl(period, 'ALL', customRange?.from, customRange?.to);
+  const url = `${base}${base.includes('?') ? '&' : '?'}summary=1`;
+  const [data, setData] = useState<ConsumptionData | null>(() => peekFuelConsumption(url));
+  const [loading, setLoading] = useState(() => !peekFuelConsumption(url));
+
+  const fetchData = useCallback(async (silent = false) => {
+    if (!silent) {
+      const cached = peekFuelConsumption(url);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+    }
+    try {
+      const next = await fetchFuelConsumptionCached(url, { force: silent });
+      if (next) setData(next);
+    } catch {
+      /* keep prior */
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [url]);
+
+  useEffect(() => {
+    void fetchData(false);
+    const stop = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void fetchData(true);
+    });
+    return stop;
+  }, [fetchData]);
+
+  const derived = useMemo(
+    () => (data ? deriveFromConsumptionData(data, period) : null),
+    [data, period],
+  );
+
+  return {
+    data,
+    chartData: derived?.chartData ?? [],
+    summary: derived?.summary ?? { fuel: 0, distance: 0, drivingHours: 0, trips: 0, refuels: 0, litersPerKm: null, litersPerHour: null },
+    totalLiters: Math.round(derived?.summary.fuel ?? 0),
+    totalDistanceKm: Math.round(derived?.summary.distance ?? 0),
+    fuelSeries: derived?.fuelSeries ?? [],
+    loading: loading && !data,
+    refetch: fetchData,
+  };
 }

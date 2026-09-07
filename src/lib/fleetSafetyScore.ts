@@ -1,19 +1,22 @@
 /**
- * Fleet Safety Score — rooted on distance, then HOS duration.
+ * Fleet Safety Score — IVMS incidents only, rooted on distance.
  *
- *   score = clamp(0, MAX_FLEET_SCORE, 100 − 1 × rate)
- *   1 point deducted per 1 weighted harm point per 100 km.
- *   Fleet score is capped at 93 — a perfect run still reads ≤93%.
+ *   score = clamp(0, 100, 100 − 2 × rate)
+ *   2 score points lost per 1 weighted IVMS point per 100 km.
+ *   HOS / fatigue is tracked separately (Fatigue page + Settings → Scoring).
  *
- *   actualRate = (IVMS points + HOS points) ÷ (km ÷ 100)
+ *   actualRate = IVMS points ÷ (km ÷ 100)
  *   Facts come from /api/safety/summary (SQL), not the live event list.
  */
 
-/** Score points lost per 1 weighted point per 100 km. */
-export const SCORE_DROP_PER_HARM_UNIT = 1;
+/** Score points lost per 1 weighted IVMS point per 100 km. */
+export const SCORE_DROP_PER_IVMS_UNIT = 2;
 
-/** Fleet score ceiling — can never exceed this regardless of distance or events. */
-export const MAX_FLEET_SCORE = 93;
+/** 0–100 fleet score display scale and clamp ceiling. */
+export const FLEET_SCORE_SCALE = 100;
+
+/** @deprecated Alias for FLEET_SCORE_SCALE. */
+export const MAX_FLEET_SCORE = FLEET_SCORE_SCALE;
 
 export const FLEET_SCORE_CONFIG_KEY = 'bpl_fleet_score_config';
 export const FLEET_SCORE_CONFIG_EVENT = 'bpl-fleet-score-config';
@@ -35,7 +38,7 @@ export interface FleetScoreConfig {
   hosSliceMinutes: number;
   /** Points added per HOS slice (default 1.5, same band as overspeeding). */
   hosPointsPer10Min: number;
-  /** @deprecated Linear slope; converted back to aimRatePer100Km as 15 / k. */
+  /** @deprecated Linear slope; unused — score uses SCORE_DROP_PER_IVMS_UNIT. */
   scoreDropPerHarmUnit?: number;
   /** @deprecated Old per-100-vehicles aim. Migrated to aimRatePer100Km. */
   leadingRatePer100?: number;
@@ -207,7 +210,7 @@ export function hosPointsFromHeldMinutes(
   return hosSlicesFromMinutes(heldMinutes, config) * (config.hosPointsPer10Min ?? 1.5);
 }
 
-/** Weighted harm (IVMS + HOS) per 100 km. */
+/** Weighted IVMS points per 100 km. */
 export function ratePer100Km(
   points: number,
   distanceKm: number,
@@ -250,10 +253,11 @@ export function scoreFromCensus(
   exposure: FleetSafetyExposure,
   config: FleetScoreConfig = loadFleetScoreConfig(),
 ): number {
-  const { total } = totalSafetyPointsFromCensus(exposure, config);
-  if (total <= 0) return MAX_FLEET_SCORE;
+  const ivms = ivmsPointsFromByLabel(exposure.byLabel, config);
+  // No scored IVMS → perfect 100 (even with 0 km). Never put HOS into this score.
+  if (ivms <= 0) return MAX_FLEET_SCORE;
   if (!(exposure.distanceKm > 0)) return config.scoreFloor;
-  const pct = Math.round(100 - SCORE_DROP_PER_HARM_UNIT * ratePer100Km(total, exposure.distanceKm));
+  const pct = Math.round(100 - SCORE_DROP_PER_IVMS_UNIT * ratePer100Km(ivms, exposure.distanceKm));
   return Math.max(config.scoreFloor, Math.min(MAX_FLEET_SCORE, pct));
 }
 
@@ -269,11 +273,10 @@ export function scoreFromInputs(
   const ivms = input.byLabel
     ? ivmsPointsFromByLabel(input.byLabel, config)
     : weightedIncidentPoints(input.events || [], config);
-  const hos = hosPointsFromHeldMinutes(input.hosHeldMinutes ?? 0, config);
-  const total = ivms + hos;
-  if (total <= 0) return MAX_FLEET_SCORE;
+  // hosHeldMinutes ignored for fleet score — fatigue is separate.
+  if (ivms <= 0) return MAX_FLEET_SCORE;
   if (!(input.distanceKm > 0)) return config.scoreFloor;
-  const pct = Math.round(100 - SCORE_DROP_PER_HARM_UNIT * ratePer100Km(total, input.distanceKm));
+  const pct = Math.round(100 - SCORE_DROP_PER_IVMS_UNIT * ratePer100Km(ivms, input.distanceKm));
   return Math.max(config.scoreFloor, Math.min(MAX_FLEET_SCORE, pct));
 }
 

@@ -10,11 +10,27 @@ import {
   defaultKpiCustomRange,
   ASSET_CLASS_LABELS,
 } from '../lib/operationalKpi';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, peekUrlOrLegacy } from '../lib/apiCache';
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { KPI_DEFINITIONS } from '../lib/metricDefinitions';
 import InfoTip from '../components/InfoTip';
+import PagePeriodBar from '../components/PagePeriodBar';
+import type { PageDateRange } from '../lib/pagePeriod';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
+
+function kpiToPagePeriod(period: KpiPeriodMode): PageDateRange {
+  if (period === 'day') return 'today';
+  if (period === 'week') return '7days';
+  if (period === 'month') return '30days';
+  return 'custom';
+}
+
+function pageToKpiPeriod(period: PageDateRange): KpiPeriodMode {
+  if (period === 'today') return 'day';
+  if (period === '7days') return 'week';
+  if (period === '30days') return 'month';
+  return 'custom';
+}
 
 function fmt(n: number | null | undefined, digits = 1) {
   if (n == null || Number.isNaN(n)) return '—';
@@ -59,19 +75,19 @@ export default function OperationalKpi() {
   const [customRange, setCustomRange] = useState(defaultKpiCustomRange);
   const initialUrl = buildKpiUrl('week', 'quarry');
   const [data, setData] = useState<KpiData | null>(
-    () => cachePeek<KpiData>(CACHE_KEYS.kpi(initialUrl)),
+    () => peekUrlOrLegacy<KpiData>(initialUrl, CACHE_KEYS.kpi(initialUrl)),
   );
-  const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.kpi(initialUrl)));
+  const [loading, setLoading] = useState(() => !peekUrlOrLegacy(initialUrl, CACHE_KEYS.kpi(initialUrl)));
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<keyof KpiAssetRow>('regNo');
   const [sortDesc, setSortDesc] = useState(false);
 
   const fetchData = useCallback(async (silent = false) => {
     const url = buildKpiUrl(period, scope, customRange.from, customRange.to);
-    const cacheKey = CACHE_KEYS.kpi(url);
+    const legacyKey = CACHE_KEYS.kpi(url);
 
     if (!silent) {
-      const cached = cachePeek<KpiData>(cacheKey);
+      const cached = peekUrlOrLegacy<KpiData>(url, legacyKey);
       if (cached) {
         setData(cached);
         setLoading(false);
@@ -83,7 +99,7 @@ export default function OperationalKpi() {
 
     try {
       const next = await cachedFetchJson<KpiData>(
-        cacheKey,
+        url,
         CACHE_TTL.kpi,
         async () => {
           const res = await authFetch(url);
@@ -195,43 +211,15 @@ export default function OperationalKpi() {
           ))}
         </div>
 
-        <div style={{ display: 'flex', gap: 4 }}>
-          {(['day', 'week', 'month'] as const).map(p => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              style={{
-                padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                border: period === p ? '1px solid #0078D4' : '1px solid var(--cd-border)',
-                background: period === p ? 'rgba(0,120,212,0.12)' : 'transparent',
-                color: period === p ? '#0078D4' : 'var(--cd-text-muted)',
-              }}
-            >
-              {p === 'day' ? 'Today' : p === 'week' ? '7 Days' : '30 Days'}
-            </button>
-          ))}
-          <button
-            onClick={() => setPeriod('custom')}
-            style={{
-              padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              border: period === 'custom' ? '1px solid #0078D4' : '1px solid var(--cd-border)',
-              background: period === 'custom' ? 'rgba(0,120,212,0.12)' : 'transparent',
-              color: period === 'custom' ? '#0078D4' : 'var(--cd-text-muted)',
-            }}
-          >
-            Custom
-          </button>
-        </div>
-
-        {period === 'custom' && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input type="date" value={customRange.from} onChange={e => setCustomRange(r => ({ ...r, from: e.target.value }))}
-              style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--cd-border)', fontSize: 12 }} />
-            <span style={{ color: 'var(--cd-text-muted)', fontSize: 12 }}>to</span>
-            <input type="date" value={customRange.to} onChange={e => setCustomRange(r => ({ ...r, to: e.target.value }))}
-              style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--cd-border)', fontSize: 12 }} />
-          </div>
-        )}
+        <PagePeriodBar
+          value={kpiToPagePeriod(period)}
+          onChange={next => setPeriod(pageToKpiPeriod(next))}
+          customFrom={customRange.from}
+          customTo={customRange.to}
+          onCustomFromChange={from => setCustomRange(r => ({ ...r, from }))}
+          onCustomToChange={to => setCustomRange(r => ({ ...r, to }))}
+          className="bpl-kpi-period"
+        />
       </div>
 
       {/* KPI strip */}

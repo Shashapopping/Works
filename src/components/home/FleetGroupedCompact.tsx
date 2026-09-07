@@ -9,7 +9,7 @@ const STATUS_META: Record<string, { label: string; color: string; dot: string; b
   Stationary: { label: 'Stationary', color: '#0d9488', dot: '#0d9488', bg: 'rgba(13,148,136,0.12)' },
   Parked: { label: 'Parked', color: '#7c3aed', dot: '#7c3aed', bg: 'rgba(124,58,237,0.12)' },
   Inactive: { label: 'Non-Operational', color: '#2563eb', dot: '#2563eb', bg: 'rgba(37,99,235,0.12)' },
-  Offline: { label: 'Offline', color: '#64748b', dot: '#64748b', bg: 'rgba(100,116,139,0.12)' },
+  Offline: { label: 'Inactive', color: '#64748b', dot: '#64748b', bg: 'rgba(100,116,139,0.12)' },
 };
 
 function StatusChips({ vehicles }: { vehicles: FleetVehicle[] }) {

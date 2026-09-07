@@ -11,8 +11,10 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import FeatureGate from '../components/FeatureGate';
-import { authFetchInit } from '../lib/authApi';
+import { authFetchInit, fetchAuthJsonCached, peekAuthJson } from '../lib/authApi';
 import { SkelTable } from '../components/data/DataBusy';
+
+const DOCUMENTS_TREE_URL = '/api/documents/tree';
 
 interface DocFolder {
   id: string;
@@ -132,20 +134,23 @@ function TreeNode({
 }
 
 export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean } = {}) {
-  const [tree, setTree] = useState<DocFolder[]>([]);
+  const [tree, setTree] = useState<DocFolder[]>(() =>
+    peekAuthJson<{ tree?: DocFolder[] }>(DOCUMENTS_TREE_URL)?.tree ?? [],
+  );
   const [folderId, setFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<DocFolder[]>([]);
   const [folders, setFolders] = useState<DocFolder[]>([]);
   const [files, setFiles] = useState<DocFile[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !peekAuthJson(DOCUMENTS_TREE_URL));
   const [error, setError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const loadTree = useCallback(async () => {
-    const res = await fetch('/api/documents/tree', authFetchInit());
-    if (!res.ok) throw new Error('Could not load folder tree');
-    const data = await res.json();
+    const url = DOCUMENTS_TREE_URL;
+    const data = await fetchAuthJsonCached<{ tree?: DocFolder[] }>(url)
+      ?? peekAuthJson<{ tree?: DocFolder[] }>(url);
+    if (!data) throw new Error('Could not load folder tree');
     const nextTree = (data.tree || []) as DocFolder[];
     setTree(nextTree);
     setExpanded(prev => {
@@ -158,9 +163,14 @@ export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean 
 
   const loadFolder = useCallback(async (id: string | null) => {
     const qs = id ? `?folderId=${encodeURIComponent(id)}` : '';
-    const res = await fetch(`/api/documents${qs}`, authFetchInit());
-    if (!res.ok) throw new Error('Could not open folder');
-    const data = await res.json();
+    const url = `/api/documents${qs}`;
+    const data = await fetchAuthJsonCached<{
+      folder?: DocFolder;
+      breadcrumbs?: DocFolder[];
+      folders?: DocFolder[];
+      files?: DocFile[];
+    }>(url) ?? peekAuthJson(url);
+    if (!data) throw new Error('Could not open folder');
     setFolderId(data.folder?.id || null);
     setBreadcrumbs(data.breadcrumbs || []);
     setFolders(data.folders || []);
@@ -175,7 +185,8 @@ export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean 
   }, []);
 
   const refresh = useCallback(async (preferFolderId?: string | null) => {
-    setLoading(true);
+    const hasTree = !!peekAuthJson(DOCUMENTS_TREE_URL);
+    if (!hasTree) setLoading(true);
     setError(null);
     try {
       const nextTree = await loadTree();

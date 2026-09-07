@@ -3,9 +3,11 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import * as dotenv from 'dotenv'
-import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers } from './scripts/mix-test.js'
-import { getAcknowledged, addAcknowledged, clearAcknowledged, getFuelHistory } from './scripts/db.js'
+import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers, getEventTrends } from './scripts/mix-test.js'
+import { getAcknowledged, addAcknowledged, clearAcknowledged } from './scripts/db.js'
 import { handleEventsLogQuery } from './scripts/events-log-api.js'
+import { getFuelHistoryResponse } from './scripts/fuel-history-api.js'
+import { getFleetDataResponse } from './scripts/fleet-data-api.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
@@ -103,9 +105,8 @@ app.post('/api/reset', (req, res) => {
 app.get('/api/data', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    const data = fs.readFileSync(path.join(process.cwd(), 'public', 'data.json'), 'utf8')
     res.setHeader('Content-Type', 'application/json')
-    res.end(data)
+    res.end(getFleetDataResponse({ view: req.query.view?.toString() || null }))
   } catch {
     res.status(404).end('Not Found')
   }
@@ -198,12 +199,15 @@ app.get('/api/driver-distance', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   const tripsParam = req.query.trips?.toString()
   const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
+  const summaryParam = req.query.summary?.toString()
+  const summaryOnly = summaryParam === '1' || summaryParam === 'true' || summaryParam === 'totals'
   const summary = getDriverDistanceSummary({
     range: req.query.range?.toString() || '24h',
     month: req.query.month?.toString() || null,
     from: req.query.from?.toString() || null,
     to: req.query.to?.toString() || null,
     includeTrips,
+    summaryOnly,
   })
   const includeJourneys = req.query.includeJourneys === '1' || req.query.includeJourneys === 'true'
   const slim = includeJourneys
@@ -256,6 +260,25 @@ app.get('/api/safety/summary', (req, res) => {
   }
 })
 
+app.get('/api/events/trends', (req, res) => {
+  if (!isAuthorized(req)) return unauthorized(res)
+  try {
+    const types = req.query.types
+      ? String(req.query.types).split(',').map(t => t.trim()).filter(Boolean)
+      : null
+    res.json(getEventTrends({
+      from: req.query.from?.toString() || null,
+      to: req.query.to?.toString() || null,
+      assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || null,
+      types,
+    }))
+  } catch (err) {
+    console.error('events trends failed', err)
+    res.status(500).json({ error: 'Failed to compute event trends' })
+  }
+})
+
 app.get('/api/risk/drivers', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
@@ -265,6 +288,7 @@ app.get('/api/risk/drivers', (req, res) => {
       to: req.query.to?.toString() || null,
       assetIds: req.query.assetIds?.toString() || null,
       siteScope: req.query.siteScope?.toString() || null,
+      groupBy: req.query.groupBy?.toString() || 'driver',
     }))
   } catch (err) {
     console.error('risk drivers failed', err)
@@ -285,66 +309,13 @@ app.get('/api/driver-distance/journeys/:assetId', (req, res) => {
 app.get('/api/fuel/history', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    const period = req.query.period || 'day'
-    const fromQ = req.query.from
-    const toQ = req.query.to
-    const now = Date.now()
-
-    let cutoffStart
-    let cutoffEnd = now
-    if (fromQ && toQ) {
-      cutoffStart = new Date(fromQ).getTime()
-      const toDate = new Date(toQ)
-      toDate.setHours(23, 59, 59, 999)
-      cutoffEnd = toDate.getTime()
-      if (Number.isNaN(cutoffStart) || Number.isNaN(cutoffEnd)) {
-        return res.status(400).json({ error: 'Invalid from/to dates' })
-      }
-    } else {
-      const cutoffs = { day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000, month: 30 * 24 * 60 * 60 * 1000 }
-      cutoffStart = now - (cutoffs[period] || cutoffs.day)
-    }
-
-    // All probe rows (5min / 1min / trip start-end). Restricting to 5min
-    // dropped assets that still have live fuel and a drawable series.
-    const entries = getFuelHistory({
-      fromIso: new Date(cutoffStart).toISOString(),
-      toIso: new Date(cutoffEnd).toISOString(),
-    })
-
-    // Build per-vehicle series, filtered to period
-    const seriesMap = new Map()
-    entries.forEach(entry => {
-      if (!seriesMap.has(entry.assetId)) seriesMap.set(entry.assetId, [])
-      seriesMap.get(entry.assetId).push({ time: entry.timestamp, level: entry.level })
-    })
-
-    // Enrich with regNo from data.json
-    const vehicleLookup = new Map()
-    try {
-      const dataPath = path.join(process.cwd(), 'public', 'data.json')
-      if (fs.existsSync(dataPath)) {
-        JSON.parse(fs.readFileSync(dataPath, 'utf8')).forEach(v => {
-          vehicleLookup.set(v.id?.toString(), { regNo: v.regNo, assetName: v.assetName, zone: v.zone })
-        })
-      }
-    } catch { }
-
-    const result = []
-    seriesMap.forEach((data, assetId) => {
-      data.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
-      const info = vehicleLookup.get(assetId) || {}
-      result.push({
-        assetId,
-        regNo: (info.regNo || assetId).toString().trim(),
-        assetName: info.assetName || '',
-        zone: info.zone || '',
-        data,
-      })
-    })
-
-    res.json(result)
-  } catch {
+    res.json(getFuelHistoryResponse({
+      period: req.query.period?.toString() || 'day',
+      from: req.query.from?.toString() || null,
+      to: req.query.to?.toString() || null,
+    }))
+  } catch (err) {
+    if (err?.statusCode === 400) return res.status(400).json({ error: err.message })
     res.status(500).end('Internal Server Error')
   }
 })
@@ -360,7 +331,17 @@ app.get('/api/fuel/consumption', (req, res) => {
     const tripsParam = req.query.trips?.toString()
     const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
     const data = computeConsumption({ period, from, to, siteFilter: site, includeTrips })
-    res.json(data)
+    const summaryParam = req.query.summary?.toString()
+    const summaryOnly = summaryParam === '1' || summaryParam === 'true'
+    res.json(summaryOnly ? {
+      period: data.period,
+      summary: data.summary,
+      dailySeries: data.dailySeries,
+      assets: [],
+      trips: [],
+      refuels: [],
+      siteTotals: [],
+    } : data)
   } catch {
     res.status(500).end('Internal Server Error')
   }
@@ -376,7 +357,15 @@ app.get('/api/kpi', (req, res) => {
       to: req.query.to,
       scope: req.query.scope || 'quarry',
     })
-    res.json(data)
+    const summaryParam = req.query.summary?.toString()
+    const summaryOnly = summaryParam === '1' || summaryParam === 'true'
+    res.json(summaryOnly ? {
+      generatedAt: data.generatedAt,
+      period: data.period,
+      windowHours: data.windowHours,
+      scope: data.scope,
+      summary: data.summary,
+    } : data)
   } catch {
     res.status(500).end('Internal Server Error')
   }

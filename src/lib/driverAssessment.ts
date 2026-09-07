@@ -215,7 +215,7 @@ export function latestEventIso(d: AssessedDriver): string | null {
   return ms > 0 ? new Date(ms).toISOString() : null;
 }
 
-export type DriverPeriod = 'today' | '7days' | '30days' | 'alltime' | 'custom';
+export type DriverPeriod = 'today' | '7days' | '30days' | 'custom';
 
 export function defaultDriverCustomRange() {
   const to = new Date();
@@ -228,7 +228,6 @@ export function driverPeriodBounds(
   period: DriverPeriod,
   custom?: { from: string; to: string },
 ): { fromMs: number; toMs: number } | null {
-  if (period === 'alltime') return null;
   if (period === 'custom' && custom?.from && custom?.to) {
     const iso = customRangeToIsoBounds(custom.from, custom.to);
     if (!iso) return null;
@@ -256,8 +255,7 @@ export function eventsInDriverPeriod(
 export function periodDistanceSpec(
   period: DriverPeriod,
   custom?: { from: string; to: string },
-): { kind: 'assessment' } | { kind: 'url'; url: string } {
-  if (period === 'alltime') return { kind: 'assessment' };
+): { kind: 'url'; url: string } {
   if (period === 'custom' && custom?.from && custom?.to) {
     return {
       kind: 'url',
@@ -302,9 +300,23 @@ export function periodCardStats(
   periodTrips: Map<string, { km: number; drivingTimeSeconds: number; journeyCount: number }>,
 ) {
   const windowed = eventsInDriverPeriod(driver.events, period, custom);
-  const counts = countPenaltyEvents(windowed);
   const trip = periodTrips.get(driver.key)
     || periodTrips.get((driver.name || '').trim());
+  // Risk-API scored drivers keep counts on the profile; event rows load on expand.
+  if (windowed.length === 0 && (driver.total > 0 || driver.consequence.counts.eventCount > 0)) {
+    return {
+      events: [] as LogEntry[],
+      eventCount: driver.consequence.counts.eventCount || driver.total,
+      harshBraking: driver.harshBraking,
+      harshAccel: driver.harshAccel,
+      overspeeding: driver.overspeeding,
+      cornering: driver.cornering,
+      km: trip?.km ?? driver.distanceKm,
+      drivingTimeSeconds: trip?.drivingTimeSeconds ?? driver.drivingTimeSeconds,
+      journeyCount: trip?.journeyCount ?? driver.journeyCount,
+    };
+  }
+  const counts = countPenaltyEvents(windowed);
   return {
     events: windowed,
     eventCount: counts.eventCount,
@@ -316,4 +328,128 @@ export function periodCardStats(
     drivingTimeSeconds: trip?.drivingTimeSeconds ?? 0,
     journeyCount: trip?.journeyCount ?? 0,
   };
+}
+
+/** Build assessment list from SQL risk rollups + trip km (no boot event dump). */
+export function assessDriversFromRisk(
+  riskRows: Array<{
+    id?: string;
+    driverId?: string | null;
+    driverName?: string;
+    assetId?: string | null;
+    harshBraking?: number;
+    harshAcceleration?: number;
+    overspeeding?: number;
+    overspeedTiered?: number;
+    harshCornering?: number;
+    total?: number;
+  }>,
+  tripDrivers: TripDriver[],
+): AssessedDriver[] {
+  const distanceByKey = new Map<string, number>();
+  const drivingByKey = new Map<string, number>();
+  const journeysByKey = new Map<string, number>();
+  const tripMeta = new Map<string, TripDriver>();
+
+  tripDrivers.forEach(t => {
+    if (!isActiveDriver(t.driverName, t.driverId)) return;
+    const key = assessmentDriverKey(t.driverId, t.driverName);
+    if (!key) return;
+    distanceByKey.set(key, (distanceByKey.get(key) || 0) + (t.totalDistanceKm || 0));
+    drivingByKey.set(key, (drivingByKey.get(key) || 0) + (t.totalDrivingTimeSeconds || 0));
+    journeysByKey.set(key, (journeysByKey.get(key) || 0) + (t.journeyCount || 0));
+    tripMeta.set(key, t);
+    const nameKey = (t.driverName || '').trim();
+    if (nameKey && nameKey !== key) {
+      distanceByKey.set(nameKey, (distanceByKey.get(nameKey) || 0) + (t.totalDistanceKm || 0));
+      drivingByKey.set(nameKey, (drivingByKey.get(nameKey) || 0) + (t.totalDrivingTimeSeconds || 0));
+      journeysByKey.set(nameKey, (journeysByKey.get(nameKey) || 0) + (t.journeyCount || 0));
+    }
+  });
+
+  const map = new Map<string, AssessedDriver>();
+
+  for (const row of riskRows) {
+    const name = row.driverName || 'N/A';
+    if (!isActiveDriver(name, row.driverId)) continue;
+    const key = assessmentDriverKey(row.driverId, name);
+    if (!key) continue;
+    const overspeeding = (row.overspeeding || 0) + (row.overspeedTiered || 0);
+    const counts = {
+      harshBraking: row.harshBraking || 0,
+      harshAccel: row.harshAcceleration || 0,
+      overspeeding,
+      cornering: row.harshCornering || 0,
+    };
+    let distanceKm = distanceByKey.get(key) || 0;
+    if (!(distanceKm > 0)) {
+      const nameKey = name.trim();
+      if (nameKey) distanceKm = distanceByKey.get(nameKey) || 0;
+    }
+    const trip = tripMeta.get(key);
+    const consequence = buildDriverConsequenceCard({ counts, distanceKm });
+    map.set(key, {
+      key,
+      name,
+      phone: trip?.driverPhone || 'N/A',
+      assetName: '—',
+      regNo: trip?.vehicles?.[0] || '—',
+      transporter: '—',
+      harshBraking: consequence.counts.harshBraking,
+      harshAccel: consequence.counts.harshAccel,
+      overspeeding: consequence.counts.overspeeding,
+      cornering: consequence.counts.cornering,
+      total: consequence.counts.eventCount,
+      distanceKm,
+      drivingTimeSeconds: drivingByKey.get(key) || 0,
+      journeyCount: journeysByKey.get(key) || 0,
+      consequence,
+      events: [],
+    });
+  }
+
+  // Include trip-only drivers (no scored events) so km/HOS still show.
+  for (const t of tripDrivers) {
+    if (!isActiveDriver(t.driverName, t.driverId)) continue;
+    const key = assessmentDriverKey(t.driverId, t.driverName);
+    if (!key || map.has(key)) continue;
+    const distanceKm = distanceByKey.get(key) || 0;
+    const consequence = buildDriverConsequenceCard({ counts: {}, distanceKm });
+    map.set(key, {
+      key,
+      name: t.driverName,
+      phone: t.driverPhone || 'N/A',
+      assetName: '—',
+      regNo: t.vehicles?.[0] || '—',
+      transporter: '—',
+      harshBraking: 0,
+      harshAccel: 0,
+      overspeeding: 0,
+      cornering: 0,
+      total: 0,
+      distanceKm,
+      drivingTimeSeconds: drivingByKey.get(key) || 0,
+      journeyCount: journeysByKey.get(key) || 0,
+      consequence,
+      events: [],
+    });
+  }
+
+  return Array.from(map.values())
+    .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore || a.consequence.driverScore - b.consequence.driverScore);
+}
+
+export function driverRiskUrl(period: DriverPeriod, custom?: { from: string; to: string }) {
+  if (period === 'custom' && custom?.from && custom?.to) {
+    const iso = customRangeToIsoBounds(custom.from, custom.to);
+    if (iso) {
+      return `/api/risk/drivers?from=${encodeURIComponent(iso.from)}&to=${encodeURIComponent(iso.to)}`;
+    }
+  }
+  if (period === 'today') {
+    const b = calendarPeriodBounds('today');
+    return `/api/risk/drivers?from=${encodeURIComponent(new Date(b.fromMs).toISOString())}&to=${encodeURIComponent(new Date(b.toMs).toISOString())}`;
+  }
+  if (period === '7days') return '/api/risk/drivers?range=7d';
+  return '/api/risk/drivers?range=30d';
 }

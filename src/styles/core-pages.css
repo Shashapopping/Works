@@ -1007,6 +1007,44 @@
   color: #0078D4;
 }
 
+/* Fleet header toggle — roomier, not stretched like Reports sidebar controls */
+.bpl-page-header-row .bpl-reports-view-toggle {
+  gap: 8px;
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+
+.bpl-page-header-row .bpl-reports-view-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 16px;
+  font-size: 12px;
+  border-radius: 8px;
+  gap: 6px;
+}
+
+.bpl-audit-toolbar .bpl-reports-view-toggle {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+
+.bpl-audit-view-toggle .bpl-reports-view-btn {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 6px;
+}
+
+.bpl-audit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
 .bpl-reports-filters-foot {
   margin-top: 16px;
   padding-top: 12px;
@@ -2917,7 +2955,309 @@
   font-variant-numeric: tabular-nums;
 }
 
+.bpl-expand-events {
+  border-top: 0.5px solid #fde68a;
+  background: var(--cd-surface);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.bpl-expand-events-empty {
+  padding: 12px 16px 12px 46px;
+  font-size: 12px;
+  color: var(--cd-text-muted);
+}
+
+.bpl-expand-events-row {
+  padding: 8px 12px 8px 46px;
+  border-bottom: 0.5px solid var(--cd-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.bpl-expand-events-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.bpl-expand-events-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bpl-expand-events-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #854F0B;
+}
+
+.bpl-expand-events-driver {
+  font-size: 10px;
+  color: var(--cd-text-muted);
+}
+
+.bpl-expand-events-loc {
+  font-size: 10px;
+  color: var(--cd-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bpl-expand-events-time {
+  font-size: 10px;
+  color: var(--cd-text-soft, var(--cd-text-muted));
+  flex-shrink: 0;
+}
+
+.dm-events .bpl-expand-events {
+  margin-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--cd-border) 70%, transparent);
+  max-height: 320px;
+}
+
+/* ── Assets page (Chevron-style) ── */
+.bpl-asset-page {
+  padding: 0 !important;
+}
+
+.bpl-asset-toolbar {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cd-border);
+  flex-shrink: 0;
+}
+
+.bpl-asset-toolbar-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.bpl-asset-pill {
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 400;
+  cursor: pointer;
+  border: 0.5px solid var(--cd-border);
+  background: var(--cd-surface-2);
+  color: var(--cd-text-muted);
+}
+
+.bpl-asset-pill.active {
+  font-weight: 500;
+  border-color: var(--cd-accent-2);
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.bpl-asset-pill--end {
+  margin-left: auto;
+}
+
+.bpl-asset-searchbar {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cd-border);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.bpl-asset-search {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+}
+
+.bpl-asset-search svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--cd-text-soft);
+  pointer-events: none;
+}
+
+.bpl-asset-search input {
+  width: 100%;
+  padding: 7px 12px 7px 32px;
+  border: 1px solid var(--cd-border);
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  background: var(--cd-surface-2);
+  color: var(--cd-text);
+}
+
+.bpl-asset-topn {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bpl-asset-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bpl-asset-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--cd-text-muted);
+  font-size: 13px;
+}
+
+.bpl-asset-card {
+  border-radius: 8px;
+  border: 0.5px solid var(--cd-border);
+  background: var(--cd-surface-2);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.bpl-asset-card.has-events {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.bpl-asset-card-head {
+  width: 100%;
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.bpl-asset-card-head:hover {
+  filter: brightness(0.99);
+}
+
+.bpl-asset-rank {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cd-text-muted);
+  min-width: 24px;
+  flex-shrink: 0;
+}
+
+.bpl-asset-card.has-events .bpl-asset-rank {
+  color: #854F0B;
+}
+
+.bpl-asset-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.bpl-asset-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cd-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bpl-asset-card.has-events .bpl-asset-title {
+  color: #854F0B;
+}
+
+.bpl-asset-name {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--cd-text-muted);
+  margin-left: 8px;
+}
+
+.bpl-asset-sub {
+  font-size: 11px;
+  color: var(--cd-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.bpl-asset-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 55%;
+}
+
+.bpl-asset-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 9999px;
+  background: #fef3c7;
+  color: #854F0B;
+  border: 0.5px solid #fde68a;
+  white-space: nowrap;
+}
+
+.bpl-asset-total {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cd-text-muted);
+  min-width: 28px;
+  text-align: right;
+}
+
+.bpl-asset-card.has-events .bpl-asset-total {
+  color: #854F0B;
+}
+
+.bpl-asset-chevron {
+  color: var(--cd-text-muted);
+  flex-shrink: 0;
+}
+
+.bpl-asset-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--cd-border);
+  font-size: 11px;
+  color: var(--cd-text-muted);
+  text-align: center;
+  flex-shrink: 0;
+}
+
 @media (max-width: 760px) {
+  .bpl-asset-card-head {
+    flex-wrap: wrap;
+  }
+
+  .bpl-asset-badges {
+    max-width: 100%;
+    justify-content: flex-start;
+    margin-left: 34px;
+  }
+
+  .bpl-asset-pill--end {
+    margin-left: 0;
+  }
+
   .dm-list-head {
     display: none;
   }

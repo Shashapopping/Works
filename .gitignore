@@ -55,9 +55,11 @@ public/vehicles.json
 public/sites.json
 public/trips.log
 public/trips-session.json
+public/address-cache.json
 fleet.db
 fleet.db-wal
 fleet.db-shm
+fleet.db.seed-export*
 
 # Archived report documents (SQLite metadata + files)
 data/documents/

@@ -20,13 +20,13 @@ export function useDriverDistancePeriod(
   const [loading, setLoading] = useState(() => !cachePeek<DriverDistanceSummary>(url));
 
   const fetchData = useCallback(async (silent = false) => {
+    // Peek-first: never wipe painted data while refetching.
     if (!silent) {
       const cached = cachePeek<DriverDistanceSummary>(url);
       if (cached) {
         setData(cached);
         setLoading(false);
       } else {
-        setData(null);
         setLoading(true);
       }
     }
@@ -54,7 +54,8 @@ export function useDriverDistancePeriod(
   return {
     data,
     assets,
-    loading,
+    /** True only when we have nothing to paint yet. */
+    loading: loading && !data,
     label,
     refetch: fetchData,
   };

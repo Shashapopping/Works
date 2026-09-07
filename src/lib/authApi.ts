@@ -1,3 +1,5 @@
+import { cachedFetchJson, cachePeek, CACHE_TTL } from './apiCache';
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -252,4 +254,24 @@ export function permissionForPath(pathname: string): string | null {
     if (pathname === prefix || pathname.startsWith(prefix + '/')) return perm;
   }
   return null;
+}
+
+export function peekAuthJson<T>(url: string): T | null {
+  return cachePeek<T>(url);
+}
+
+export async function fetchAuthJsonCached<T>(
+  url: string,
+  opts?: { force?: boolean },
+): Promise<T | null> {
+  return cachedFetchJson<T>(
+    url,
+    CACHE_TTL.admin,
+    async () => {
+      const res = await fetch(url, authFetchInit());
+      if (!res.ok) return null;
+      return parseJson(res) as T;
+    },
+    opts,
+  );
 }

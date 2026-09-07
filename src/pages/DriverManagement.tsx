@@ -1,11 +1,19 @@
 import { useState, useMemo, useEffect, useDeferredValue } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { Search, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
-import { useFleet } from '../context/FleetContext';
+import { useSearchParams } from 'react-router-dom';
+import { Search, ChevronDown, ChevronUp } from 'lucide-react';
+import { useFleet, authFetch, type LogEntry } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
 import MockNamesBadge from '../components/MockNamesBadge';
 import { type ConsequenceCategory } from '../lib/consequenceScore';
-import { assessDrivers, eventsInDriverPeriod, type AssessedDriver, type DriverPeriod, defaultDriverCustomRange, periodCardStats, tripStatsByDriverKey } from '../lib/driverAssessment';
+import {
+  assessDriversFromRisk,
+  driverRiskUrl,
+  type AssessedDriver,
+  type DriverPeriod,
+  defaultDriverCustomRange,
+  periodCardStats,
+  tripStatsByDriverKey,
+} from '../lib/driverAssessment';
 import { usePeriodTripDrivers } from '../hooks/useAssessmentTripDrivers';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -17,6 +25,11 @@ import { filterTripDriversByVehicles } from '../lib/siteScope';
 import InfoTip from '../components/InfoTip';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 import { fetchDriverWarnings, type DriverWarning } from '../lib/coachingWarningsApi';
+import PagePeriodBar from '../components/PagePeriodBar';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
+import { defaultPageCustomRange } from '../lib/pagePeriod';
+import { driverExpandEventsUrl, parseEventsLogPayload } from '../lib/riskExpandEvents';
+import ExpandedEventsList from '../components/risk/ExpandedEventsList';
 
 type DateRange = DriverPeriod;
 type DriverProfile = AssessedDriver;
@@ -109,17 +122,22 @@ function driverOfficialStatus(
   };
 }
 
-function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
+function driverEventsUrl(driver: DriverProfile, period: DateRange, custom: { from: string; to: string }) {
+  return driverExpandEventsUrl(driver.name, period, custom.from, custom.to);
+}
+
+function DriverCard({ driver, expanded, onToggle, stats, latestWarning, recentEvents, eventsLoading }: {
   driver: DriverProfile;
   expanded: boolean;
   onToggle: () => void;
   stats: ReturnType<typeof periodCardStats>;
   latestWarning: DriverWarning | null;
+  recentEvents: LogEntry[];
+  eventsLoading: boolean;
 }) {
   const { consequence } = driver;
   const color = consequence.categoryColor;
   const officialStatus = driverOfficialStatus(consequence.category, latestWarning);
-  const recentEvents = stats.events.slice(0, 10);
   const infractions = stats.eventCount;
   const distanceLabel = fmtDistanceKm(stats.km);
   const hosLabel = fmtHosHours(stats.drivingTimeSeconds, stats.journeyCount);
@@ -226,44 +244,14 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
             ))}
           </div>
 
-          {recentEvents.length > 0 && (
-            <div className="dm-events">
-              <div className="dm-events-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <span>Recent</span>
-                <Link
-                  to={`/incidents?q=${encodeURIComponent(driver.name)}&range=alltime`}
-                  onClick={e => e.stopPropagation()}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    color: 'var(--bpl-blue)',
-                    fontSize: 11,
-                    fontWeight: 700,
-                    textDecoration: 'none',
-                    textTransform: 'none',
-                  }}
-                  title={`View all incidents for ${displayDriverName(driver.name)}`}
-                >
-                  View all incidents
-                  <ExternalLink size={12} aria-hidden />
-                </Link>
-              </div>
-              {recentEvents.map((e, i) => {
-                const label = e.label || 'Unknown';
-                const c = label === 'Harsh Braking' ? '#CC0000' : undefined;
-                return (
-                  <div key={i} className="dm-event">
-                    <span className="dm-event-type" style={{ color: c }}>{label}</span>
-                    <span className="dm-event-loc">{e.address || '—'}</span>
-                    <span className="dm-event-time">
-                      {e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <div className="dm-events">
+            <div className="dm-events-label">Events in period</div>
+            <ExpandedEventsList
+              events={recentEvents}
+              loading={eventsLoading}
+              emptyMessage={infractions > 0 ? 'Loading detail…' : 'No events in this period.'}
+            />
+          </div>
         </div>
       )}
     </div>
@@ -273,13 +261,21 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning }: {
 export default function DriverManagement() {
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '');
-  const [dateRange, setDateRange] = useState<DateRange>('30days');
+  const [dateRange, setDateRange] = useState<DateRange>('7days');
   const [customRange, setCustomRange] = useState(defaultDriverCustomRange);
   const [expandedDrivers, setExpandedDrivers] = useState<Set<string>>(new Set());
   const { tripDrivers: periodTrips, loading: periodTripLoading } = usePeriodTripDrivers(dateRange, customRange);
-  const { events, eventsLoading, vehicles, selectedSites, siteOptions, siteNameOptions } = useFleet();
+  const { vehicles, selectedSites, siteOptions, siteNameOptions } = useFleet();
   const [driverWarnings, setDriverWarnings] = useState<Map<string, DriverWarning>>(new Map());
-  const seedBusy = eventsLoading || periodTripLoading;
+  const [expandEvents, setExpandEvents] = useState<Record<string, LogEntry[]>>({});
+  const [expandLoading, setExpandLoading] = useState<Record<string, boolean>>({});
+
+  const riskUrl = driverRiskUrl(dateRange, customRange);
+  const [riskRows, setRiskRows] = useState(() =>
+    cachePeek<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(riskUrl)?.drivers ?? [],
+  );
+  const [riskLoading, setRiskLoading] = useState(() => !cachePeek(riskUrl));
+  const seedBusy = riskLoading && riskRows.length === 0;
   const siteFiltered = selectedSites.length > 0;
 
   const scopeLabel = useMemo(() => {
@@ -292,10 +288,30 @@ export default function DriverManagement() {
     [periodTrips, siteFiltered, vehicles],
   );
 
-  const scoreEvents = useMemo(
-    () => eventsInDriverPeriod(events, dateRange, customRange),
-    [customRange, dateRange, events],
-  );
+  useEffect(() => {
+    let cancelled = false;
+    const url = driverRiskUrl(dateRange, customRange);
+    const cached = cachePeek<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(url);
+    if (cached?.drivers?.length) {
+      setRiskRows(cached.drivers);
+      setRiskLoading(false);
+    } else {
+      // Keep prior rows; seedBusy only skeletons when riskRows is empty.
+      setRiskLoading(true);
+    }
+    authCachedJson<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(url, authFetch, {
+      ttlMs: CACHE_TTL.riskDrivers,
+    })
+      .then(data => {
+        if (cancelled || !data?.drivers) return;
+        setRiskRows(data.drivers);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRiskLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [dateRange, customRange]);
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -304,9 +320,14 @@ export default function DriverManagement() {
     setExpandedDrivers(new Set([q]));
   }, []);
 
+  useEffect(() => {
+    setExpandEvents({});
+    setExpandLoading({});
+  }, [dateRange, customRange.from, customRange.to]);
+
   const drivers: DriverProfile[] = useMemo(
-    () => assessDrivers(scoreEvents, scopedPeriodTrips),
-    [scoreEvents, scopedPeriodTrips],
+    () => assessDriversFromRisk(riskRows, scopedPeriodTrips),
+    [riskRows, scopedPeriodTrips],
   );
   const periodTripMap = useMemo(() => tripStatsByDriverKey(scopedPeriodTrips), [scopedPeriodTrips]);
   const driverWarningKeys = useMemo(
@@ -335,6 +356,36 @@ export default function DriverManagement() {
     return () => { cancelled = true; };
   }, [driverWarningKeys]);
 
+  const loadExpandEvents = (driver: DriverProfile) => {
+    const url = driverEventsUrl(driver, dateRange, customRange);
+    if (expandEvents[driver.key] || expandLoading[driver.key]) return;
+    const cached = cachePeek<{ entries?: LogEntry[] } | LogEntry[]>(url);
+    if (cached) {
+      setExpandEvents(prev => ({ ...prev, [driver.key]: parseEventsLogPayload(cached) }));
+      return;
+    }
+    setExpandLoading(prev => ({ ...prev, [driver.key]: true }));
+    authCachedJson<{ entries?: LogEntry[] } | LogEntry[]>(url, authFetch, { ttlMs: CACHE_TTL.fleetEvents })
+      .then(data => {
+        setExpandEvents(prev => ({ ...prev, [driver.key]: parseEventsLogPayload(data) }));
+      })
+      .catch(() => {
+        setExpandEvents(prev => ({ ...prev, [driver.key]: [] }));
+      })
+      .finally(() => {
+        setExpandLoading(prev => ({ ...prev, [driver.key]: false }));
+      });
+  };
+
+  // Deep-link ?q= — load expand events once the matched driver is known
+  useEffect(() => {
+    const q = searchParams.get('q');
+    if (!q || drivers.length === 0) return;
+    const match = drivers.find(d => d.key === q || d.name === q);
+    if (match) loadExpandEvents(match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drivers.length > 0]);
+
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
   const visible = deferredSearch
@@ -343,11 +394,20 @@ export default function DriverManagement() {
 
   const pagination = useClientPagination(visible, 50, deferredSearch);
 
-  const toggle = (name: string) => setExpandedDrivers(prev => {
-    const n = new Set(prev);
-    n.has(name) ? n.delete(name) : n.add(name);
-    return n;
-  });
+  const toggle = (driver: DriverProfile) => {
+    setExpandedDrivers(prev => {
+      const n = new Set(prev);
+      const isOpen = n.has(driver.key) || n.has(driver.name);
+      if (isOpen) {
+        n.delete(driver.key);
+        n.delete(driver.name);
+      } else {
+        n.add(driver.key);
+        loadExpandEvents(driver);
+      }
+      return n;
+    });
+  };
 
   const redCount = drivers.filter(d => d.consequence.category === 'Red').length;
   const needsAction = drivers.filter(d => d.consequence.category !== 'Green').length;
@@ -422,36 +482,15 @@ export default function DriverManagement() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="dm-range">
-          {(['today', '7days', '30days', 'custom'] as DateRange[]).map(r => (
-            <button
-              key={r}
-              type="button"
-              className={dateRange === r ? 'is-on' : undefined}
-              onClick={() => setDateRange(r)}
-            >
-              {r === 'today' ? 'Today' : r === '7days' ? '7d' : r === '30days' ? '30d' : 'Custom'}
-            </button>
-          ))}
-        </div>
-        {dateRange === 'custom' && (
-          <div className="dm-custom-range">
-            <input
-              type="date"
-              value={customRange.from}
-              max={customRange.to}
-              onChange={e => setCustomRange(r => ({ ...r, from: e.target.value }))}
-            />
-            <span>to</span>
-            <input
-              type="date"
-              value={customRange.to}
-              min={customRange.from}
-              max={new Date().toISOString().slice(0, 10)}
-              onChange={e => setCustomRange(r => ({ ...r, to: e.target.value }))}
-            />
-          </div>
-        )}
+        <PagePeriodBar
+          value={dateRange}
+          onChange={setDateRange}
+          customFrom={customRange.from}
+          customTo={customRange.to}
+          onCustomFromChange={f => setCustomRange(r => ({ ...r, from: f }))}
+          onCustomToChange={t => setCustomRange(r => ({ ...r, to: t }))}
+          className="dm-period-bar"
+        />
         <span className="dm-toolbar-count">
           {seedBusy ? <SkelValue /> : `${visible.length} drivers`}
         </span>
@@ -476,9 +515,11 @@ export default function DriverManagement() {
               key={d.key}
               driver={d}
               expanded={expandedDrivers.has(d.name) || expandedDrivers.has(d.key)}
-              onToggle={() => toggle(d.name)}
+              onToggle={() => toggle(d)}
               stats={periodCardStats(d, dateRange, customRange, periodTripMap)}
               latestWarning={driverWarnings.get(d.key) ?? null}
+              recentEvents={expandEvents[d.key] ?? []}
+              eventsLoading={!!expandLoading[d.key]}
             />
           ))}
         </div>

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useDeferredValue, useRef, Fragment } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import { Search, ClipboardCheck, ChevronDown, ChevronRight, ExternalLink, AlertTriangle } from 'lucide-react';
 import { authFetch, useFleet } from '../context/FleetContext';
 import type { LogEntry } from '../context/FleetContext';
 import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
@@ -12,67 +12,129 @@ import {
   getOccurrenceCount,
   getResponseLogForDriver,
   type OccurrenceStore,
-  type ConsequenceCategory,
 } from '../lib/consequenceScore';
 import { brandLabel, eventLocationLabel } from '../lib/branding';
 import MockNamesBadge from '../components/MockNamesBadge';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useClientPagination } from '../hooks/useClientPagination';
 import { useTableSort } from '../hooks/useTableSort';
 import { filterOverspeedEvents, isOverspeedLabel } from '../lib/overspeedFilter';
-import { filterTripDriversByVehicles, summarizeEventsByLabel } from '../lib/siteScope';
+import { filterTripDriversByVehicles } from '../lib/siteScope';
 import { tripStatsByDriverKey } from '../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../hooks/useAssessmentTripDrivers';
 import { COACHING_SCORE_THRESHOLD } from '../config/interventionRules';
-import { scoredEventsInWindow } from '../lib/driverInterventions';
+import PagePeriodBar from '../components/PagePeriodBar';
+import TablePaginationBar from '../components/TablePaginationBar';
+import CustomDateTimeRange from '../components/CustomDateTimeRange';
+import IncidentTrendsPanel from '../components/incidents/IncidentTrendsPanel';
+import {
+  type PageDateRange,
+  defaultPageCustomRange,
+  ensureCustomRangeDefaults,
+  pagePeriodIsoBounds,
+} from '../lib/pagePeriod';
+import { startJitteredInterval } from '../lib/pollSchedule';
+import {
+  EVENT_FILTER_OPTIONS,
+  type EventFilterKey,
+  eventTypesQueryParam,
+  filterEventsByType,
+  isEventFilterKey,
+  sumOverspeedFamily,
+} from '../lib/eventFilters';
 
 type Tab = 'events' | 'by-driver' | 'patterns';
-type DateRange = 'today' | '7days' | '30days' | 'alltime';
-type EventFilter = 'All' | 'Harsh Braking' | 'Harsh Acceleration' | 'Overspeeding' | 'Overspeed Tiered' | 'Harsh Cornering';
-
-const HIDDEN_LABELS = ['Possible Power Tamper', 'Battery Disconnection', 'Battery Disconnected', 'Front Panel Tamper', 'Back Panel Tamper', 'No Blue Key'];
-const EVENT_FILTERS: EventFilter[] = ['All', 'Harsh Braking', 'Harsh Acceleration', 'Overspeeding', 'Overspeed Tiered', 'Harsh Cornering'];
+type DateRange = PageDateRange;
+type EventsView = 'events' | 'trends';
+type EventFilter = EventFilterKey;
 const RESPONSE_TRACKING_EVENT_COUNT = 8;
-const RESPONSE_TRACKING_WINDOW_DAYS = 7;
 
 const EVENT_COLORS: Record<string, string> = {
   'Harsh Braking': '#0d9488',
   'Harsh Acceleration': '#0078D4',
   'Overspeeding': '#9333ea',
   'Overspeed Tiered': '#a855f7',
+  'Road Speed Overspeeding': '#c026d3',
   'Harsh Cornering': '#d97706',
 };
 
 const EVENT_PAGE_SIZE = 100;
+const DRIVER_TABLE_PAGE_SIZE = 50;
 
 function getLabel(e: LogEntry) {
   return e.label || 'Unknown';
 }
 
-function isoIncidentRange(range: DateRange): { from: string; to: string } {
-  const now = new Date();
-  const to = now.toISOString();
-  if (range === 'today') {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    return { from: start.toISOString(), to };
-  }
-  if (range === '7days') return { from: new Date(now.getTime() - 7 * 86400000).toISOString(), to };
-  if (range === '30days') return { from: new Date(now.getTime() - 30 * 86400000).toISOString(), to };
-  return { from: '2020-01-01T00:00:00.000Z', to };
+/** Stable range tokens — avoids unique `to=now` cache misses on every revisit. */
+function incidentApiRange(range: DateRange): 'today' | '7d' | '30d' | 'all' | null {
+  if (range === 'today') return 'today';
+  if (range === '7days') return '7d';
+  if (range === '30days') return '30d';
+  if (range === 'alltime' || range === 'all') return '30d';
+  return null;
 }
 
-function getDateFilter(e: LogEntry, range: DateRange) {
-  const ts = new Date(e.eventTime || e.timestamp).getTime();
-  const now = Date.now();
-  if (range === 'today') {
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    return ts >= start.getTime();
-  }
-  if (range === '7days') return ts >= now - 7 * 24 * 60 * 60 * 1000;
-  if (range === '30days') return ts >= now - 30 * 24 * 60 * 60 * 1000;
-  return true;
+/** Bucket wall-clock for from/to URLs (events/log) so remounts hit the same cache key. */
+function bucketedNowIso(bucketMs = 5 * 60_000) {
+  const t = Math.ceil(Date.now() / bucketMs) * bucketMs;
+  return new Date(t).toISOString();
 }
+
+function isoIncidentRange(range: DateRange, customFrom = '', customTo = ''): { from: string; to: string } {
+  const b = pagePeriodIsoBounds(range, customFrom, customTo);
+  if (b.from && b.to) return { from: b.from, to: b.to };
+  return { from: '2020-01-01T00:00:00.000Z', to: bucketedNowIso() };
+}
+
+function incidentSummaryUrl(range: DateRange, customFrom = '', customTo = '') {
+  const token = incidentApiRange(range);
+  if (token && token !== 'all') return `/api/safety/summary?range=${token}`;
+  if (token === 'all') return '/api/safety/summary?range=30d'; // fallback wide window
+  const { from, to } = isoIncidentRange(range, customFrom, customTo);
+  return `/api/safety/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+}
+
+function incidentRiskDriversUrl(range: DateRange, customFrom = '', customTo = '') {
+  const token = incidentApiRange(range);
+  if (token && token !== 'all') return `/api/risk/drivers?range=${token}`;
+  const { from, to } = isoIncidentRange(range, customFrom, customTo);
+  return `/api/risk/drivers?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+}
+
+function incidentEventsPageUrl(range: DateRange, opts: {
+  page: number;
+  eventFilter: EventFilter;
+  search: string;
+  assetId?: string;
+}, customFrom = '', customTo = '') {
+  const { from, to } = isoIncidentRange(range, customFrom, customTo);
+  const params = new URLSearchParams();
+  params.set('from', from);
+  params.set('to', to);
+  params.set('format', 'page');
+  params.set('limit', String(EVENT_PAGE_SIZE));
+  params.set('offset', String(Math.max(0, opts.page) * EVENT_PAGE_SIZE));
+  const typesParam = eventTypesQueryParam(opts.eventFilter);
+  if (typesParam) params.set('types', typesParam);
+  const q = opts.search.trim();
+  if (q) params.set('q', q);
+  if (opts.assetId) params.set('assetId', opts.assetId);
+  return `/api/events/log?${params}`;
+}
+
+function incidentPatternsEventsUrl(range: DateRange, driverName: string, customFrom = '', customTo = '') {
+  const { from, to } = isoIncidentRange(range, customFrom, customTo);
+  const params = new URLSearchParams();
+  params.set('from', from);
+  params.set('to', to);
+  params.set('format', 'page');
+  params.set('limit', '10');
+  params.set('offset', '0');
+  params.set('driver', driverName);
+  return `/api/events/log?${params}`;
+}
+
 
 function formatTime(iso: string) {
   try {
@@ -86,29 +148,62 @@ function formatTime(iso: string) {
 
 function EventsTab({
   dateRange,
+  customFrom,
+  customTo,
+  onDateRangeChange,
+  onCustomFromChange,
+  onCustomToChange,
+  eventsView,
+  onEventsViewChange,
   highlightEventId,
   initialSearch,
-  events,
-  eventsLoading,
+  initialAssetId,
 }: {
   dateRange: DateRange;
+  customFrom: string;
+  customTo: string;
+  onDateRangeChange: (range: DateRange) => void;
+  onCustomFromChange: (value: string) => void;
+  onCustomToChange: (value: string) => void;
+  eventsView: EventsView;
+  onEventsViewChange: (view: EventsView) => void;
   highlightEventId: string | null;
   initialSearch: string;
-  events: LogEntry[];
-  eventsLoading: boolean;
+  initialAssetId: string | null;
 }) {
   const [searchParams] = useSearchParams();
   const filterParam = searchParams.get('filter');
   const initialFilter: EventFilter =
-    !highlightEventId && filterParam && (EVENT_FILTERS as string[]).includes(filterParam)
-      ? (filterParam as EventFilter)
+    !highlightEventId && filterParam && isEventFilterKey(filterParam)
+      ? filterParam
       : 'All';
   const [search, setSearch] = useState(initialSearch);
   const [eventFilter, setEventFilter] = useState<EventFilter>(initialFilter);
   const [page, setPage] = useState(0);
   const highlightRef = useRef<HTMLDivElement | null>(null);
-  const debouncedSearch = useDebouncedValue(search, 200);
+  const debouncedSearch = useDebouncedValue(search, 250);
   const deferredSearch = useDeferredValue(debouncedSearch);
+
+  const pageUrl = incidentEventsPageUrl(dateRange, {
+    page,
+    eventFilter,
+    search: deferredSearch,
+    assetId: initialAssetId || undefined,
+  }, customFrom, customTo);
+  const [visibleRows, setVisibleRows] = useState<LogEntry[]>(() => {
+    const cached = cachePeek<{ entries?: LogEntry[] } | LogEntry[]>(pageUrl);
+    if (!cached) return [];
+    const rows = Array.isArray(cached) ? cached : cached.entries ?? [];
+    return filterEventsByType(filterOverspeedEvents(rows), eventFilter);
+  });
+  const [censusTotal, setCensusTotal] = useState(() => {
+    const cached = cachePeek<{ total?: number; entries?: LogEntry[] }>(pageUrl);
+    if (cached && typeof cached === 'object' && !Array.isArray(cached) && typeof cached.total === 'number') {
+      return cached.total;
+    }
+    return visibleRows.length;
+  });
+  const [eventsLoading, setEventsLoading] = useState(() => !cachePeek(pageUrl));
 
   useEffect(() => {
     if (!highlightEventId) return;
@@ -119,39 +214,70 @@ function EventsTab({
 
   useEffect(() => {
     setPage(0);
-  }, [dateRange, eventFilter, deferredSearch]);
+  }, [dateRange, eventFilter, deferredSearch, customFrom, customTo, initialAssetId]);
 
   useEffect(() => {
     if (highlightEventId) return;
     setSearch(initialSearch);
     setPage(0);
-  }, [highlightEventId, initialSearch]);
+  }, [highlightEventId, initialSearch, initialAssetId]);
 
-  const filtered = useMemo(() => {
-    const q = deferredSearch.toLowerCase();
-    return events.filter(e => {
-      if (!getDateFilter(e, dateRange)) return false;
-      if (e.type === 'panic') return false;
-      const label = getLabel(e);
-      if (HIDDEN_LABELS.includes(label)) return false;
-      if (eventFilter !== 'All' && label !== eventFilter) return false;
-      if (highlightEventId && e.eventId === highlightEventId) return true;
-      if (q) {
-        return (
-          (e.driverName || '').toLowerCase().includes(q) ||
-          (e.regNo || '').toLowerCase().includes(q) ||
-          (e.assetName || '').toLowerCase().includes(q) ||
-          label.toLowerCase().includes(q)
-        );
+  useEffect(() => {
+    let cancelled = false;
+
+    const applyPayload = (data: { entries?: LogEntry[]; total?: number } | LogEntry[] | null) => {
+      if (!data) return;
+      const raw = Array.isArray(data) ? data : data.entries ?? [];
+      const rows = filterEventsByType(filterOverspeedEvents(raw), eventFilter);
+      setVisibleRows(rows);
+      setCensusTotal(
+        !Array.isArray(data) && typeof data.total === 'number' ? data.total : rows.length,
+      );
+    };
+
+    const load = async (silent: boolean) => {
+      const url = incidentEventsPageUrl(dateRange, {
+        page,
+        eventFilter,
+        search: deferredSearch,
+        assetId: initialAssetId || undefined,
+      }, customFrom, customTo);
+      const cached = cachePeek<{ entries?: LogEntry[]; total?: number } | LogEntry[]>(url);
+      if (cached != null) {
+        applyPayload(cached);
+        setEventsLoading(false);
+      } else if (!silent) {
+        setEventsLoading(true);
       }
-      return true;
+
+      try {
+        const data = await authCachedJson<{ entries?: LogEntry[]; total?: number } | LogEntry[]>(
+          url,
+          authFetch,
+          { ttlMs: CACHE_TTL.fleetEvents },
+        );
+        if (cancelled || data == null) return;
+        applyPayload(data);
+      } catch {
+        /* keep cached rows */
+      } finally {
+        if (!cancelled) setEventsLoading(false);
+      }
+    };
+
+    void load(false);
+    const stop = startJitteredInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void load(true);
     });
-  }, [dateRange, deferredSearch, eventFilter, events, highlightEventId]);
 
-  const censusTotal = filtered.length;
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, [dateRange, eventFilter, deferredSearch, page, customFrom, customTo, initialAssetId]);
+
   const pageCount = Math.max(1, Math.ceil(censusTotal / EVENT_PAGE_SIZE) || 1);
-  const visibleRows = filtered.slice(page * EVENT_PAGE_SIZE, page * EVENT_PAGE_SIZE + EVENT_PAGE_SIZE);
-
   const from = censusTotal === 0 ? 0 : page * EVENT_PAGE_SIZE + 1;
   const to = Math.min(censusTotal, (page + 1) * EVENT_PAGE_SIZE);
   const hasPrev = page > 0;
@@ -164,16 +290,52 @@ function EventsTab({
   useEffect(() => {
     if (!highlightEventId) return;
     highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [highlightEventId, filtered]);
+  }, [highlightEventId, visibleRows]);
 
   return (
     <div className="bpl-card" style={{ display: 'flex', flexDirection: 'column', minHeight: 520, padding: 0 }}>
+      <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--cd-border)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: dateRange === 'custom' ? 8 : 0 }}>
+          {(['today', '7days', '30days', 'custom'] as DateRange[]).map(r => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => {
+                if (r === 'custom') {
+                  ensureCustomRangeDefaults(customFrom, customTo, onCustomFromChange, onCustomToChange);
+                }
+                onDateRangeChange(r);
+              }}
+              style={{
+                padding: '4px 10px', borderRadius: 9999, fontSize: 11,
+                fontWeight: dateRange === r ? 500 : 400, cursor: 'pointer',
+                border: dateRange === r ? '0.5px solid var(--cd-accent-2, #5b8f8a)' : '0.5px solid var(--cd-border)',
+                background: dateRange === r ? '#eff6ff' : 'var(--cd-surface-2)',
+                color: dateRange === r ? '#2563eb' : 'var(--cd-text-muted)',
+              }}
+            >
+              {r === 'today' ? 'Today' : r === '7days' ? '7 days' : r === '30days' ? '30 days' : 'Custom'}
+            </button>
+          ))}
+        </div>
+        {dateRange === 'custom' && (
+          <CustomDateTimeRange
+            stacked
+            from={customFrom}
+            to={customTo}
+            onFromChange={onCustomFromChange}
+            onToChange={onCustomToChange}
+            style={{ marginTop: 8 }}
+          />
+        )}
+      </div>
+
       <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--cd-border)', flexShrink: 0 }}>
         <div style={{ position: 'relative' }}>
           <Search style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--cd-text-soft, var(--cd-text-muted))' }} />
           <input
             type="text"
-            placeholder="Search driver, vehicle, event..."
+            placeholder="Search reg no, asset name, or driver..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             style={{
@@ -186,28 +348,60 @@ function EventsTab({
       </div>
 
       <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--cd-border)', display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0 }}>
-        {EVENT_FILTERS.map(f => {
-          const active = eventFilter === f;
-          const color = f === 'All' ? 'var(--bpl-blue)' : (EVENT_COLORS[f] || 'var(--bpl-blue)');
+        {EVENT_FILTER_OPTIONS.map(f => {
+          const active = eventFilter === f.key;
           return (
             <button
-              key={f}
-              onClick={() => setEventFilter(f)}
+              key={f.key}
+              type="button"
+              onClick={() => setEventFilter(f.key)}
               style={{
                 padding: '4px 10px', borderRadius: 9999, fontSize: 11, fontWeight: 500, cursor: 'pointer',
-                border: active ? `0.5px solid ${color}55` : '0.5px solid var(--cd-border)',
-                background: active ? `${color}15` : 'var(--cd-surface-2)',
-                color: active ? color : 'var(--cd-text-muted)',
+                border: active ? '0.5px solid #fde68a' : '0.5px solid var(--cd-border)',
+                background: active ? '#fef3c7' : 'var(--cd-surface-2)',
+                color: active ? '#854F0B' : 'var(--cd-text-muted)',
               }}
             >
-              {f}
+              {f.key === 'Road Speed Overspeeding' ? 'Road Speed' : f.label}
             </button>
           );
         })}
       </div>
 
+      <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--cd-border)', display: 'flex', gap: 8, flexShrink: 0 }}>
+        {([
+          { id: 'events' as const, label: 'Events' },
+          { id: 'trends' as const, label: 'Trends' },
+        ]).map(v => (
+          <button
+            key={v.id}
+            type="button"
+            onClick={() => onEventsViewChange(v.id)}
+            style={{
+              padding: '6px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              border: eventsView === v.id ? 'none' : '1px solid var(--cd-border)',
+              background: eventsView === v.id ? '#0f172a' : 'var(--cd-surface-2)',
+              color: eventsView === v.id ? '#fff' : 'var(--cd-text-muted)',
+            }}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {eventsView === 'trends' ? (
+        <div style={{ flex: 1, padding: 12 }}>
+          <IncidentTrendsPanel
+            dateRange={dateRange}
+            customFrom={customFrom}
+            customTo={customTo}
+            activeFilter={eventFilter}
+          />
+        </div>
+      ) : (
+      <>
       <div className="bpl-incident-list" style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
-        {eventsLoading ? (
+        {eventsLoading && visibleRows.length === 0 ? (
           <div style={{ padding: 8 }}><SkelTable rows={8} /></div>
         ) : visibleRows.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--cd-text-muted)', fontSize: 13 }}>
@@ -288,46 +482,96 @@ function EventsTab({
           )}
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
 
-function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRange; events: LogEntry[]; eventsLoading: boolean }) {
-  const rows = useMemo(() => {
-    const byDriver = new Map<string, {
-    name: string;
-    harshBraking: number;
-    overspeeding: number;
-    harshAcceleration: number;
-    harshCornering: number;
-    total: number;
-    }>();
+type RiskDriverRow = {
+  driverId?: string | null;
+  driverName?: string;
+  harshBraking?: number;
+  overspeeding?: number;
+  overspeedTiered?: number;
+  harshAcceleration?: number;
+  harshCornering?: number;
+  total?: number;
+};
 
-    events.forEach(event => {
-      if (!getDateFilter(event, dateRange) || event.type === 'panic') return;
-      const label = getLabel(event);
-      if (HIDDEN_LABELS.includes(label) || !isKnownDriver(event.driverName)) return;
-      const key = event.driverId || event.driverName!;
-      const row = byDriver.get(key) || {
-        name: event.driverName || 'N/A',
-        harshBraking: 0,
-        overspeeding: 0,
-        harshAcceleration: 0,
-        harshCornering: 0,
-        total: 0,
-      };
-      if (label === 'Harsh Braking') row.harshBraking += 1;
-      if (label === 'Harsh Acceleration') row.harshAcceleration += 1;
-      if (label === 'Overspeeding' || label === 'Overspeed Tiered' || label === 'Road Speed Overspeeding') row.overspeeding += 1;
-      if (label === 'Harsh Cornering') row.harshCornering += 1;
-      row.total += 1;
-      byDriver.set(key, row);
-    });
+function ByDriverTab({ dateRange, customFrom, customTo }: { dateRange: DateRange; customFrom: string; customTo: string }) {
+  const url = incidentRiskDriversUrl(dateRange, customFrom, customTo);
+  const [rows, setRows] = useState(() => {
+    const cached = cachePeek<{ drivers?: RiskDriverRow[] }>(url);
+    return (cached?.drivers ?? [])
+      .map(d => ({
+        name: d.driverName || 'N/A',
+        harshBraking: d.harshBraking ?? 0,
+        overspeeding: (d.overspeeding ?? 0) + (d.overspeedTiered ?? 0),
+        harshAcceleration: d.harshAcceleration ?? 0,
+        harshCornering: d.harshCornering ?? 0,
+        total: d.total ?? 0,
+      }))
+      .filter(d => isKnownDriver(d.name))
+      .sort((a, b) => b.total - a.total);
+  });
+  const [eventsLoading, setEventsLoading] = useState(() => !cachePeek(url));
 
-    return Array.from(byDriver.values())
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 30);
-  }, [dateRange, events]);
+  useEffect(() => {
+    let cancelled = false;
+    const nextUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo);
+    const cached = cachePeek<{ drivers?: RiskDriverRow[] }>(nextUrl);
+    if (cached?.drivers) {
+      setRows(
+        cached.drivers
+          .map(d => ({
+            name: d.driverName || 'N/A',
+            harshBraking: d.harshBraking ?? 0,
+            overspeeding: (d.overspeeding ?? 0) + (d.overspeedTiered ?? 0),
+            harshAcceleration: d.harshAcceleration ?? 0,
+            harshCornering: d.harshCornering ?? 0,
+            total: d.total ?? 0,
+          }))
+          .filter(d => isKnownDriver(d.name))
+          .sort((a, b) => b.total - a.total),
+      );
+      setEventsLoading(false);
+    } else {
+      setEventsLoading(true);
+    }
+
+    authCachedJson<{ drivers?: RiskDriverRow[] }>(nextUrl, authFetch, {
+      ttlMs: CACHE_TTL.riskDrivers,
+    })
+      .then(data => {
+        if (cancelled || !data?.drivers) return;
+        setRows(
+          data.drivers
+            .map(d => ({
+              name: d.driverName || 'N/A',
+              harshBraking: d.harshBraking ?? 0,
+              overspeeding: (d.overspeeding ?? 0) + (d.overspeedTiered ?? 0),
+              harshAcceleration: d.harshAcceleration ?? 0,
+              harshCornering: d.harshCornering ?? 0,
+              total: d.total ?? 0,
+            }))
+            .filter(d => isKnownDriver(d.name))
+            .sort((a, b) => b.total - a.total),
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setEventsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [dateRange, customFrom, customTo]);
+
+  const pagination = useClientPagination(
+    rows,
+    DRIVER_TABLE_PAGE_SIZE,
+    `${dateRange}|${customFrom}|${customTo}`,
+  );
 
   return (
     <div className="bpl-card" style={{ overflow: 'hidden' }}>
@@ -345,7 +589,7 @@ function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRang
           </tr>
         </thead>
         <tbody>
-          {eventsLoading ? (
+          {eventsLoading && rows.length === 0 ? (
             <tr><td colSpan={8} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
           ) : rows.length === 0 ? (
             <tr>
@@ -353,12 +597,12 @@ function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRang
                 No driver event data available
               </td>
             </tr>
-          ) : rows.map((d, i) => {
+          ) : pagination.pageRows.map((d, i) => {
             const risk = d.total > 10 ? 'HIGH' : d.total > 5 ? 'MEDIUM' : 'LOW';
             const riskColor = risk === 'HIGH' ? '#CC0000' : risk === 'MEDIUM' ? '#d97706' : '#16a34a';
             return (
               <tr key={d.name}>
-                <td style={{ fontWeight: 700, color: 'var(--cd-text-muted)' }}>#{i + 1}</td>
+                <td style={{ fontWeight: 700, color: 'var(--cd-text-muted)' }}>#{pagination.from + i}</td>
                 <td style={{ fontWeight: 600 }}>{displayDriverName(d.name)}</td>
                 <td style={{ fontWeight: 600, color: d.harshBraking > 3 ? '#CC0000' : 'var(--cd-text)' }}>
                   {d.harshBraking}
@@ -380,6 +624,17 @@ function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRang
           })}
         </tbody>
       </table>
+      <TablePaginationBar
+        from={pagination.from}
+        to={pagination.to}
+        total={pagination.total}
+        page={pagination.page}
+        pageCount={pagination.pageCount}
+        hasPrev={pagination.hasPrev}
+        hasNext={pagination.hasNext}
+        prev={pagination.prev}
+        next={pagination.next}
+      />
     </div>
   );
 }
@@ -387,69 +642,148 @@ function ByDriverTab({ dateRange, events, eventsLoading }: { dateRange: DateRang
 type TrackingSortKey = 'driver' | 'vehicle' | 'score';
 
 function PatternsTab({
-  events,
-  eventsBusy,
+  dateRange,
+  customFrom,
+  customTo,
   vehicles,
   selectedSites,
 }: {
-  events: LogEntry[];
-  eventsBusy: boolean;
+  dateRange: DateRange;
+  customFrom: string;
+  customTo: string;
   vehicles: ReturnType<typeof useFleet>['vehicles'];
   selectedSites: string[];
 }) {
   // Distance baseline stays a fixed current+last month window regardless of the
   // selected tab range — tying it to the page's date filter (as a prior change
   // briefly did) shrinks the km denominator for narrow ranges and pushes far
-  // more drivers out of "Green", turning this from a curated list into
-  // something close to a copy of the Event Explorer feed.
+  // more drivers out of "Green".
   const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers();
-  const [occurrences, setOccurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
+  const [occurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expandEvents, setExpandEvents] = useState<Record<string, LogEntry[]>>({});
+  const [expandLoading, setExpandLoading] = useState<Record<string, boolean>>({});
   const navigateTo = useNavigate();
-  const busy = eventsBusy || tripLoading;
+
+  const periodRiskUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo);
+  const windowRiskUrl = incidentRiskDriversUrl('7days');
+  const [periodRisk, setPeriodRisk] = useState<RiskDriverRow[]>(() =>
+    cachePeek<{ drivers?: RiskDriverRow[] }>(periodRiskUrl)?.drivers ?? [],
+  );
+  const [windowRisk, setWindowRisk] = useState<RiskDriverRow[]>(() =>
+    cachePeek<{ drivers?: RiskDriverRow[] }>(windowRiskUrl)?.drivers ?? [],
+  );
+  const [riskLoading, setRiskLoading] = useState(() =>
+    !cachePeek(periodRiskUrl) || !cachePeek(windowRiskUrl),
+  );
+  // Keep showing cached rows on revisit — only skeleton when we have nothing to paint.
+  const busy = (riskLoading || tripLoading)
+    && periodRisk.length === 0
+    && tripDrivers.length === 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    const periodUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo);
+    const winUrl = incidentRiskDriversUrl('7days');
+    const periodCached = cachePeek<{ drivers?: RiskDriverRow[] }>(periodUrl);
+    const winCached = cachePeek<{ drivers?: RiskDriverRow[] }>(winUrl);
+    if (periodCached?.drivers) setPeriodRisk(periodCached.drivers);
+    if (winCached?.drivers) setWindowRisk(winCached.drivers);
+    // Only block the UI when neither request has cached payload yet.
+    const hasCache = !!(periodCached?.drivers && winCached?.drivers);
+    setRiskLoading(!hasCache);
+    setExpandEvents({});
+    setExpandLoading({});
+
+    Promise.all([
+      authCachedJson<{ drivers?: RiskDriverRow[] }>(periodUrl, authFetch, {
+        ttlMs: CACHE_TTL.riskDrivers,
+      }),
+      authCachedJson<{ drivers?: RiskDriverRow[] }>(winUrl, authFetch, {
+        ttlMs: CACHE_TTL.riskDrivers,
+      }),
+    ])
+      .then(([period, win]) => {
+        if (cancelled) return;
+        if (period?.drivers) setPeriodRisk(period.drivers);
+        if (win?.drivers) setWindowRisk(win.drivers);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRiskLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [dateRange, customFrom, customTo]);
 
   const scopedTripDrivers = useMemo(
     () => selectedSites.length ? filterTripDriversByVehicles(tripDrivers, vehicles) : tripDrivers,
     [selectedSites.length, tripDrivers, vehicles],
   );
 
-  const distanceByKey = useMemo(() => {
-    return tripStatsByDriverKey(scopedTripDrivers);
-  }, [scopedTripDrivers]);
+  const distanceByKey = useMemo(() => tripStatsByDriverKey(scopedTripDrivers), [scopedTripDrivers]);
+
+  const windowTotalsByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    windowRisk.forEach(row => {
+      const name = row.driverName || '';
+      if (!isActiveDriver(name, row.driverId)) return;
+      const key = (row.driverId && isActiveDriverId(row.driverId)) ? row.driverId : name;
+      map.set(key, row.total || 0);
+      if (name && name !== key) map.set(name, row.total || 0);
+    });
+    return map;
+  }, [windowRisk]);
 
   const trackingRows = useMemo(() => {
-    const byDriver = new Map<string, { key: string; name: string; events: LogEntry[] }>();
+    const byDriver = new Map<string, {
+      key: string;
+      name: string;
+      counts: { harshBraking: number; harshAccel: number; overspeeding: number; cornering: number };
+    }>();
 
-    events.forEach(e => {
-      if (e.type === 'panic') return;
-      const label = getLabel(e);
-      if (HIDDEN_LABELS.includes(label) || label === 'Unknown') return;
-      if (!isActiveDriver(e.driverName, e.driverId)) return;
-      const key = (e.driverId && isActiveDriverId(e.driverId)) ? e.driverId : e.driverName!;
-      if (!byDriver.has(key)) byDriver.set(key, { key, name: e.driverName!, events: [] });
-      byDriver.get(key)!.events.push(e);
+    periodRisk.forEach(row => {
+      const name = row.driverName || 'N/A';
+      if (!isActiveDriver(name, row.driverId)) return;
+      const key = (row.driverId && isActiveDriverId(row.driverId)) ? row.driverId : name;
+      byDriver.set(key, {
+        key,
+        name,
+        counts: {
+          harshBraking: row.harshBraking || 0,
+          harshAccel: row.harshAcceleration || 0,
+          overspeeding: (row.overspeeding || 0) + (row.overspeedTiered || 0),
+          cornering: row.harshCornering || 0,
+        },
+      });
     });
 
-    // Also include trip drivers with distance even if no events in range (won't show — Green filtered out)
     scopedTripDrivers.forEach(t => {
       const key = (t.driverId && isActiveDriverId(t.driverId)) ? t.driverId : t.driverName;
-      if (!byDriver.has(key)) byDriver.set(key, { key, name: t.driverName, events: [] });
+      if (!byDriver.has(key)) {
+        byDriver.set(key, {
+          key,
+          name: t.driverName,
+          counts: { harshBraking: 0, harshAccel: 0, overspeeding: 0, cornering: 0 },
+        });
+      }
     });
 
     return Array.from(byDriver.values())
       .map(row => {
         const trip = distanceByKey.get(row.key) || distanceByKey.get((row.name || '').trim());
         const distanceKm = trip?.km || 0;
-        const preliminary = buildDriverConsequenceCard({ events: row.events, distanceKm });
+        const preliminary = buildDriverConsequenceCard({ counts: row.counts, distanceKm });
         const occurrenceIndex = nextOccurrenceIndex(occurrences, row.key, preliminary.category);
         const consequence = buildDriverConsequenceCard({
-          events: row.events,
+          counts: row.counts,
           distanceKm,
           occurrenceIndex,
         });
         const loggedCount = getOccurrenceCount(occurrences, row.key, consequence.category);
-        const windowEventCount = scoredEventsInWindow(row.events, RESPONSE_TRACKING_WINDOW_DAYS);
+        const windowEventCount = windowTotalsByKey.get(row.key)
+          ?? windowTotalsByKey.get((row.name || '').trim())
+          ?? 0;
         return { ...row, distanceKm, consequence, loggedCount, windowEventCount };
       })
       .filter(r =>
@@ -457,7 +791,7 @@ function PatternsTab({
         r.windowEventCount > RESPONSE_TRACKING_EVENT_COUNT
       )
       .sort((a, b) => a.consequence.displayScore - b.consequence.displayScore);
-  }, [events, scopedTripDrivers, distanceByKey, occurrences]);
+  }, [periodRisk, scopedTripDrivers, distanceByKey, occurrences, windowTotalsByKey]);
 
   const responseSummary = useMemo(() => {
     return trackingRows.reduce((acc, row) => {
@@ -492,12 +826,46 @@ function PatternsTab({
     return row.consequence.displayScore;
   };
   const { sorted, toggle: toggleSort, ariaSort, indicator } = useTableSort(filteredRows, getSortValue);
+  const pagination = useClientPagination(
+    sorted,
+    DRIVER_TABLE_PAGE_SIZE,
+    `${dateRange}|${customFrom}|${customTo}|${search}`,
+  );
 
-  const toggleExpanded = (key: string) => setExpanded(prev => {
-    const n = new Set(prev);
-    n.has(key) ? n.delete(key) : n.add(key);
-    return n;
-  });
+  const loadExpandEvents = (row: { key: string; name: string }) => {
+    if (expandEvents[row.key] || expandLoading[row.key]) return;
+    const url = incidentPatternsEventsUrl(dateRange, row.name, customFrom, customTo);
+    const cached = cachePeek<{ entries?: LogEntry[] } | LogEntry[]>(url);
+    if (cached) {
+      const rows = Array.isArray(cached) ? cached : cached.entries ?? [];
+      setExpandEvents(prev => ({ ...prev, [row.key]: filterOverspeedEvents(rows).slice(0, 10) }));
+      return;
+    }
+    setExpandLoading(prev => ({ ...prev, [row.key]: true }));
+    authCachedJson<{ entries?: LogEntry[] } | LogEntry[]>(url, authFetch, { ttlMs: CACHE_TTL.fleetEvents })
+      .then(data => {
+        const rows = !data ? [] : Array.isArray(data) ? data : data.entries ?? [];
+        setExpandEvents(prev => ({ ...prev, [row.key]: filterOverspeedEvents(rows).slice(0, 10) }));
+      })
+      .catch(() => {
+        setExpandEvents(prev => ({ ...prev, [row.key]: [] }));
+      })
+      .finally(() => {
+        setExpandLoading(prev => ({ ...prev, [row.key]: false }));
+      });
+  };
+
+  const toggleExpanded = (row: { key: string; name: string }) => {
+    setExpanded(prev => {
+      const n = new Set(prev);
+      if (n.has(row.key)) n.delete(row.key);
+      else {
+        n.add(row.key);
+        loadExpandEvents(row);
+      }
+      return n;
+    });
+  };
 
   return (
     <div>
@@ -516,7 +884,7 @@ function PatternsTab({
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
           <ClipboardCheck size={16} color="#0078D4" />
           <Link
-            to="/consequence-management"
+            to="/settings/scoring#driver-discipline"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               fontSize: 14, fontWeight: 600, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)',
@@ -584,13 +952,15 @@ function PatternsTab({
                   No Amber, Yellow, or Red drivers in this date range
                 </td>
               </tr>
-            ) : sorted.map(row => {
+            ) : pagination.pageRows.map(row => {
               const { consequence } = row;
               const color = consequence.categoryColor;
               const open = expanded.has(row.key);
+              const recent = expandEvents[row.key] ?? [];
+              const recentBusy = !!expandLoading[row.key];
               return (
                 <Fragment key={row.key}>
-                  <tr onClick={() => toggleExpanded(row.key)} aria-expanded={open} style={{ cursor: 'pointer' }}>
+                  <tr onClick={() => toggleExpanded(row)} aria-expanded={open} style={{ cursor: 'pointer' }}>
                     <td style={{ color: 'var(--cd-text-muted)' }}>
                       {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </td>
@@ -650,6 +1020,27 @@ function PatternsTab({
                         </div>
 
                         <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--cd-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+                          Recent events
+                        </div>
+                        {recentBusy ? (
+                          <div style={{ marginBottom: 14 }}><SkelTable rows={3} /></div>
+                        ) : recent.length === 0 ? (
+                          <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', marginBottom: 14 }}>No recent events in this range.</div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 560, marginBottom: 14 }}>
+                            {recent.map((e, i) => (
+                              <div key={e.eventId || i} style={{ padding: '8px 10px', background: 'var(--cd-surface)', borderRadius: 8, border: '1px solid var(--cd-border)', display: 'flex', gap: 12, justifyContent: 'space-between' }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: EVENT_COLORS[getLabel(e)] || 'var(--cd-text)' }}>{getLabel(e)}</span>
+                                <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', flex: 1 }}>{e.address || '—'}</span>
+                                <span style={{ fontSize: 11, color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>
+                                  {e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--cd-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
                           Response history
                         </div>
                         {getResponseLogForDriver(row.key).length === 0 ? (
@@ -674,6 +1065,17 @@ function PatternsTab({
             })}
           </tbody>
         </table>
+        <TablePaginationBar
+          from={pagination.from}
+          to={pagination.to}
+          total={pagination.total}
+          page={pagination.page}
+          pageCount={pagination.pageCount}
+          hasPrev={pagination.hasPrev}
+          hasNext={pagination.hasNext}
+          prev={pagination.prev}
+          next={pagination.next}
+        />
       </div>
     </div>
   );
@@ -682,83 +1084,71 @@ function PatternsTab({
 export default function IncidentIntelligence({ tab }: { tab: Tab }) {
   const [searchParams] = useSearchParams();
   const highlightEventId = searchParams.get('event');
+  const assetIdParam = searchParams.get('assetId');
   const querySearch = searchParams.get('q') ?? '';
+  const viewParam = searchParams.get('view');
   const rangeParam = searchParams.get('range');
-  const initialDateRange: DateRange = rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime'
-    ? rangeParam
-    : '7days';
+  const initialDateRange: DateRange =
+    rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days'
+      ? rangeParam
+      : rangeParam === 'alltime'
+        ? '7days'
+        : '7days';
   const [dateRange, setDateRange] = useState<DateRange>(initialDateRange);
+  const [customRange, setCustomRange] = useState(defaultPageCustomRange);
+  const [eventsView, setEventsView] = useState<EventsView>(viewParam === 'trends' ? 'trends' : 'events');
   const { vehicles, selectedSites } = useFleet();
 
-  // Incident Intelligence needs a complete, accurate event set for the selected
-  // range (Total Events / Event Explorer / By Driver all depend on true counts),
-  // so it fetches its own range-scoped data instead of the boot-time feed in
-  // FleetContext, which is intentionally capped for fast first paint.
-  const [rangeEvents, setRangeEvents] = useState<LogEntry[]>([]);
-  const [rangeEventsLoading, setRangeEventsLoading] = useState(true);
+  const summaryUrl = incidentSummaryUrl(dateRange, customRange.from, customRange.to);
+  const [summaryExposure, setSummaryExposure] = useState(() =>
+    cachePeek<{ incidentTotal?: number; byLabel?: Record<string, number> }>(summaryUrl),
+  );
+  const [summaryLoading, setSummaryLoading] = useState(() => !cachePeek(summaryUrl));
 
   useEffect(() => {
     let cancelled = false;
-    const { from, to } = isoIncidentRange(dateRange);
-    const url = `/api/events/log?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-
-    const applyPayload = (payload: unknown) => {
-      const rows = Array.isArray(payload) ? payload : (payload as { entries?: LogEntry[] })?.entries ?? [];
-      setRangeEvents(filterOverspeedEvents(rows as LogEntry[]));
-    };
-
-    const cached = cachePeek<unknown>(url);
-    if (cached != null) {
-      applyPayload(cached);
-      setRangeEventsLoading(false);
+    const url = incidentSummaryUrl(dateRange, customRange.from, customRange.to);
+    const cached = cachePeek<{ incidentTotal?: number; byLabel?: Record<string, number> }>(url);
+    if (cached) {
+      setSummaryExposure(cached);
+      setSummaryLoading(false);
     } else {
-      setRangeEventsLoading(true);
+      setSummaryLoading(true);
     }
-
-    authCachedJson<unknown>(url, authFetch, { ttlMs: CACHE_TTL.fleetEvents })
+    authCachedJson<{ incidentTotal?: number; byLabel?: Record<string, number> }>(url, authFetch, {
+      ttlMs: CACHE_TTL.safetySummary,
+    })
       .then(data => {
-        if (cancelled || data == null) return;
-        applyPayload(data);
+        if (cancelled || !data) return;
+        setSummaryExposure(data);
       })
       .catch(() => {})
       .finally(() => {
-        if (!cancelled) setRangeEventsLoading(false);
+        if (!cancelled) setSummaryLoading(false);
       });
-
     return () => { cancelled = true; };
-  }, [dateRange]);
-
-  const events = rangeEvents;
-  const eventsLoading = rangeEventsLoading;
+  }, [dateRange, customRange.from, customRange.to]);
 
   useEffect(() => {
     if (rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime') {
-      setDateRange(rangeParam);
+      setDateRange(rangeParam === 'alltime' ? '7days' : rangeParam);
     }
   }, [rangeParam]);
 
   useEffect(() => {
-    if (!highlightEventId) return;
-    const hit = events.find(e => e.eventId === highlightEventId);
-    if (!hit) return;
-    if (!getDateFilter(hit, dateRange)) setDateRange('alltime');
-  }, [highlightEventId, events, dateRange]);
+    if (viewParam === 'trends') setEventsView('trends');
+  }, [viewParam]);
 
-  const patternEvents = useMemo(
-    () => events.filter(e => getDateFilter(e, dateRange)),
-    [events, dateRange],
-  );
+  useEffect(() => {
+    if (!highlightEventId || tab !== 'events') return;
+    setDateRange('7days');
+  }, [highlightEventId, tab]);
 
-  const summary = useMemo(
-    () => summarizeEventsByLabel(patternEvents.filter(e => !HIDDEN_LABELS.includes(getLabel(e)))),
-    [patternEvents],
-  );
-
-  const byLabel = summary.byLabel || {};
+  const byLabel = summaryExposure?.byLabel || {};
   const summaryKpis = [
-    { label: 'Total Events', value: summary.incidentTotal ?? 0, color: 'var(--cd-text)' },
+    { label: 'Total Events', value: summaryExposure?.incidentTotal ?? 0, color: 'var(--cd-text)' },
     { label: 'Harsh Braking', value: byLabel['Harsh Braking'] ?? 0, color: '#CC0000' },
-    { label: 'Overspeeding', value: (byLabel['Overspeeding'] ?? 0) + (byLabel['Overspeed Tiered'] ?? 0) + (byLabel['Road Speed Overspeeding'] ?? 0), color: '#9333ea' },
+    { label: 'Overspeeding', value: sumOverspeedFamily(byLabel), color: '#9333ea' },
     { label: 'Harsh Accel.', value: byLabel['Harsh Acceleration'] ?? 0, color: '#0078D4' },
   ];
 
@@ -770,50 +1160,80 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
 
   return (
     <div>
-      <div className="bpl-page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div className="bpl-page-header bpl-page-header-row">
         <div>
-          <h1 className="bpl-page-title">Incident Intelligence — {TAB_TITLES[tab]} <MockNamesBadge /></h1>
-          <p className="bpl-page-subtitle">Investigate and understand safety events across the fleet</p>
+          {tab === 'events' ? (
+            <>
+              <h1 className="bpl-page-title">
+                <AlertTriangle size={18} color="#c8102e" style={{ display: 'inline', marginRight: 8, verticalAlign: -3 }} />
+                Event Explorer <MockNamesBadge />
+              </h1>
+              <p className="bpl-page-subtitle">Fleet events and trend analysis</p>
+            </>
+          ) : (
+            <>
+              <h1 className="bpl-page-title">Incident Intelligence — {TAB_TITLES[tab]} <MockNamesBadge /></h1>
+              <p className="bpl-page-subtitle">Investigate and understand safety events across the fleet</p>
+            </>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['today', '7days', '30days', 'alltime'] as DateRange[]).map(r => (
-            <button
-              key={r}
-              onClick={() => setDateRange(r)}
-              style={{
-                padding: '6px 12px', borderRadius: 6, fontSize: 12,
-                border: '1px solid',
-                borderColor: dateRange === r ? 'var(--bpl-blue)' : 'var(--cd-border)',
-                background: dateRange === r ? 'var(--bpl-blue-soft)' : 'var(--cd-surface)',
-                color: dateRange === r ? 'var(--bpl-blue)' : 'var(--cd-text-muted)',
-                cursor: 'pointer',
-              }}
-            >
-              {r === 'today' ? 'Today' : r === '7days' ? '7 Days' : r === '30days' ? '30 Days' : 'All Time'}
-            </button>
-          ))}
-        </div>
+        {tab !== 'events' && (
+          <PagePeriodBar
+            value={dateRange}
+            onChange={next => {
+              setDateRange(next);
+              if (next === 'custom') {
+                ensureCustomRangeDefaults(
+                  customRange.from,
+                  customRange.to,
+                  f => setCustomRange(r => ({ ...r, from: f.slice(0, 10) })),
+                  t => setCustomRange(r => ({ ...r, to: t.slice(0, 10) })),
+                );
+              }
+            }}
+            customFrom={customRange.from}
+            customTo={customRange.to}
+            onCustomFromChange={f => setCustomRange(r => ({ ...r, from: f }))}
+            onCustomToChange={t => setCustomRange(r => ({ ...r, to: t }))}
+            stackedCustom
+          />
+        )}
       </div>
 
-      {tab !== 'patterns' && (
+      {tab !== 'patterns' && tab !== 'events' && (
         <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
           {summaryKpis.map(s => (
             <div key={s.label} className="bpl-kpi-card">
               <div className="bpl-kpi-label">{s.label}</div>
               <div className="bpl-kpi-value" style={{ color: s.color, fontSize: 28 }}>
-                {eventsLoading ? <SkelValue wide /> : s.value.toLocaleString()}
+                {summaryLoading && !summaryExposure ? <SkelValue wide /> : s.value.toLocaleString()}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {tab === 'events' && <EventsTab dateRange={dateRange} highlightEventId={highlightEventId} initialSearch={querySearch} events={events} eventsLoading={eventsLoading} />}
-      {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} events={events} eventsLoading={eventsLoading} />}
+      {tab === 'events' && (
+        <EventsTab
+          dateRange={dateRange}
+          customFrom={customRange.from}
+          customTo={customRange.to}
+          onDateRangeChange={setDateRange}
+          onCustomFromChange={f => setCustomRange(r => ({ ...r, from: f }))}
+          onCustomToChange={t => setCustomRange(r => ({ ...r, to: t }))}
+          eventsView={eventsView}
+          onEventsViewChange={setEventsView}
+          highlightEventId={highlightEventId}
+          initialSearch={querySearch}
+          initialAssetId={assetIdParam}
+        />
+      )}
+      {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} customFrom={customRange.from} customTo={customRange.to} />}
       {tab === 'patterns' && (
         <PatternsTab
-          events={patternEvents}
-          eventsBusy={eventsLoading}
+          dateRange={dateRange}
+          customFrom={customRange.from}
+          customTo={customRange.to}
           vehicles={vehicles}
           selectedSites={selectedSites}
         />

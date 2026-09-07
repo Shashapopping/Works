@@ -6,6 +6,7 @@ import { useClientPagination } from '../hooks/useClientPagination';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import PageControls from '../components/PageControls';
 import { brandLabel } from '../lib/branding';
+import { SkelTable } from '../components/data/DataBusy';
 
 const DEMO_SERVICE: Record<string, { lastService: string; intervalDays: number; tech?: string; inProgress?: boolean; progress?: number }> = {
   'AAB428XC': { lastService: '2025-12-10', intervalDays: 90 },
@@ -51,7 +52,7 @@ function opStatusColor(status: string) {
 type ServiceFilter = 'all' | 'overdue' | 'due-soon' | 'in-progress' | 'on-track' | 'no-record';
 
 export default function Maintenance() {
-  const { vehicles } = useFleet();
+  const { vehicles, vehiclesLoading } = useFleet();
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
@@ -171,7 +172,13 @@ export default function Maintenance() {
               </tr>
             </thead>
             <tbody>
-              {pagination.pageRows.map((v, i) => {
+              {vehiclesLoading && vehicles.length === 0 ? (
+                <tr>
+                  <td colSpan={8} style={{ padding: 12 }}>
+                    <SkelTable rows={8} />
+                  </td>
+                </tr>
+              ) : pagination.pageRows.map((v, i) => {
                 const svc = getServiceStatus(v.regNo);
                 const record = DEMO_SERVICE[v.regNo];
                 return (

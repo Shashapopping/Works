@@ -7,25 +7,30 @@ import {
   scoreBandLabel,
   ratePer100Km,
   totalSafetyPointsFromCensus,
+  SCORE_DROP_PER_IVMS_UNIT,
+  FLEET_SCORE_SCALE,
 } from '../../lib/fleetSafetyScore';
 import ConsequenceExplainerModal from '../ConsequenceExplainerModal';
 import { SkelValue } from '../data/DataBusy';
 
 export default function FleetSafetyScore() {
   const {
-    safetyScore, safetyDelta, eventsLoading,
+    safetyScore, safetyDelta,
     metadata, scoreConfig, safetyExposure, safetyExposureLoading,
   } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
 
   const color = scoreBandColor(safetyScore, scoreConfig);
   const label = scoreBandLabel(safetyScore, scoreConfig);
-  const busy = eventsLoading || safetyExposureLoading;
+  const busy = !safetyExposure && safetyExposureLoading;
 
   const distanceKm = safetyExposure?.distanceKm ?? 0;
   const points = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
-  const weightedRate = ratePer100Km(points.total, distanceKm);
-  const scoreImpact = Math.max(0, Math.round(weightedRate));
+  const weightedRate = ratePer100Km(points.ivms, distanceKm);
+  const scoreDeduction = Math.min(
+    FLEET_SCORE_SCALE,
+    Math.max(0, Math.round(SCORE_DROP_PER_IVMS_UNIT * weightedRate)),
+  );
 
   return (
     <>
@@ -57,7 +62,7 @@ export default function FleetSafetyScore() {
                 cx="30" cy="30" r="24" fill="none"
                 stroke={busy ? 'var(--cd-border)' : color} strokeWidth="5"
                 strokeDasharray={`${2 * Math.PI * 24}`}
-                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (busy ? 0 : safetyScore) / 100)}`}
+                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (busy ? 0 : safetyScore) / FLEET_SCORE_SCALE)}`}
                 strokeLinecap="round"
               />
             </svg>
@@ -65,7 +70,7 @@ export default function FleetSafetyScore() {
               <span className="bpl-safety-gauge-score" style={{ color: busy ? 'var(--cd-text-muted)' : color }}>
                 {busy ? <SkelValue /> : safetyScore}
               </span>
-              {!busy && <span className="bpl-safety-gauge-denom">/100</span>}
+              {!busy && <span className="bpl-safety-gauge-denom">/{FLEET_SCORE_SCALE}</span>}
             </div>
           </div>
           <div className="bpl-safety-score-home-meta">
@@ -88,9 +93,9 @@ export default function FleetSafetyScore() {
                 <SkelValue wide />
               ) : (
                 <>
-                  <span><strong>{weightedRate.toFixed(1)}</strong> harm pts / 100 km</span>
+                  <span><strong>{weightedRate.toFixed(1)}</strong> IVMS pts / 100 km</span>
                   <span className="bpl-safety-score-home-dot" />
-                  <span>{scoreImpact} pts off score</span>
+                  <span>−{scoreDeduction} from 100</span>
                   <span className="bpl-safety-score-home-dot" />
                   <span>{Math.round(distanceKm).toLocaleString()} km tracked</span>
                 </>

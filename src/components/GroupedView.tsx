@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, ChevronDown, ChevronUp, WifiOff, MapPin } from 'lucide-react';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { useFleet } from '../context/FleetContext';
 import { SkelValue, SkelTable } from './data/DataBusy';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace } from '../lib/placeAddress';
 
@@ -63,7 +63,7 @@ const STATUS: Record<StatusType, { color: string; bg: string; dot: string; label
   'Excessive Idle': { color: '#B06230', bg: 'rgba(176,98,48,0.12)',  dot: '#B06230', label: 'Exc. Idle' },
   'Stationary':     { color: '#4D7FA0', bg: 'rgba(77,127,160,0.12)', dot: '#4D7FA0', label: 'Stationary' },
   'Parked':         { color: '#7C3AED', bg: 'rgba(124,58,237,0.12)', dot: '#7C3AED', label: 'Parked' },
-  'Offline':        { color: '#6B7A8D', bg: 'rgba(107,122,141,0.1)', dot: '#6B7A8D', label: 'Offline' },
+  'Offline':        { color: '#6B7A8D', bg: 'rgba(107,122,141,0.1)', dot: '#6B7A8D', label: 'Inactive' },
   'Inactive':       { color: '#6878A0', bg: 'rgba(104,120,160,0.1)', dot: '#6878A0', label: 'Non-Operational' },
 };
 
@@ -304,10 +304,10 @@ function GroupSection({ groupName, siteGroups, startOpen }: GroupSectionProps) {
 }
 
 export default function GroupedView({ statusFilter, authFetch }: Props) {
-  const [vehicles, setVehicles] = useState<Vehicle[]>(() =>
-    cachePeek<Vehicle[]>(CACHE_KEYS.fleetData) ?? [],
-  );
-  const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.fleetData));
+  const { vehicles: sharedVehicles, vehiclesLoading } = useFleet();
+  void authFetch;
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const loading = vehiclesLoading && vehicles.length === 0;
   const [isStale, setIsStale] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedGroup, setSelectedGroup] = useState<string>('All');
@@ -336,44 +336,31 @@ export default function GroupedView({ statusFilter, authFetch }: Props) {
     warningTimers.current.set(id, t);
   };
 
-  const fetchData = async () => {
-    try {
-      const fresh = await cachedFetchJson<Vehicle[]>(
-        CACHE_KEYS.fleetData,
-        CACHE_TTL.fleetData,
-        async () => {
-          const res = await authFetch('/api/data');
-          if (!res.ok) return null;
-          return res.json();
-        },
-      );
-      if (!fresh) return;
-      lastSuccess.current = Date.now();
-      setIsStale(false);
-      setVehicles(prev => {
-        const prevMap = new Map(prev.map(v => [v.id, v]));
-        return fresh.map(v => {
-          const old = prevMap.get(v.id);
-          let mergedWarnings: Warning[] = [];
-          if (v.warnings?.length) {
-            v.warnings.forEach(w => {
-              if (!old?.warnings?.some(ow => ow.eventId === w.eventId)) scheduleWarningClear(v.id);
-            });
-            mergedWarnings = v.warnings;
-          } else if (old?.warnings?.length) {
-            mergedWarnings = old.warnings;
-          }
-          return { ...v, warnings: mergedWarnings };
-        });
+  useEffect(() => {
+    const fresh = sharedVehicles as unknown as Vehicle[];
+    if (!fresh.length) return;
+    lastSuccess.current = Date.now();
+    setIsStale(false);
+    setVehicles(prev => {
+      const prevMap = new Map(prev.map(v => [v.id, v]));
+      return fresh.map(v => {
+        const old = prevMap.get(v.id);
+        let mergedWarnings: Warning[] = [];
+        if (v.warnings?.length) {
+          v.warnings.forEach(w => {
+            if (!old?.warnings?.some(ow => ow.eventId === w.eventId)) scheduleWarningClear(v.id);
+          });
+          mergedWarnings = v.warnings;
+        } else if (old?.warnings?.length) {
+          mergedWarnings = old.warnings;
+        }
+        return { ...v, warnings: mergedWarnings };
       });
-      setLoading(false);
-    } catch { /* silent */ }
-  };
+    });
+  }, [sharedVehicles]);
 
   useEffect(() => {
-    fetchData();
     const iv = setInterval(() => {
-      fetchData();
       if (Date.now() - lastSuccess.current > STALE_MS) setIsStale(true);
     }, 10_000);
     return () => clearInterval(iv);

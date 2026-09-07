@@ -14,9 +14,7 @@ export default function FeatureGate({ featureId, children }: Props) {
 
   return (
     <div className="bpl-feature-locked">
-      <div className="bpl-feature-locked-content" aria-hidden="true">
-        {children}
-      </div>
+      <div className="bpl-feature-locked-content bpl-feature-locked-placeholder" aria-hidden="true" />
       <div className="bpl-feature-locked-overlay">
         <div className="bpl-feature-locked-card">
           <div className="bpl-feature-locked-icon">

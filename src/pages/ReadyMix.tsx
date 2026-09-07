@@ -15,6 +15,7 @@ import {
   STATUS_COLOR,
 } from '../lib/segmentMetrics';
 import { authFetch } from '../context/FleetContext';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../lib/apiCache';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
 
 const DISPATCH_META = {
@@ -295,8 +296,13 @@ export default function ReadyMix() {
   const [filter, setFilter] = useState<DispatchFilter>('all');
   const [allOpen, setAllOpen] = useState(true);
   const [density, setDensity] = useState<BoardDensity>('cards');
-  const [openTripAssetIds, setOpenTripAssetIds] = useState<Set<string>>(() => new Set());
-  const [tripsLoading, setTripsLoading] = useState(true);
+  const TRIPS_SESSION_URL = '/api/trips/session';
+  type SessionTrip = { AssetId?: string | null; assetId?: string | null; TripEnd?: string | null; tripEnd?: string | null };
+  const [openTripAssetIds, setOpenTripAssetIds] = useState<Set<string>>(() => {
+    const cached = cachePeek<SessionTrip[]>(TRIPS_SESSION_URL);
+    return Array.isArray(cached) ? openTripAssetIdsFromSession(cached) : new Set();
+  });
+  const [tripsLoading, setTripsLoading] = useState(() => !cachePeek(TRIPS_SESSION_URL));
 
   const fleet = useMemo(() => segmentVehicles(vehicles, 'readyMix'), [vehicles]);
   const tripAssets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
@@ -311,12 +317,18 @@ export default function ReadyMix() {
 
   useEffect(() => {
     let cancelled = false;
-    setTripsLoading(true);
+    const cached = cachePeek<SessionTrip[]>(TRIPS_SESSION_URL);
+    if (Array.isArray(cached)) {
+      setOpenTripAssetIds(openTripAssetIdsFromSession(cached));
+      setTripsLoading(false);
+    } else {
+      setTripsLoading(true);
+    }
     (async () => {
       try {
-        const res = await authFetch('/api/trips/session');
-        if (!res.ok) return;
-        const trips = await res.json();
+        const trips = await authCachedJson<SessionTrip[]>(TRIPS_SESSION_URL, authFetch, {
+          ttlMs: CACHE_TTL.pageRollup,
+        });
         if (!cancelled && Array.isArray(trips)) {
           setOpenTripAssetIds(openTripAssetIdsFromSession(trips));
         }

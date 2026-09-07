@@ -2,9 +2,9 @@ import { useMemo, useState, type ElementType } from 'react';
 import { Link } from 'react-router-dom';
 import { LayoutGrid, Map as MapIcon, Table } from 'lucide-react';
 import { useFleet, type StatusFilter } from '../../context/FleetContext';
-import MapView from '../MapView';
 import FleetGroupedCompact from './FleetGroupedCompact';
 import FleetCompactTable from './FleetCompactTable';
+import MapView from '../MapView';
 
 type ViewMode = 'table' | 'map' | 'grouped';
 

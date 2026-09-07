@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useDeferredValue } from 'react';
 import { Search, ChevronLeft, ChevronRight, WifiOff, AlertTriangle } from 'lucide-react';
-import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { cachedFetchJson, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { useFleet } from '../context/FleetContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { SkelValue, SkelTable } from './data/DataBusy';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace, vehiclePlaceAddress } from '../lib/placeAddress';
@@ -129,14 +130,12 @@ function displayPlaceLabel(anomaly: Anomaly): string {
 }
 
 export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch }: Props) {
-  const [anomalies, setAnomalies] = useState<Anomaly[]>(() => {
-    const cached = cachePeek<Anomaly[]>(CACHE_KEYS.fleetData);
-    return cached ?? [];
-  });
+  const { vehicles: sharedVehicles, vehiclesLoading } = useFleet();
+  const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const debouncedSearchTerm = useDebouncedValue(searchTerm, 200);
   const deferredSearchTerm = useDeferredValue(debouncedSearchTerm);
-  const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.fleetData));
+  const loading = vehiclesLoading && anomalies.length === 0;
   const [currentPage, setCurrentPage] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
@@ -183,36 +182,18 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
     warningTimers.current.set(assetId, timer);
   };
 
-  const loadData = async (active?: { current: boolean }, force = false) => {
-    try {
-      const data = await cachedFetchJson<Anomaly[]>(
-        CACHE_KEYS.fleetData,
-        CACHE_TTL.fleetData,
-        async () => {
-          const res = await authFetch('/api/data');
-          if (!res.ok) throw new Error('Failed to load data.json');
-          return res.json();
-        },
-        { force },
-      );
-      if (!data || (active && !active.current)) return;
+  const syncAnomalies = (data: Anomaly[]) => {
+    const filtered = data.map(v =>
+      acknowledgedIds.current.has(v.id) ? { ...v, panic: false } : v
+    );
 
-      const filtered = data.map(v =>
-        acknowledgedIds.current.has(v.id) ? { ...v, panic: false } : v
-      );
+    filtered.forEach(v => {
+      if (v.warnings && v.warnings.length > 0) {
+        scheduleWarningClear(v.id);
+      }
+    });
 
-      filtered.forEach(v => {
-        if (v.warnings && v.warnings.length > 0) {
-          scheduleWarningClear(v.id);
-        }
-      });
-
-      setAnomalies(filtered);
-      setLoading(false);
-    } catch (err) {
-      if (active && !active.current) return;
-      setLoading(false);
-    }
+    setAnomalies(filtered);
   };
 
   useEffect(() => {
@@ -241,14 +222,8 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
   }, []);
 
   useEffect(() => {
-    const active = { current: true };
-    loadData(active);
-    const interval = setInterval(() => loadData(active), 10_000);
-    return () => {
-      active.current = false;
-      clearInterval(interval);
-    };
-  }, []);
+    syncAnomalies(sharedVehicles as unknown as Anomaly[]);
+  }, [sharedVehicles]);
 
   useEffect(() => {
     return () => { warningTimers.current.forEach(t => clearTimeout(t)); };
@@ -309,7 +284,8 @@ export default function FleetAnomalies({ statusFilter, onFilterChange, authFetch
       const res = await authFetch('/api/refresh', { method: 'POST' });
       if (!res.ok) throw new Error('Refresh failed');
       await res.json();
-      await loadData(undefined, true);
+      const dataRes = await authFetch('/api/data');
+      if (dataRes.ok) syncAnomalies(await dataRes.json());
     } catch (err) {
       setRefreshError(err instanceof Error ? err.message : 'Refresh failed');
     } finally {

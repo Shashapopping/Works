@@ -1,4 +1,3 @@
-import XLSX from 'xlsx-js-style';
 import { displayDriverName } from './driverUtils';
 import { brandLabel } from './branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
@@ -137,7 +136,8 @@ function buildCsvBlob(columns: ReportColumn[], rows: string[][]) {
   return new Blob([csv], { type: 'text/csv;charset=utf-8;' });
 }
 
-function buildExcelBlob(report: TabularReport) {
+async function buildExcelBlob(report: TabularReport) {
+  const { default: XLSX } = await import('xlsx-js-style');
   const { columns, rows, title, meta } = report;
   const wb = XLSX.utils.book_new();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -240,7 +240,7 @@ export async function buildTabularReportBlob(
   }
   if (format === 'excel') {
     return {
-      blob: buildExcelBlob(report),
+      blob: await buildExcelBlob(report),
       filename: `${base}.xlsx`,
       mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     };

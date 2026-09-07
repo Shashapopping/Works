@@ -8,11 +8,12 @@ import {
 } from './dateRange';
 import type { PeriodMode } from './fuelConsumption';
 
-export type SegmentPeriod = 'today' | 'week' | 'custom';
+export type SegmentPeriod = 'today' | 'week' | 'month' | 'custom';
 
 export const SEGMENT_PERIOD_OPTIONS: { id: SegmentPeriod; label: string }[] = [
   { id: 'today', label: 'Today' },
-  { id: 'week', label: 'This week' },
+  { id: 'week', label: '7 Days' },
+  { id: 'month', label: '30 Days' },
   { id: 'custom', label: 'Custom' },
 ];
 
@@ -44,7 +45,7 @@ export function segmentPeriodBounds(
       };
     }
   }
-  const key = period === 'today' ? 'today' : 'week';
+  const key = period === 'today' ? 'today' : period === 'month' ? 'month' : 'week';
   const b = calendarPeriodBounds(key);
   return {
     ...b,
@@ -62,7 +63,9 @@ export function buildDriverDistanceUrl(
   }
   return period === 'today'
     ? '/api/driver-distance?range=today&trips=0'
-    : '/api/driver-distance?range=7d&trips=0';
+    : period === 'month'
+      ? '/api/driver-distance?range=30d&trips=0'
+      : '/api/driver-distance?range=7d&trips=0';
 }
 
 export function segmentPeriodToFuel(
@@ -79,6 +82,7 @@ export function segmentPeriodLabel(
 ) {
   if (period === 'today') return 'today';
   if (period === 'week') return 'this week';
+  if (period === 'month') return 'last 30 days';
   if (customRange?.from && customRange?.to) {
     const a = new Date(`${customRange.from}T00:00:00`);
     const b = new Date(`${customRange.to}T00:00:00`);

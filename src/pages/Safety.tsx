@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, Minus,
@@ -8,10 +8,8 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   RadarChart, PolarGrid, PolarAngleAxis, Radar,
-  LineChart, Line, Legend,
 } from 'recharts';
-import { useFleet } from '../context/FleetContext';
-import type { DriverDistanceSummary, LogEntry } from '../context/FleetContext';
+import { useFleet, authFetch } from '../context/FleetContext';
 import { isKnownDriver, displayDriverName } from '../lib/driverUtils';
 import { clientName } from '../lib/branding';
 import MockNamesBadge from '../components/MockNamesBadge';
@@ -21,120 +19,18 @@ import {
   scoreBandLabel,
   ratePer100Km,
   totalSafetyPointsFromCensus,
-  SCORE_DROP_PER_HARM_UNIT,
+  SCORE_DROP_PER_IVMS_UNIT,
+  FLEET_SCORE_SCALE,
   eventWeight,
   type FleetScoreConfig,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
 import { SkelValue } from '../components/data/DataBusy';
-
+import { authCachedJson, cachePeek, CACHE_TTL, peekSafetySummary } from '../lib/apiCache';
+import PagePeriodBar from '../components/PagePeriodBar';
+import { type PageDateRange, defaultPageCustomRange, pagePeriodIsoBounds } from '../lib/pagePeriod';
 const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, config);
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function startOfLocalDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-function shortDay(ms: number) {
-  return new Date(ms).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' });
-}
-
-// A "week" is the 7-day span ending `offsetWeeks` weeks ago (0 = the 7 days up to and including today).
-function weekWindow(offsetWeeks: number) {
-  const todayStart = startOfLocalDay(new Date());
-  const end = todayStart - offsetWeeks * 7 * DAY_MS + DAY_MS;
-  const start = end - 7 * DAY_MS;
-  return { start, end };
-}
-
-function weekOptionLabel(offsetWeeks: number) {
-  if (offsetWeeks === 0) return 'This week';
-  if (offsetWeeks === 1) return 'Last week';
-  const { start } = weekWindow(offsetWeeks);
-  return `Week of ${new Date(start).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`;
-}
-
-function weeklySafetyTrend(events: LogEntry[], scoreConfig: FleetScoreConfig, currentOffset: number, previousOffset: number) {
-  const currentWin = weekWindow(currentOffset);
-  const previousWin = weekWindow(previousOffset);
-
-  const rows = Array.from({ length: 7 }, (_, i) => ({
-    day: shortDay(currentWin.start + i * DAY_MS),
-    previousDay: shortDay(previousWin.start + i * DAY_MS),
-    currentIncidents: 0,
-    previousIncidents: 0,
-    currentPoints: 0,
-    previousPoints: 0,
-  }));
-
-  for (const event of events) {
-    if (event.type === 'panic') continue;
-    const label = (event.label || '').trim();
-    const weight = eventWeight(label, scoreConfig);
-    if (!label || weight <= 0) continue;
-    const ts = new Date(event.eventTime || event.timestamp).getTime();
-    if (!Number.isFinite(ts)) continue;
-
-    if (ts >= currentWin.start && ts < currentWin.end) {
-      const idx = Math.min(6, Math.floor((ts - currentWin.start) / DAY_MS));
-      rows[idx].currentIncidents += 1;
-      rows[idx].currentPoints += weight;
-    } else if (ts >= previousWin.start && ts < previousWin.end) {
-      const idx = Math.min(6, Math.floor((ts - previousWin.start) / DAY_MS));
-      rows[idx].previousIncidents += 1;
-      rows[idx].previousPoints += weight;
-    }
-  }
-
-  return {
-    rows,
-    currentIncidents: rows.reduce((sum, row) => sum + row.currentIncidents, 0),
-    previousIncidents: rows.reduce((sum, row) => sum + row.previousIncidents, 0),
-    currentPoints: rows.reduce((sum, row) => sum + row.currentPoints, 0),
-    previousPoints: rows.reduce((sum, row) => sum + row.previousPoints, 0),
-  };
-}
-
-function scopedSafetyExposureFromEvents(
-  events: LogEntry[],
-  driverDistance: DriverDistanceSummary | null,
-  scoreConfig: FleetScoreConfig,
-): FleetSafetyExposure {
-  const byLabel: Record<string, number> = {};
-  const assetKeys = new Set<string>();
-  const driverKeys = new Set<string>();
-  let panicCount = 0;
-
-  for (const event of events) {
-    if (event.type === 'panic') {
-      panicCount += 1;
-      continue;
-    }
-
-    const label = (event.label || '').trim();
-    if (!label || eventWeight(label, scoreConfig) <= 0) continue;
-
-    byLabel[label] = (byLabel[label] || 0) + 1;
-    if (event.assetId) assetKeys.add(String(event.assetId));
-    else if (event.regNo) assetKeys.add(event.regNo);
-    if (isKnownDriver(event.driverName)) driverKeys.add(event.driverId || event.driverName!);
-  }
-
-  const incidentTotal = Object.values(byLabel).reduce((sum, count) => sum + count, 0);
-  return {
-    distanceKm: driverDistance?.totalDistanceKm ?? 0,
-    hosHeldMinutes: 0,
-    incidentTotal,
-    scoringCount: incidentTotal,
-    byLabel,
-    panicCount,
-    assetCount: assetKeys.size,
-    driverCount: driverKeys.size,
-    start: driverDistance?.start,
-    end: driverDistance?.end,
-  };
-}
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
 function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplainer, config, busy }: {
@@ -147,12 +43,12 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
   const color = scoreColor(score, config);
   const label = scoreLabel(score, config);
   const sublabel = score >= config.bandGood
-    ? 'Close to zero harm per 100 km'
+    ? 'Low weighted IVMS rate per 100 km'
     : score >= config.bandAttention
-    ? 'Elevated harm per 100 km — coaching recommended'
+    ? 'Elevated IVMS rate per 100 km — coaching recommended'
     : score >= config.bandBelow
-    ? 'High harm per 100 km — priority driver and HOS review'
-    : 'Far from zero harm per 100 km — immediate intervention advised';
+    ? 'High IVMS rate per 100 km — priority review'
+    : 'Very high IVMS rate per 100 km — immediate intervention advised';
 
   const circumference = 2 * Math.PI * 48;
 
@@ -185,7 +81,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
               cx="56" cy="56" r="48" fill="none"
               stroke={busy ? 'var(--cd-border)' : color} strokeWidth="8"
               strokeDasharray={circumference}
-              strokeDashoffset={circumference * (1 - (busy ? 0 : score) / 100)}
+              strokeDashoffset={circumference * (1 - (busy ? 0 : score) / FLEET_SCORE_SCALE)}
               strokeLinecap="round"
               style={{ transition: 'stroke-dashoffset 0.8s ease' }}
             />
@@ -194,7 +90,7 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
             <span style={{ fontSize: 28, fontWeight: 700, color: busy ? 'var(--cd-text-muted)' : color, fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
               {busy ? <SkelValue /> : score}
             </span>
-            {!busy && <span style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/100</span>}
+            {!busy && <span style={{ fontSize: 10, color: 'var(--cd-text-muted)', fontWeight: 600 }}>/{FLEET_SCORE_SCALE}</span>}
           </div>
         </div>
 
@@ -220,9 +116,8 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
             {[
               { value: totalIncidents, label: 'incidents / 30d', title: undefined },
-              { value: weightedRate.toFixed(2), label: 'pts / 100 km', title: undefined },
-              { value: 'Soon', label: 'HOS slices', title: 'Coming soon' },
-              { value: SCORE_DROP_PER_HARM_UNIT, label: 'pts lost / unit', title: undefined },
+              { value: weightedRate.toFixed(2), label: 'IVMS pts / 100 km', title: undefined },
+              { value: SCORE_DROP_PER_IVMS_UNIT, label: '× multiplier', title: undefined },
             ].map(m => (
               <div key={m.label} title={m.title}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', lineHeight: 1 }}>
@@ -241,21 +136,20 @@ function ScoreGauge({ score, delta, totalIncidents, weightedRate, onOpenExplaine
           Fleet score weights
         </div>
         <div style={{
-          display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8,
+          display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8,
         }}>
           {[
             { label: 'Harsh Braking', weight: config.weights.harshBraking, color: '#e05c2a', title: undefined },
             { label: 'Overspeeding', weight: config.weights.overspeeding, color: '#d97706', title: undefined },
             { label: 'Harsh Accel.', weight: config.weights.harshAcceleration, color: '#f59e0b', title: undefined },
             { label: 'Cornering', weight: config.weights.harshCornering, color: '#8b5cf6', title: undefined },
-            { label: 'HOS', weight: 'Soon', color: '#0d9488', title: 'Coming soon' },
           ].map(w => (
             <div key={w.label} title={w.title} style={{
               background: `${w.color}12`, border: `1px solid ${w.color}30`,
               borderRadius: 6, padding: '6px 8px', textAlign: 'center',
             }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: w.color, fontFamily: 'var(--cd-font-display)' }}>
-                {w.label === 'HOS' ? w.weight : `+${w.weight}`}
+                +{w.weight}
               </div>
               <div style={{ fontSize: 9, color: 'var(--cd-text-muted)', marginTop: 2, lineHeight: 1.3 }}>{w.label}</div>
             </div>
@@ -317,41 +211,99 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
 }
 
 // ─── WorstPerformers ─────────────────────────────────────────────────────────
-function WorstPerformers({ events, loading }: { events: LogEntry[]; loading: boolean }) {
+function WorstPerformers() {
   const { scoreConfig } = useFleet();
-  const rows = useMemo<{
+  const url = '/api/risk/drivers?range=30d';
+  const [rows, setRows] = useState<{
     name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string;
   }[]>(() => {
-    const byDriver = new Map<string, { name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string }>();
-
-    for (const event of events) {
-      if (event.type === 'panic' || !isKnownDriver(event.driverName)) continue;
-      const label = (event.label || '').trim();
-      const weight = eventWeight(label, scoreConfig);
-      if (!label || weight <= 0) continue;
-
-      const key = event.driverId || event.driverName!;
-      const row = byDriver.get(key) || {
-        name: event.driverName!,
-        incidents: 0,
-        riskScore: 0,
-        types: {},
-        lastEvent: '',
-      };
-      row.incidents += 1;
-      row.riskScore += weight;
-      row.types[label] = (row.types[label] || 0) + 1;
-      const eventTime = event.eventTime || event.timestamp || '';
-      if (!row.lastEvent || new Date(eventTime).getTime() > new Date(row.lastEvent).getTime()) {
-        row.lastEvent = eventTime;
-      }
-      byDriver.set(key, row);
-    }
-
-    return Array.from(byDriver.values())
+    const cached = cachePeek<{ drivers?: Array<{
+      driverName?: string;
+      harshBraking?: number;
+      harshAcceleration?: number;
+      overspeeding?: number;
+      overspeedTiered?: number;
+      harshCornering?: number;
+      total?: number;
+    }> }>(url);
+    if (!cached?.drivers) return [];
+    return cached.drivers
+      .filter(d => isKnownDriver(d.driverName))
+      .map(d => {
+        const types: Record<string, number> = {};
+        if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
+        if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
+        if ((d.overspeeding || 0) + (d.overspeedTiered || 0)) {
+          types.Overspeeding = (d.overspeeding || 0) + (d.overspeedTiered || 0);
+        }
+        if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
+        let riskScore = 0;
+        for (const [label, count] of Object.entries(types)) {
+          riskScore += eventWeight(label, scoreConfig) * count;
+        }
+        return {
+          name: d.driverName || 'N/A',
+          incidents: d.total ?? 0,
+          riskScore,
+          types,
+          lastEvent: '',
+        };
+      })
       .sort((a, b) => b.riskScore - a.riskScore)
       .slice(0, 10);
-  }, [events, scoreConfig]);
+  });
+  const [loading, setLoading] = useState(() => !cachePeek(url));
+
+  useEffect(() => {
+    let cancelled = false;
+    if (cachePeek(url)) setLoading(false);
+    else setLoading(true);
+    authCachedJson<{
+      drivers?: Array<{
+        driverName?: string;
+        harshBraking?: number;
+        harshAcceleration?: number;
+        overspeeding?: number;
+        overspeedTiered?: number;
+        harshCornering?: number;
+        total?: number;
+      }>;
+    }>(url, authFetch, { ttlMs: CACHE_TTL.riskDrivers })
+      .then(data => {
+        if (cancelled || !data?.drivers) return;
+        setRows(
+          data.drivers
+            .filter(d => isKnownDriver(d.driverName))
+            .map(d => {
+              const types: Record<string, number> = {};
+              if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
+              if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
+              if ((d.overspeeding || 0) + (d.overspeedTiered || 0)) {
+                types.Overspeeding = (d.overspeeding || 0) + (d.overspeedTiered || 0);
+              }
+              if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
+              let riskScore = 0;
+              for (const [label, count] of Object.entries(types)) {
+                riskScore += eventWeight(label, scoreConfig) * count;
+              }
+              return {
+                name: d.driverName || 'N/A',
+                incidents: d.total ?? 0,
+                riskScore,
+                types,
+                lastEvent: '',
+              };
+            })
+            .sort((a, b) => b.riskScore - a.riskScore)
+            .slice(0, 10),
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [scoreConfig]);
 
   const driverMap = rows;
 
@@ -372,7 +324,7 @@ function WorstPerformers({ events, loading }: { events: LogEntry[]; loading: boo
         <span style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Ranked by weighted risk · last 30 days</span>
       </div>
 
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <div style={{ padding: '32px 20px' }}>
           {/* Skeleton header row */}
           <div style={{
@@ -521,90 +473,6 @@ function SafetyRadar({ byLabel }: { byLabel?: Record<string, number> }) {
       <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', textAlign: 'center', marginTop: -4 }}>
         Higher = more of this offence · last 30d · Tiered Spd = Overspeed Tiered + Road Speed (≥60 kph)
       </div>
-    </div>
-  );
-}
-
-// Events are only fetched for the last 14 days, so only these two weeks have real data.
-const WEEK_OPTIONS = [0, 1];
-
-function WeekSelect({ value, onChange }: { value: number; onChange: (offset: number) => void }) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      style={{
-        fontSize: 11, fontWeight: 600, color: 'var(--cd-text)',
-        background: 'var(--cd-surface)', border: '1px solid var(--cd-border)',
-        borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
-      }}
-    >
-      {WEEK_OPTIONS.map(offset => (
-        <option key={offset} value={offset}>{weekOptionLabel(offset)}</option>
-      ))}
-    </select>
-  );
-}
-
-function WeeklySafetyTrend({ events, scoreConfig, loading }: { events: LogEntry[]; scoreConfig: FleetScoreConfig; loading: boolean }) {
-  const [currentOffset, setCurrentOffset] = useState(0);
-  const [previousOffset, setPreviousOffset] = useState(1);
-
-  const trend = useMemo(
-    () => weeklySafetyTrend(events, scoreConfig, currentOffset, previousOffset),
-    [events, scoreConfig, currentOffset, previousOffset],
-  );
-  const currentLabel = weekOptionLabel(currentOffset);
-  const previousLabel = weekOptionLabel(previousOffset);
-
-  return (
-    <div className="bpl-card" style={{ padding: '20px 22px', marginBottom: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 2 }}>
-            Weekly Safety Trend
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <WeekSelect value={currentOffset} onChange={setCurrentOffset} />
-            <span>vs</span>
-            <WeekSelect value={previousOffset} onChange={setPreviousOffset} />
-            <span>· weighted harm points</span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <div style={{ minWidth: 112, textAlign: 'right' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: '#0078D4', fontFamily: 'var(--cd-font-display)' }}>
-              {loading ? <SkelValue /> : trend.currentPoints.toFixed(0)}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>harm points total · {currentLabel.toLowerCase()}</div>
-          </div>
-          <div style={{ minWidth: 112, textAlign: 'right' }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cd-text-muted)', fontFamily: 'var(--cd-font-display)' }}>
-              {loading ? <SkelValue /> : trend.previousPoints.toFixed(0)}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--cd-text-muted)' }}>harm points total · {previousLabel.toLowerCase()}</div>
-          </div>
-        </div>
-      </div>
-
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={trend.rows} margin={{ top: 4, right: 18, bottom: 0, left: -12 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" vertical={false} />
-          <XAxis dataKey="day" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
-          <Tooltip
-            contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 6, fontSize: 12 }}
-            formatter={(value: number, name: string) => [`${Number(value).toFixed(0)} pts`, name === 'currentPoints' ? currentLabel : previousLabel]}
-            labelFormatter={(label, payload) => {
-              const row = payload?.[0]?.payload;
-              return row?.previousDay ? `${label} vs ${row.previousDay}` : String(label);
-            }}
-          />
-          <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => value === 'currentPoints' ? currentLabel : previousLabel} />
-          <Line type="monotone" dataKey="currentPoints" stroke="#0078D4" strokeWidth={2.5} dot={{ r: 3 }} isAnimationActive={false} />
-          <Line type="monotone" dataKey="previousPoints" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
     </div>
   );
 }
@@ -773,38 +641,135 @@ function KpiStrip({ vehicleCount, exposure, busy }: { vehicleCount: number; expo
 export default function Safety() {
   const {
     vehicles,
-    events,
-    driverDistance,
     scoreConfig,
     safetyScore,
     safetyDelta,
     safetyExposure,
     safetyExposureLoading,
-    eventsLoading,
-    distanceLoading,
     selectedSites,
   } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
+  const [dateRange, setDateRange] = useState<PageDateRange>('30days');
+  const [customRange, setCustomRange] = useState(defaultPageCustomRange);
+  const [periodExposure, setPeriodExposure] = useState<FleetSafetyExposure | null>(() =>
+    peekSafetySummary<FleetSafetyExposure>('30d'),
+  );
+  const [periodLoading, setPeriodLoading] = useState(
+    () => !peekSafetySummary<FleetSafetyExposure>('30d'),
+  );
 
   const siteFiltered = selectedSites.length > 0;
-  const scopedExposure = useMemo(
-    () => scopedSafetyExposureFromEvents(events, driverDistance, scoreConfig),
-    [driverDistance, events, scoreConfig],
+  const useContextExposure = dateRange === '30days' && !siteFiltered;
+
+  const periodUrl = useMemo(() => {
+    const b = pagePeriodIsoBounds(dateRange, customRange.from, customRange.to);
+    const params = new URLSearchParams();
+    if (b.from && b.to) {
+      params.set('from', b.from);
+      params.set('to', b.to);
+    } else if (dateRange === 'today') params.set('range', 'today');
+    else if (dateRange === '7days') params.set('range', '7d');
+    else params.set('range', '30d');
+    if (siteFiltered) {
+      const ids = vehicles.map(v => v.id).filter(Boolean).map(String);
+      if (ids.length) params.set('assetIds', ids.join(','));
+    }
+    return `/api/safety/summary?${params}`;
+  }, [dateRange, customRange.from, customRange.to, siteFiltered, vehicles]);
+
+  useEffect(() => {
+    if (useContextExposure) {
+      setPeriodLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const cached = cachePeek<FleetSafetyExposure>(periodUrl);
+    if (cached) {
+      setPeriodExposure(cached);
+      setPeriodLoading(false);
+    } else {
+      setPeriodLoading(true);
+    }
+    authCachedJson<FleetSafetyExposure>(periodUrl, authFetch, {
+      ttlMs: CACHE_TTL.safetySummary,
+    })
+      .then(data => {
+        if (cancelled || !data) return;
+        setPeriodExposure(data);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPeriodLoading(false); });
+    return () => { cancelled = true; };
+  }, [periodUrl, useContextExposure]);
+
+  const scopedUrl = useMemo(() => {
+    if (!siteFiltered) return '';
+    const ids = vehicles.map(v => v.id).filter(Boolean).map(String);
+    if (!ids.length) return '';
+    return `/api/safety/summary?range=30d&assetIds=${encodeURIComponent(ids.join(','))}`;
+  }, [siteFiltered, vehicles]);
+
+  const [scopedExposure, setScopedExposure] = useState<FleetSafetyExposure | null>(() =>
+    scopedUrl ? cachePeek<FleetSafetyExposure>(scopedUrl) : null,
   );
-  const pageExposure = siteFiltered ? scopedExposure : safetyExposure;
+  const [scopedLoading, setScopedLoading] = useState(() => siteFiltered && !!scopedUrl && !cachePeek(scopedUrl));
+
+  useEffect(() => {
+    if (!siteFiltered || !scopedUrl) {
+      setScopedExposure(null);
+      setScopedLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const cached = cachePeek<FleetSafetyExposure>(scopedUrl);
+    if (cached) {
+      setScopedExposure(cached);
+      setScopedLoading(false);
+    } else {
+      setScopedLoading(true);
+    }
+    authCachedJson<FleetSafetyExposure>(scopedUrl, authFetch, {
+      ttlMs: CACHE_TTL.safetySummary,
+    })
+      .then(data => {
+        if (cancelled || !data) return;
+        setScopedExposure(data);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setScopedLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [siteFiltered, scopedUrl]);
+
+  const pageExposure = useContextExposure
+    ? (safetyExposure ?? periodExposure)
+    : (periodExposure ?? (siteFiltered ? scopedExposure : safetyExposure));
   const totalIncidents = pageExposure?.incidentTotal ?? 0;
   const distanceKm = pageExposure?.distanceKm ?? 0;
-  const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
   const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
-  const weightedRate = ratePer100Km(points.total, distanceKm);
-  const pageBusy = siteFiltered ? (eventsLoading || distanceLoading) : safetyExposureLoading;
-  const scoreBusy = safetyExposureLoading;
+  const weightedRate = ratePer100Km(points.ivms, distanceKm);
+  const altLoading = useContextExposure
+    ? safetyExposureLoading
+    : (periodLoading || (siteFiltered ? scopedLoading : safetyExposureLoading));
+  const pageBusy = !pageExposure && altLoading;
+  const scoreBusy = pageBusy;
 
   return (
     <div>
-      <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Safety <MockNamesBadge /></h1>
-        <p className="bpl-page-subtitle">Fleet health from harm per 100 km · driver discipline is a separate score · {clientName()}</p>
+      <div className="bpl-page-header bpl-page-header-row">
+        <div>
+          <h1 className="bpl-page-title">Safety <MockNamesBadge /></h1>
+          <p className="bpl-page-subtitle">Fleet health from weighted IVMS per 100 km · driver discipline is a separate score · {clientName()}</p>
+        </div>
+        <PagePeriodBar
+          value={dateRange}
+          onChange={setDateRange}
+          customFrom={customRange.from}
+          customTo={customRange.to}
+          onCustomFromChange={f => setCustomRange(r => ({ ...r, from: f }))}
+          onCustomToChange={t => setCustomRange(r => ({ ...r, to: t }))}
+        />
       </div>
 
       {/* KPI strip */}
@@ -825,11 +790,9 @@ export default function Safety() {
         <SafetyRadar byLabel={pageExposure?.byLabel} />
       </div>
 
-      <WeeklySafetyTrend events={events} scoreConfig={scoreConfig} loading={pageBusy} />
-
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
-        <WorstPerformers events={events} loading={eventsLoading} />
+        <WorstPerformers />
       </div>
 
       {/* Priority actions */}

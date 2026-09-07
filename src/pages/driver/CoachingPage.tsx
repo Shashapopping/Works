@@ -1,7 +1,7 @@
 import { useState, useMemo, useDeferredValue, useEffect, useRef } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Award, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
-import { useFleet } from '../../context/FleetContext';
+import { authFetch } from '../../context/FleetContext';
 import { useAuth } from '../../context/AuthContext';
 import { displayDriverName } from '../../lib/driverUtils';
 import MockNamesBadge from '../../components/MockNamesBadge';
@@ -9,7 +9,6 @@ import InfoTip from '../../components/InfoTip';
 import {
   qualifyCoaching,
   qualifyTraining,
-  scoredEventsInWindow,
   isDismissed,
   dismissFromQueue,
   getNotesForDriver,
@@ -18,7 +17,7 @@ import {
 } from '../../lib/driverInterventions';
 import { COACHING_EVENT_COUNT, COACHING_SCORE_THRESHOLD, COACHING_WINDOW_DAYS } from '../../config/interventionRules';
 import { categoryPlainDescription, logConsequenceResponse, loadConsequenceOccurrences, nextOccurrenceIndex, recommendedConsequence, addResponseLogEntry, getResponseLogForDriver, type ConsequenceCategory } from '../../lib/consequenceScore';
-import { assessDrivers, type AssessedDriver } from '../../lib/driverAssessment';
+import { assessDriversFromRisk, type AssessedDriver } from '../../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../../hooks/useAssessmentTripDrivers';
 import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
@@ -26,9 +25,13 @@ import PageControls from '../../components/PageControls';
 import { brandLabel } from '../../lib/branding';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import { fetchTaggingUsers, issueWrittenWarning, type TaggingUser } from '../../lib/coachingWarningsApi';
+import { authCachedJson, cachePeek, CACHE_TTL } from '../../lib/apiCache';
+
+/** Matches COACHING_WINDOW_DAYS — SQL rollups, not the boot event feed. */
+const COACHING_RISK_URL = `/api/risk/drivers?range=${COACHING_WINDOW_DAYS}d`;
 
 type QueueRow = DriverSnapshot & { windowEvents: number };
-type PageTab = 'coaching' | 'training';
+export type InterventionMode = 'coaching' | 'training';
 
 const RETRAINING_INFO =
   'Retraining is Driver Score −2 to −5.9 (Needs coaching) after a written warning has already been issued. Same formula as Drivers: penalty ÷ (km ÷ 100).';
@@ -491,13 +494,9 @@ function QueueList({
   );
 }
 
-export default function CoachingPage() {
-  const { events, eventsLoading } = useFleet();
+export function InterventionQueuePage({ mode }: { mode: InterventionMode }) {
   const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers();
-  const location = useLocation();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab: PageTab = location.pathname.includes('/training') ? 'training' : 'coaching';
   const [search, setSearch] = useState(searchParams.get('q') || '');
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     const openKey = searchParams.get('open');
@@ -507,14 +506,41 @@ export default function CoachingPage() {
   const deepLinkConsumed = useRef(false);
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
-  const seedBusy = eventsLoading || tripLoading;
+
+  const [riskRows, setRiskRows] = useState(() =>
+    cachePeek<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(COACHING_RISK_URL)?.drivers ?? [],
+  );
+  const [riskLoading, setRiskLoading] = useState(() => !cachePeek(COACHING_RISK_URL));
+  const seedBusy = riskLoading || tripLoading;
+
+  useEffect(() => {
+    let cancelled = false;
+    const cached = cachePeek<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(COACHING_RISK_URL);
+    if (cached?.drivers) {
+      setRiskRows(cached.drivers);
+      setRiskLoading(false);
+    } else {
+      setRiskLoading(true);
+    }
+    authCachedJson<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(COACHING_RISK_URL, authFetch, {
+      ttlMs: CACHE_TTL.riskDrivers,
+    })
+      .then(data => {
+        if (cancelled || !data?.drivers) return;
+        setRiskRows(data.drivers);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRiskLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (deepLinkConsumed.current) return;
     if (searchParams.has('q') || searchParams.has('open')) {
       deepLinkConsumed.current = true;
       setSearchParams({}, { replace: true });
-      // scroll to & focus the open driver's textarea after a short paint delay
       const openKey = searchParams.get('open');
       if (openKey) {
         setTimeout(() => {
@@ -526,14 +552,14 @@ export default function CoachingPage() {
   }, [searchParams, setSearchParams]);
 
   const assessed = useMemo(
-    () => assessDrivers(events, tripDrivers).map(asSnap),
-    [events, tripDrivers],
+    () => assessDriversFromRisk(riskRows, tripDrivers).map(asSnap),
+    [riskRows, tripDrivers],
   );
 
   const coaching = useMemo(() => {
     const coachingRows: QueueRow[] = [];
     assessed.forEach(d => {
-      const windowEvents = scoredEventsInWindow(d.events);
+      const windowEvents = d.consequence.counts.eventCount;
       if (qualifyCoaching(d, windowEvents) && !isDismissed('coaching', d)) {
         coachingRows.push({ ...d, windowEvents });
       }
@@ -552,7 +578,7 @@ export default function CoachingPage() {
       );
       const withOcc: QueueRow = {
         ...d,
-        windowEvents: scoredEventsInWindow(d.events),
+        windowEvents: d.consequence.counts.eventCount,
         consequence: { ...d.consequence, occurrenceIndex: occ, recommendedConsequence: recommendedConsequence(d.consequence.category, occ) },
       };
       if (qualifyTraining(withOcc, occ) && !isDismissed('training', withOcc)) list.push(withOcc);
@@ -581,9 +607,9 @@ export default function CoachingPage() {
   return (
     <div>
       <div className="bpl-page-header">
-        <h1 className="bpl-page-title">Coaching &amp; Training <MockNamesBadge /></h1>
+        <h1 className="bpl-page-title">{mode === 'coaching' ? 'Coaching' : 'Training'} <MockNamesBadge /></h1>
         <p className="bpl-page-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {tab === 'coaching'
+          {mode === 'coaching'
             ? `Score ≤ ${COACHING_SCORE_THRESHOLD} or ${COACHING_EVENT_COUNT}+ scored events in the last ${COACHING_WINDOW_DAYS} days`
             : (
               <>
@@ -594,16 +620,7 @@ export default function CoachingPage() {
         </p>
       </div>
 
-      <div className="dm-range" style={{ marginBottom: 16 }}>
-        <button type="button" className={tab === 'coaching' ? 'is-on' : undefined} onClick={() => navigate('/drivers/coaching')}>
-          Coaching
-        </button>
-        <button type="button" className={tab === 'training' ? 'is-on' : undefined} onClick={() => navigate('/drivers/training')}>
-          Training
-        </button>
-      </div>
-
-      {tab === 'coaching' ? (
+      {mode === 'coaching' ? (
         <div className="bpl-kpi-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', marginBottom: 20 }}>
           <div className="bpl-kpi-card">
             <div className="bpl-kpi-label">In coaching queue</div>
@@ -650,7 +667,7 @@ export default function CoachingPage() {
 
       {seedBusy ? (
         <div className="bpl-card" style={{ padding: 16 }}><SkelTable rows={6} /></div>
-      ) : tab === 'coaching' ? (
+      ) : mode === 'coaching' ? (
         <QueueList
           rows={coachingVisible}
           empty="No drivers currently qualify for coaching"
@@ -697,4 +714,8 @@ export default function CoachingPage() {
       )}
     </div>
   );
+}
+
+export default function CoachingPage() {
+  return <InterventionQueuePage mode="coaching" />;
 }
