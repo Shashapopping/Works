@@ -74,7 +74,7 @@ function ScoreGauge({
       onClick={onOpenExplainer}
       title="How scoring works — two scores, two jobs"
       style={{
-        padding: '24px', display: 'flex', flexDirection: 'column', gap: 20,
+        padding: '20px', display: 'flex', flexDirection: 'column', gap: 18,
         cursor: 'pointer', textAlign: 'left', width: '100%',
         border: '1px solid var(--cd-border)', background: 'var(--cd-surface)',
         font: 'inherit', color: 'inherit',
@@ -152,7 +152,7 @@ function ScoreGauge({
           Fleet score weights
         </div>
         <div style={{
-          display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8,
+          display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 8,
         }}>
           {[
             { label: 'Harsh Braking', weight: config.weights.harshBraking, color: '#e05c2a', title: undefined },
@@ -166,7 +166,7 @@ function ScoreGauge({
               borderRadius: 6, padding: '6px 8px', textAlign: 'center',
             }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: w.color, fontFamily: 'var(--cd-font-display)' }}>
-                +{w.weight}
+                {typeof w.weight === 'string' ? w.weight : `+${w.weight}`}
               </div>
               <div style={{ fontSize: 9, color: 'var(--cd-text-muted)', marginTop: 2, lineHeight: 1.3 }}>{w.label}</div>
             </div>
@@ -202,14 +202,15 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
   const totalDeduction = data.reduce((acc, d) => acc + d.count * d.weight, 0);
 
   return (
-    <div className="bpl-card" style={{ padding: '20px 22px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+    <div className="bpl-card" style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', minHeight: 300 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 2 }}>Incident Breakdown</div>
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Last 30 days · weighted deduction total: <strong style={{ color: 'var(--cd-text)' }}>{totalDeduction.toFixed(0)}</strong></div>
         </div>
       </div>
-      <ResponsiveContainer width="100%" height={160}>
+      <div style={{ flex: 1, minHeight: 220, paddingTop: 16 }}>
+        <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} barSize={28} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
@@ -222,7 +223,8 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
             {data.map((entry, i) => <Cell key={i} fill={entry.color} />)}
           </Bar>
         </BarChart>
-      </ResponsiveContainer>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
@@ -476,11 +478,11 @@ function SafetyRadar({ byLabel }: { byLabel?: Record<string, number> }) {
   ];
 
   return (
-    <div className="bpl-card" style={{ padding: '20px 22px' }}>
+    <div className="bpl-card" style={{ padding: '18px 20px', minHeight: 300 }}>
       <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--cd-text-muted)', marginBottom: 16 }}>
         Behaviour Profile
       </div>
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveContainer width="100%" height={220}>
         <RadarChart data={data} margin={{ top: 8, right: 24, bottom: 8, left: 24 }}>
           <PolarGrid stroke="var(--cd-border)" />
           <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} />
@@ -764,6 +766,7 @@ export default function Safety() {
     : (periodExposure ?? (siteFiltered ? scopedExposure : safetyExposure));
   const totalIncidents = pageExposure?.incidentTotal ?? 0;
   const distanceKm = pageExposure?.distanceKm ?? 0;
+  const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
   const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.ivms, distanceKm);
   const altLoading = useContextExposure
@@ -793,7 +796,7 @@ export default function Safety() {
       <KpiStrip vehicleCount={vehicles.length} exposure={pageExposure} busy={pageBusy} />
 
       {/* Score + Breakdown + Radar */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 260px', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '45fr 35fr 20fr', gap: 14, marginBottom: 20 }}>
         <ScoreGauge
           score={safetyScore}
           delta={safetyDelta}

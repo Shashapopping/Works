@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useDeferredValue, useMemo } from 'react';
 import { Search, ChevronLeft, ChevronRight, WifiOff, AlertTriangle } from 'lucide-react';
-import { cachedFetchJson, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
+import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { useFleet } from '../context/FleetContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { SkelValue, SkelTable } from './data/DataBusy';

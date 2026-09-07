@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { Component, useState, useRef, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Menu, Bell, Settings, Power, ShieldAlert, GraduationCap } from 'lucide-react';
 import Sidebar from './Sidebar';
@@ -70,6 +70,38 @@ function timeAgo(ts: string) {
   if (diff < 60) return 'just now';
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
+}
+
+class PageErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Page render failed', error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="bpl-card" style={{ padding: 24 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', marginBottom: 6 }}>
+            This page failed to load
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--cd-text-muted)' }}>
+            The dashboard is still running. Try another page, or refresh this page.
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 function NotifPanel({
@@ -390,7 +422,9 @@ export default function AppShell() {
         {/* Page content */}
         <main style={{ flex: 1, overflow: 'auto' }}>
           <div className="bpl-page">
-            <Outlet />
+            <PageErrorBoundary key={location.pathname}>
+              <Outlet />
+            </PageErrorBoundary>
           </div>
         </main>
       </div>

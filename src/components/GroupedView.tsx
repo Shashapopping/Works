@@ -4,6 +4,7 @@ import { useFleet } from '../context/FleetContext';
 import { SkelValue, SkelTable } from './data/DataBusy';
 import { isUsablePlaceAddress, vehicleHasResolvedPlace } from '../lib/placeAddress';
 import { makeScopedVehicleIdSet } from '../lib/siteScope';
+import { cachePeek, CACHE_KEYS } from '../lib/apiCache';
 
 interface Warning { eventId: string; label: string; timestamp: string; eventTime: string; }
 

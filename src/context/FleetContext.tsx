@@ -337,6 +337,27 @@ const defaultMeta: Metadata = {
   stationary: 0, parked: 0, inactive: 0, offline: 0, lastUpdate: '',
 };
 
+const METADATA_SNAPSHOT_KEY = 'hbm_fleet_metadata_snapshot';
+
+function readMetadataSnapshot(): Metadata | null {
+  try {
+    const raw = localStorage.getItem(METADATA_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Metadata;
+    return parsed && typeof parsed.totalVehicles === 'number' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMetadataSnapshot(metadata: Metadata) {
+  try {
+    localStorage.setItem(METADATA_SNAPSHOT_KEY, JSON.stringify(metadata));
+  } catch {
+    /* ignore */
+  }
+}
+
 const FleetContext = createContext<FleetContextType>({} as FleetContextType);
 
 export function FleetProvider({ children }: { children: React.ReactNode }) {
@@ -344,7 +365,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const lockedTransporter = user?.transporter?.trim() || null;
   const siteLock = !!lockedTransporter;
   const [metadata, setMetadata] = useState<Metadata>(() =>
-    cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? defaultMeta,
+    cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? readMetadataSnapshot() ?? defaultMeta,
   );
   const [vehicles, setVehicles] = useState<FleetVehicle[]>(() => {
     const cached = cachePeek<Vehicle[]>(CACHE_KEYS.fleetData);
@@ -508,7 +529,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
           return res.json();
         },
       );
-      if (data) setMetadata(data);
+      if (data) {
+        setMetadata(data);
+        writeMetadataSnapshot(data);
+      }
     } catch {}
   }, []);
 
