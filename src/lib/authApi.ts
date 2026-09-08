@@ -247,7 +247,6 @@ export function permissionForPath(pathname: string): string | null {
     ['/fuel/consumption', 'fuel-consumption'],
     ['/fuel/monitoring', 'fuel-monitoring'],
     ['/fuel', 'fuel-monitoring'],
-    ['/reports/documents', 'documents'],
     ['/reports', 'reports'],
     ['/incidents', 'incidents'],
     ['/trends', 'incidents'],

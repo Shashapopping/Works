@@ -1962,6 +1962,7 @@ function computeHosRecords(dayStr) {
   // HOS can be called from the API without a poll cycle having run yet (or after HMR).
   if (driverLookup.size === 0) loadDriverLookup();
   if (vehicleLookup.size === 0) loadVehicleLookup();
+  if (siteLookup.size === 0) loadSiteLookup();
 
   const liveZoneByAsset = new Map();
   // assetId -> { status, dateMs } from the live poller — lets an open trip (no TripEnd
@@ -2114,13 +2115,18 @@ function computeHosRecords(dayStr) {
     const resolvedName = (lastTrip.driverName && lastTrip.driverName !== 'N/A')
       ? lastTrip.driverName
       : (driverLookup.get(String(key))?.name || lastTrip.driverName || 'N/A');
-    const site = (lastTrip.assetId && liveZoneByAsset.get(lastTrip.assetId)) || 'HBM';
+    const vehicle = lastTrip.assetId ? vehicleLookup.get(String(lastTrip.assetId)) : null;
+    const siteId = vehicle?.SiteId?.toString?.() || null;
+    const siteInfo = siteId ? siteLookup.get(siteId) : null;
+    const site = siteInfo?.name || (lastTrip.assetId && liveZoneByAsset.get(lastTrip.assetId)) || 'HBM';
 
     records.push({
       id: String(key),
       driverName: resolvedName,
+      assetId: lastTrip.assetId || null,
       vehicleReg: lastTrip.regNo || 'N/A',
       site,
+      siteId,
       driveMinutesToday,
       dutyMinutesToday,
       driveMinutes24h,

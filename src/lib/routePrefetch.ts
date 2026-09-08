@@ -24,7 +24,6 @@ export const ROUTE_CHUNK_LOADERS: Record<string, () => Promise<unknown>> = {
   '/fuel/consumption': () => import('../pages/FuelConsumption'),
   '/reports': () => import('../pages/ReportsPage'),
   '/reports/automation': () => import('../pages/ReportsAutomationPage'),
-  '/reports/documents': () => import('../pages/DocumentsPage'),
   '/trips': () => import('../pages/TripsPage'),
   '/trips/dispatch': () => import('../pages/DispatchPage'),
   '/aria': () => import('../pages/AiInsightsPage'),

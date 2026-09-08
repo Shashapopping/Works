@@ -16,6 +16,14 @@ export function makeScopedVehicleIdSet(vehicles: FleetVehicle[]) {
   );
 }
 
+export function makeScopedVehicleSiteIdSet(vehicles: FleetVehicle[]) {
+  return new Set(
+    vehicles
+      .map(v => v.siteId?.toString().trim())
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
 export function filterTripDriversByVehicles(tripDrivers: TripDriver[], vehicles: FleetVehicle[]) {
   const allowedRegs = makeScopedVehicleRegSet(vehicles);
   if (allowedRegs.size === 0) return [];

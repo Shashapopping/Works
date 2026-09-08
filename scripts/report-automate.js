@@ -590,6 +590,11 @@ function findDuplicateAutomation(userId, candidate, ignoreId = null) {
   return null;
 }
 
+function automationProfileFilename(automation) {
+  const title = String(automation?.title || '').trim() || 'Saved report profile';
+  return `${title}.automation.json`;
+}
+
 function archiveAutomationProfile(userId, automation) {
   if (!automation?.reportConfig) return null;
   try {
@@ -605,7 +610,7 @@ function archiveAutomationProfile(userId, automation) {
     };
     return archiveOrReplaceAutomationProfile({
       automationId: automation.id,
-      filename: `${automation.id}.automation.json`,
+      filename: automationProfileFilename(automation),
       mime: 'application/json',
       buffer: Buffer.from(JSON.stringify(payload, null, 2), 'utf8'),
       meta: { automationId: automation.id, title: automation.title },

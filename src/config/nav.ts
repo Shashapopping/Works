@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, User, GraduationCap, BadgeCheck, Moon, Camera,
   AlertTriangle, Search, ListChecks, ClipboardList, Truck, Mountain, Gauge, Package,
   Droplets, Shield, Wrench, Fuel, BarChart3, FileBarChart2, Bot, Route, Navigation,
-  Brain, Boxes, Map, Folder, Award,
+  Brain, Boxes, Map, Award,
 } from 'lucide-react';
 import { FATIGUE_ENABLED } from './fatigue';
 
@@ -86,7 +86,6 @@ export const SIDEBAR_NAV: NavGroup[] = [
     children: [
       { path: '/reports', label: 'Reports', icon: FileBarChart2 },
       { path: '/reports/automation', label: 'Automation', icon: Bot },
-      { path: '/reports/documents', label: 'Documents', icon: Folder },
     ],
   },
   {
@@ -178,10 +177,6 @@ export const ROUTE_WARM_URLS: Record<string, readonly string[]> = {
     '/api/driver-distance?range=prev30d&trips=0',
   ],
   '/maintenance': [],
-  '/reports/documents': [
-    '/api/documents/tree',
-    '/api/documents',
-  ],
   '/settings/general': [
     '/api/roles',
     '/api/users',

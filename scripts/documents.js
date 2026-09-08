@@ -127,12 +127,14 @@ export function ensureFilingFolder({ type = 'Events', when = new Date() } = {}) 
   return { folder: typed, relativeDir: typed.path.split('\\').join(path.sep) };
 }
 
-function uniqueFileName(folderId, desiredName) {
+function uniqueFileName(folderId, desiredName, ignoreFileId = null) {
   const db = getDb();
   const base = safeSegment(desiredName);
   let candidate = base;
   let n = 2;
-  while (db.prepare('SELECT 1 FROM document_files WHERE folder_id = ? AND name = ?').get(folderId, candidate)) {
+  while (true) {
+    const existing = db.prepare('SELECT id FROM document_files WHERE folder_id = ? AND name = ?').get(folderId, candidate);
+    if (!existing || existing.id === ignoreFileId) break;
     const ext = path.extname(base);
     const stem = ext ? base.slice(0, -ext.length) : base;
     candidate = `${stem} (${n})${ext}`;
@@ -240,17 +242,28 @@ export function archiveOrReplaceAutomationProfile({
 
   const existing = findAutomationProfileFile(automationId);
   if (existing) {
-    const absPath = path.join(DOCUMENTS_ROOT, existing.storage_path.split('/').join(path.sep));
+    const folder = getFolderById(existing.folder_id);
+    const desiredName = uniqueFileName(existing.folder_id, filename || `${automationId}.automation.json`, existing.id);
+    const relativeDir = folder?.path ? folder.path.split('\\').join(path.sep) : path.dirname(existing.storage_path.split('/').join(path.sep));
+    const nextStorageRel = path.join(relativeDir, desiredName);
+    const currentStorageRel = existing.storage_path.split('/').join(path.sep);
+    const absPath = path.join(DOCUMENTS_ROOT, currentStorageRel);
+    const nextAbsPath = path.join(DOCUMENTS_ROOT, nextStorageRel);
     ensureDiskRoot();
-    fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    fs.writeFileSync(absPath, buffer);
+    fs.mkdirSync(path.dirname(nextAbsPath), { recursive: true });
+    if (currentStorageRel !== nextStorageRel && fs.existsSync(absPath)) {
+      fs.renameSync(absPath, nextAbsPath);
+    }
+    fs.writeFileSync(nextAbsPath, buffer);
     const createdAt = nowIso();
     getDb().prepare(`
       UPDATE document_files
-      SET size_bytes = ?, meta_json = ?, created_at = ?
+      SET name = ?, size_bytes = ?, storage_path = ?, meta_json = ?, created_at = ?
       WHERE id = ?
     `).run(
+      desiredName,
       buffer.length,
+      nextStorageRel.split(path.sep).join('/'),
       meta ? JSON.stringify(meta) : null,
       createdAt,
       existing.id,

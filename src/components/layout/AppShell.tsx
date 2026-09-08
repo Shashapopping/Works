@@ -47,7 +47,6 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/fuel/consumption': { title: 'Fuel', sub: '— consumption' },
     '/reports': { title: 'Reports', sub: '— event log and trends' },
     '/reports/automation': { title: 'Automation', sub: '— scheduled reporting' },
-    '/reports/documents': { title: 'Documents', sub: '— report repository' },
     '/maintenance': { title: 'Maintenance', sub: '— scheduling & service' },
     '/settings/general': { title: 'Settings', sub: '— general' },
     '/settings/scoring': { title: 'Settings', sub: '— scoring' },

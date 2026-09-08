@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Mail, Pause, Play, Save, Send, Trash2 } from 'lucide-react';
+import { Loader2, Mail, Pause, Play, Plus, Save, Send, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useFleet } from '../context/FleetContext';
 import { authFetchInit } from '../lib/authApi';
@@ -78,6 +78,7 @@ interface ReportAutomateProps {
   defaultOpen?: boolean;
   defaultFrequency?: Frequency;
   defaultPacks?: string[];
+  onSelectedAutomationChange?: (id: string) => void;
 }
 
 const EVENT_TYPES = REPORT_EVENT_TYPE_CATALOG.map(o => o.id);
@@ -193,6 +194,23 @@ function automationSummary(a: Automation) {
   return `${title} | ${a.frequency}${pending} | next ${fmtWhen(a.nextSendAt)}`;
 }
 
+function automationDisplayTitle(a: Automation) {
+  const cfg = a.reportConfig;
+  return a.title || (cfg ? buildReportTitle(cfg, cfg.site || 'All sites') : a.packs.join(', '));
+}
+
+function automationDetailLine(a: Automation) {
+  const cfg = a.reportConfig;
+  const parts = [
+    a.enabled ? 'Active' : 'Paused',
+    a.frequency,
+    cfg ? trackingWindowLabel(cfg) : '',
+    cfg?.eventType === NO_RECENT_COMMUNICATION ? `${a.pendingTriggerCount || 0} pending` : '',
+    `next ${fmtWhen(a.nextSendAt)}`,
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
 async function automateFetch(url: string, options: RequestInit = {}) {
   return fetch(url, authFetchInit({
     ...options,
@@ -208,6 +226,7 @@ export default function ReportAutomate({
   defaultOpen = false,
   defaultFrequency = 'weekly',
   defaultPacks = [],
+  onSelectedAutomationChange,
 }: ReportAutomateProps = {}) {
   const { user } = useAuth();
   const { siteOptions, siteNameOptions, vehicles, events: fleetEvents } = useFleet();
@@ -221,6 +240,8 @@ export default function ReportAutomate({
   const [defaultRecipient, setDefaultRecipient] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmCreateOpen, setConfirmCreateOpen] = useState(false);
+  const [confirmCreateAsCopy, setConfirmCreateAsCopy] = useState(false);
 
   const [config, setConfig] = useState<ReportConfig>(() => {
     if (defaultPacks.includes('offline_2h')) {
@@ -302,6 +323,11 @@ export default function ReportAutomate({
     setConfig(prev => ({ ...prev, [key]: value }));
   };
 
+  const recipientList = useMemo(
+    () => recipients.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean),
+    [recipients],
+  );
+
   const setEventType = (eventType: string) => {
     const normalized = normalizeConnectivityEventType(eventType);
     setConfig(prev => {
@@ -368,6 +394,10 @@ export default function ReportAutomate({
 
   useEffect(() => { void load(); }, [load]);
 
+  useEffect(() => {
+    onSelectedAutomationChange?.(selectedAutomationId);
+  }, [onSelectedAutomationChange, selectedAutomationId]);
+
   const resetForNewAutomation = () => {
     setSelectedAutomationId('');
     setConfig(normalizeConfigForUi(DEFAULT_CONFIG));
@@ -408,11 +438,19 @@ export default function ReportAutomate({
     loadAutomationForEdit(automations[0].id);
   }, [embedded, automations, selectedAutomationId]);
 
-  const save = async () => {
+  const save = async (options: { forceCreate?: boolean; confirmed?: boolean } = {}) => {
+    const forceCreate = !!options.forceCreate;
+    const creating = forceCreate || !selectedAutomationId;
+    if (creating && !options.confirmed) {
+      setConfirmCreateAsCopy(forceCreate);
+      setConfirmCreateOpen(true);
+      setMessage(null);
+      setError(null);
+      return;
+    }
     setSaving(true);
     setMessage(null);
     setError(null);
-    const recipientList = recipients.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
     const isNoRecent = config.eventType === NO_RECENT_COMMUNICATION;
     const effectiveFrequency = isNoRecent ? 'hourly' : frequency;
     const effectiveConfig = isNoRecent
@@ -429,7 +467,7 @@ export default function ReportAutomate({
       }
       : { ...config, format: config.format, nightBatch: frequency === 'hourly' ? nightBatch : false };
     const payload = {
-      title: isNoRecent ? NO_RECENT_COMMUNICATION_DISPLAY_LABEL : reportTitle,
+      title: reportTitle,
       frequency: effectiveFrequency,
       reportConfig: effectiveConfig,
       format: config.format,
@@ -439,7 +477,7 @@ export default function ReportAutomate({
       dayOfMonth,
       timezone: 'Africa/Lagos',
     };
-    const existingId = selectedAutomationId;
+    const existingId = forceCreate ? '' : selectedAutomationId;
     try {
       const res = await automateFetch(
         existingId ? `/api/reports/automate/${existingId}` : '/api/reports/automate',
@@ -460,7 +498,9 @@ export default function ReportAutomate({
       if (data.automation?.recipients?.length) {
         setRecipients(data.automation.recipients.join(', '));
       }
-      setMessage('Automation profile saved and filed in Documents.');
+      setMessage('Automation profile saved.');
+      setConfirmCreateOpen(false);
+      setConfirmCreateAsCopy(false);
       setOpen(true);
     } catch (e: any) {
       setError(e?.message || 'Could not save');
@@ -548,9 +588,7 @@ export default function ReportAutomate({
                 <Mail size={16} strokeWidth={1.75} />
                 <div>
                   <div className="bpl-automate-hero-title">{reportTitle}</div>
-                  <div className="bpl-automate-hero-sub">
-                    Pick the exact report details first. The saved profile is filed in Documents and used by the schedule.
-                  </div>
+                  <div className="bpl-automate-hero-sub">Pick the exact report details first. The saved profile is used by the schedule.</div>
                 </div>
               </div>
 
@@ -816,14 +854,43 @@ export default function ReportAutomate({
                 {saving ? 'Saving...' : selectedAutomationId ? 'Update automation' : 'Save automation'}
               </button>
 
+              {selectedAutomation && (
+                <button type="button" className="bpl-automate-secondary" disabled={saving} onClick={() => void save({ forceCreate: true })}>
+                  <Plus size={14} />
+                  Create new automation
+                </button>
+              )}
+
               <div className="bpl-automate-saved-bar">
-                <div>
-                  <div className="bpl-automate-label">Saved automations</div>
-                  <select className="bpl-automate-input" value={selectedAutomationId} onChange={e => loadAutomationForEdit(e.target.value)}>
-                    <option value="">Create new automation</option>
-                    {automations.map(a => <option key={a.id} value={a.id}>{automationSummary(a)}</option>)}
-                  </select>
-                </div>
+                <div className="bpl-automate-label">Saved automations</div>
+                {automations.length === 0 ? (
+                  <div className="bpl-automate-quiet">No saved automations yet.</div>
+                ) : (
+                  <div className="bpl-automate-list" role="listbox" aria-label="Saved automations">
+                    {automations.map(a => {
+                      const selected = selectedAutomationId === a.id;
+                      return (
+                        <button
+                          key={a.id}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          className={`bpl-automate-list-item${selected ? ' selected' : ''}`}
+                          title={automationSummary(a)}
+                          onClick={() => loadAutomationForEdit(a.id)}
+                        >
+                          <span className="bpl-automate-list-title">{automationDisplayTitle(a)}</span>
+                          <span className="bpl-automate-list-meta">{automationDetailLine(a)}</span>
+                          <span className="bpl-automate-list-emails">
+                            {(a.recipients?.length ? a.recipients : [defaultRecipient].filter(Boolean)).map(email => (
+                              <span key={email} className="bpl-automate-email-chip">{email}</span>
+                            ))}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 {selectedAutomation && (
                   <div className="bpl-automate-saved-actions">
                     <button type="button" onClick={() => void patch(selectedAutomation.id, { enabled: !selectedAutomation.enabled }).catch(e => setError(e.message))}>
@@ -844,6 +911,37 @@ export default function ReportAutomate({
 
               {message && <div className="bpl-automate-banner ok">{message}</div>}
               {error && <div className="bpl-automate-banner warn">{error}</div>}
+              {confirmCreateOpen && (
+                <div className="bpl-automate-confirm" role="dialog" aria-modal="true" aria-labelledby="bpl-automate-confirm-title">
+                  <div className="bpl-automate-confirm-card">
+                    <div className="bpl-automate-confirm-head">
+                      <strong id="bpl-automate-confirm-title">
+                        {confirmCreateAsCopy ? 'Create new automation' : 'Save automation'}
+                      </strong>
+                      <span>Confirm the saved schedule before it is created.</span>
+                    </div>
+                    <div className="bpl-automate-confirm-summary">
+                      <div><span>Report</span><strong>{reportTitle}</strong></div>
+                      <div><span>Cadence</span><strong>{config.eventType === NO_RECENT_COMMUNICATION ? 'Hourly' : frequency}</strong></div>
+                      <div><span>Window</span><strong>{trackingWindowLabel(config)}</strong></div>
+                      <div><span>Site</span><strong>{selectedSiteLabel}</strong></div>
+                      <div><span>Recipients</span><strong>{recipientList.length ? recipientList.join(', ') : (defaultRecipient || 'Account email')}</strong></div>
+                      <div><span>Format</span><strong>{formatLabel(config.format)}</strong></div>
+                    </div>
+                    <div className="bpl-automate-confirm-actions">
+                      <button type="button" onClick={() => setConfirmCreateOpen(false)}>Cancel</button>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={saving}
+                        onClick={() => void save({ forceCreate: confirmCreateAsCopy, confirmed: true })}
+                      >
+                        {saving ? 'Saving...' : 'Confirm and save'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

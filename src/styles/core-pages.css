@@ -401,6 +401,7 @@
 }
 
 .bpl-fatigue-meter-track {
+  position: relative;
   flex: 1;
   min-width: 36px;
   height: 6px;
@@ -413,6 +414,17 @@
   height: 100%;
   border-radius: 99px;
   transition: width 0.2s;
+}
+
+.bpl-fatigue-meter-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 99px;
+  background: var(--cd-text);
+  opacity: 0.55;
+  transform: translateX(-1px);
 }
 
 .bpl-fatigue-meter-row > span {
@@ -2073,65 +2085,31 @@
   cursor: not-allowed;
 }
 
-.bpl-automate-list {
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--cd-border);
-}
-
-.bpl-automate-card {
-  padding: 12px;
-  border-radius: 12px;
+.bpl-automate-secondary {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 14px;
   border: 1px solid var(--cd-border);
+  border-radius: 10px;
   background: var(--cd-surface);
-  margin-bottom: 8px;
-}
-
-.bpl-automate-card.paused {
-  opacity: 0.65;
-}
-
-.bpl-automate-card-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: flex-start;
-  font-size: 12px;
   color: var(--cd-text);
-}
-
-.bpl-automate-card-top strong {
-  text-transform: capitalize;
-}
-
-.bpl-automate-card-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.bpl-automate-card-actions button {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  border: 1px solid var(--cd-border);
-  background: var(--cd-surface-2);
-  color: var(--cd-text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  gap: 8px;
 }
 
-.bpl-automate-card-actions button:disabled {
-  opacity: 0.4;
+.bpl-automate-secondary:hover {
+  border-color: #93c5fd;
+  color: var(--bpl-blue, #0078D4);
+}
+
+.bpl-automate-secondary:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
-}
-
-.bpl-automate-card-meta {
-  margin-top: 8px;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--cd-text-muted);
 }
 
 .bpl-automate-saved-bar {
@@ -2143,6 +2121,160 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
+}
+
+.bpl-automate-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bpl-automate-list-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--cd-border);
+  border-radius: 10px;
+  background: var(--cd-surface);
+  color: var(--cd-text);
+  padding: 10px;
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+}
+
+.bpl-automate-list-item:hover {
+  border-color: #93c5fd;
+  background: rgba(0, 120, 212, 0.05);
+}
+
+.bpl-automate-list-item.selected {
+  border-color: var(--bpl-blue, #0078D4);
+  background: rgba(0, 120, 212, 0.12);
+  box-shadow: inset 3px 0 0 var(--bpl-blue, #0078D4);
+}
+
+.bpl-automate-list-title {
+  font-size: 12.5px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: var(--cd-text);
+  overflow-wrap: anywhere;
+}
+
+.bpl-automate-list-meta {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--cd-text-muted);
+}
+
+.bpl-automate-list-emails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.bpl-automate-email-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  border: 1px solid rgba(0, 120, 212, 0.22);
+  border-radius: 999px;
+  background: rgba(0, 120, 212, 0.08);
+  color: var(--cd-text);
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.bpl-automate-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.bpl-automate-confirm-card {
+  width: min(520px, 100%);
+  border: 1px solid var(--cd-border);
+  border-radius: 12px;
+  background: var(--cd-surface);
+  color: var(--cd-text);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.22);
+  padding: 16px;
+}
+
+.bpl-automate-confirm-head strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.bpl-automate-confirm-head span {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--cd-text-muted);
+}
+
+.bpl-automate-confirm-summary {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--cd-surface-2);
+}
+
+.bpl-automate-confirm-summary div {
+  display: grid;
+  gap: 2px;
+}
+
+.bpl-automate-confirm-summary span {
+  font-size: 10.5px;
+  color: var(--cd-text-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bpl-automate-confirm-summary strong {
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.bpl-automate-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.bpl-automate-confirm-actions button {
+  border: 1px solid var(--cd-border);
+  border-radius: 999px;
+  background: var(--cd-surface);
+  color: var(--cd-text);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bpl-automate-confirm-actions button.primary {
+  border-color: #0078D4;
+  background: #0078D4;
+  color: #fff;
+}
+
+.bpl-automate-confirm-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .bpl-automate-saved-actions {
@@ -2259,6 +2391,11 @@
 .bpl-automation-docs-card .bpl-docs-explorer {
   min-height: 680px;
   grid-template-columns: 210px minmax(0, 1fr);
+}
+
+.bpl-automation-docs-card .bpl-docs-row.selected {
+  background: rgba(0, 120, 212, 0.12);
+  box-shadow: inset 3px 0 0 var(--bpl-blue, #0078D4);
 }
 
 @media (max-width: 1100px) {

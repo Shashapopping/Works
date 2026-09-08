@@ -7,16 +7,14 @@ import InfoTip from '../../components/InfoTip';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useClientPagination } from '../../hooks/useClientPagination';
 import { useHosRecords } from '../../hooks/useHosRecords';
-import { useFleet } from '../../context/FleetContext';
 import { fmtHosMinutes, type HosRecord, type HosRuleId, type HosStatus } from '../../lib/hos';
 import { hosPointsFromHeldMinutes, type FleetScoreConfig } from '../../lib/fleetSafetyScore';
-import { makeScopedVehicleRegSet } from '../../lib/siteScope';
+import { useFleet } from '../../context/FleetContext';
+import { makeScopedVehicleIdSet, makeScopedVehicleSiteIdSet } from '../../lib/siteScope';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import PageControls from '../../components/PageControls';
-import { CustomDatePicker } from '../../components/CustomDateTimeRange';
 
 type FatigueViewFilter = 'all' | HosStatus | HosRuleId;
-type FatigueDateMode = 'today' | 'yesterday' | 'custom';
 const FATIGUE_PAGE_SIZE = 40;
 const FOUR_H_WARNING_MINUTES = 20;
 
@@ -71,7 +69,7 @@ const COL_TIPS: Record<string, string> = {
   '4h continuous': 'Max 4 hours continuous driving. A parked gap of ≥20 minutes resets the block.',
   'Daily rest': 'Driver needs at least 8 hours continuous rest inside each rolling 24-hour cycle.',
   'Weekly rest': 'At least 24 hours continuous off-duty rest required in every rolling 7-day week.',
-  'Drive time': 'Total minutes driven in the selected Lagos calendar day.',
+  'Drive time today': 'Total minutes driven today, clipped to the current Lagos calendar day.',
   'Trip time': 'Sum of each trip’s clock time inside the selected day (clipped at midnight). Gaps between trips are not counted — so an overnight open trip cannot stretch Trip time to ~23h.',
   'Violation value': 'Extra driving minutes past the 4-hour continuous limit.',
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',
@@ -97,10 +95,9 @@ const HOS_GROUPS: {
     title: '4h continuous',
     className: 'bpl-fatigue-group-4h',
     fields: [
-      { label: 'Drive time', align: 'right', sortKey: 'driveTimeToday' },
+      { label: 'Drive time today', align: 'right', sortKey: 'driveTimeToday' },
       { label: 'Present Block', align: 'right', sortKey: 'presentBlock' },
       { label: 'Drive left', align: 'right', sortKey: 'driveLeft' },
-      { label: 'Violation value', align: 'right', sortKey: 'violationValue' },
     ],
   },
   {
@@ -135,16 +132,17 @@ function fmtTime(iso: string) {
 }
 
 type HosSiteScope = {
-  allowedRegs: Set<string>;
-  allowedSites: Set<string>;
+  allowedAssetIds: Set<string>;
+  allowedSiteIds: Set<string>;
 };
 
 function filterHosRecordsToSiteScope(records: HosRecord[], scope: HosSiteScope | null): HosRecord[] {
   if (!scope) return records;
   return records.filter(record => {
-    const reg = (record.vehicleReg || '').trim().toLowerCase();
-    const site = (record.site || '').trim().toLowerCase();
-    return scope.allowedRegs.has(reg) || scope.allowedSites.has(site);
+    const assetId = (record.assetId || '').toString().trim();
+    const siteId = (record.siteId || '').toString().trim();
+    return (assetId && scope.allowedAssetIds.has(assetId))
+      || (siteId && scope.allowedSiteIds.has(siteId));
   });
 }
 
@@ -329,6 +327,7 @@ function FatigueMeter({
   className,
   showTime,
   allowOverLimitPct,
+  overLimitVisualMaxPct,
   formatTime = fmtHosMinutes,
 }: {
   minutes: number;
@@ -338,16 +337,26 @@ function FatigueMeter({
   className?: string;
   showTime?: boolean;
   allowOverLimitPct?: boolean;
+  overLimitVisualMaxPct?: number;
   formatTime?: (minutes: number) => string;
 }) {
   const pct = allowOverLimitPct ? rawPctOfLimit(minutes, limit) : pctOfLimit(minutes, limit);
-  const fillPct = pctOfLimit(minutes, limit);
+  const visualMaxPct = overLimitVisualMaxPct && overLimitVisualMaxPct > 100 ? overLimitVisualMaxPct : 100;
+  const fillPct = allowOverLimitPct && visualMaxPct > 100
+    ? Math.min(100, Math.round((pct / visualMaxPct) * 100))
+    : pctOfLimit(minutes, limit);
+  const breachMarkerPct = allowOverLimitPct && visualMaxPct > 100
+    ? Math.min(100, Math.round((100 / visualMaxPct) * 100))
+    : null;
   return (
     <td className={className} title={title}>
       <div className="bpl-fatigue-meter">
         <div className="bpl-fatigue-meter-row">
           <div className="bpl-fatigue-meter-track">
             <div className="bpl-fatigue-meter-fill" style={{ width: `${fillPct}%`, background: color }} />
+            {breachMarkerPct != null && (
+              <span className="bpl-fatigue-meter-marker" style={{ left: `${breachMarkerPct}%` }} />
+            )}
           </div>
           <span>{pct}%</span>
         </div>
@@ -503,36 +512,13 @@ export default function FatigueManagementPage() {
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
   const [statusFilter, setStatusFilter] = useState<FatigueViewFilter>('all');
-  const [dateMode, setDateMode] = useState<FatigueDateMode>('today');
-  const [customHosDate, setCustomHosDate] = useState(lagosDateStr(0));
   const [hosPointsDate, setHosPointsDate] = useState(lagosDateStr(0));
   const [sortState, setSortState] = useState<FatigueSortState>(null);
 
-  const todayDate = lagosDateStr(0);
-  const yesterdayDate = lagosDateStr(1);
-  const targetDate = dateMode === 'yesterday'
-    ? yesterdayDate
-    : dateMode === 'custom'
-      ? customHosDate
-      : todayDate;
-  const isTodayView = targetDate === todayDate;
+  const targetDate = lagosDateStr(0);
+  const isTodayView = true;
 
-  // Today stays on the shared live HOS feed; dated history is used for yesterday/custom days.
-  const {
-    hosRecords: ctxHos,
-    hosLoading: ctxHosLoading,
-    hosLastTripDay: ctxLastTripDay,
-  } = useFleet();
-  const dated = useHosRecords(targetDate, { enabled: !isTodayView });
-  const hosRaw = isTodayView
-    ? ctxHos
-    : dated.records;
-  const hosLoading = isTodayView
-    ? (ctxHosLoading && hosRaw.length === 0)
-    : dated.loading;
-  const lastTripDay = isTodayView
-    ? ctxLastTripDay
-    : dated.lastTripDay;
+  const { records: hosRaw, loading: hosLoading, lastTripDay } = useHosRecords(targetDate);
   const { records: hosPointsRaw, loading: hosPointsLoading } = useHosRecords(hosPointsDate);
 
   useEffect(() => {
@@ -543,8 +529,8 @@ export default function FatigueManagementPage() {
   const hosSiteScope = useMemo<HosSiteScope | null>(() => {
     if (selectedSites.length === 0) return null;
     return {
-      allowedRegs: makeScopedVehicleRegSet(vehicles),
-      allowedSites: new Set(selectedSites.map(site => site.trim().toLowerCase()).filter(Boolean)),
+      allowedAssetIds: makeScopedVehicleIdSet(vehicles),
+      allowedSiteIds: makeScopedVehicleSiteIdSet(vehicles),
     };
   }, [selectedSites, vehicles]);
 
@@ -780,22 +766,6 @@ export default function FatigueManagementPage() {
   const onHosDayChange = (day: string) => {
     setHosPointsDate(day);
   };
-  const pickDateMode = (next: FatigueDateMode) => {
-    setDateMode(next);
-    setStatusFilter('all');
-    const nextDate = next === 'yesterday'
-      ? yesterdayDate
-      : next === 'custom'
-        ? customHosDate
-        : todayDate;
-    setHosPointsDate(nextDate);
-  };
-  const pickCustomHosDate = (day: string) => {
-    setCustomHosDate(day);
-    setDateMode('custom');
-    setStatusFilter('all');
-    setHosPointsDate(day);
-  };
 
   return (
     <div>
@@ -807,29 +777,9 @@ export default function FatigueManagementPage() {
         Hours of service — 4h continuous (20-min rest resets), daily rest (8h rest in 24h), and weekly rest (≥24h off in 7 days).
       </p>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        {(['today', 'yesterday', 'custom'] as FatigueDateMode[]).map(mode => (
-          <button
-            key={mode}
-            type="button"
-            className={`bpl-page-period-chip${dateMode === mode ? ' active' : ''}`}
-            onClick={() => pickDateMode(mode)}
-          >
-            {mode === 'today' ? 'Today' : mode === 'yesterday' ? 'Yesterday' : 'Custom'}
-          </button>
-        ))}
-        {dateMode === 'custom' && (
-          <CustomDatePicker
-            value={customHosDate}
-            onChange={pickCustomHosDate}
-            max={todayDate}
-          />
-        )}
-      </div>
-
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
         <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
-          Showing HOS records for {compactDateLabel(targetDate)}. HOS points are inspected from {compactDateLabel(hosPointsDate)}.
+          HOS points are inspected from {compactDateLabel(hosPointsDate)}; the rest of the table keeps its current day.
         </span>
       </div>
 
@@ -857,7 +807,7 @@ export default function FatigueManagementPage() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 12 }}>
         {kpiCards.map(k => {
           const active = statusFilter === k.key;
           return (
@@ -881,9 +831,9 @@ export default function FatigueManagementPage() {
                 <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
               </div>
               <div
-                className={k.key === 'violation' && counts.violation > 0 ? 'bpl-hos-violation-pulse' : undefined}
                 style={{
                   fontSize: 20, fontWeight: 700, color: k.color,
+                  animation: k.key === 'violation' && counts.violation > 0 ? 'pulse 1.5s infinite' : 'none',
                 }}
               >
                 {hosLoading ? <SkelValue /> : k.value}
@@ -1085,7 +1035,6 @@ export default function FatigueManagementPage() {
               const limit = limitOf(record);
               const currentMin = displayBlockMinutes(record, isTodayView);
               const driveMinutesLeft = limit - currentMin;
-              const vDrive = record.violationDriveMinutes ?? 0;
               const dailyRestWindow = record.dailyRestWindowMinutes || 1440;
               const dailyRestElapsed = dailyRestElapsedOf(record);
               const dailyRestMinutesLeft = dailyRestLeftOf(record);
@@ -1105,7 +1054,7 @@ export default function FatigueManagementPage() {
                   <td
                     className="bpl-fatigue-td-4h bpl-fatigue-field-start"
                     style={{ textAlign: 'right' }}
-                    title={COL_TIPS['Drive time']}
+                    title={COL_TIPS['Drive time today']}
                   >
                     {fmtHosMinutes(record.driveMinutesToday)}
                   </td>
@@ -1121,6 +1070,7 @@ export default function FatigueManagementPage() {
                     }
                     showTime
                     allowOverLimitPct
+                    overLimitVisualMaxPct={200}
                   />
                   <td
                     className="bpl-fatigue-td-4h"
@@ -1141,10 +1091,6 @@ export default function FatigueManagementPage() {
                       ? '—'
                       : fmtSignedHosMinutes(driveMinutesLeft)}
                   </td>
-                  <td className="bpl-fatigue-td-4h" style={{ textAlign: 'right' }} title="Moving time driven past the 4h limit">
-                    {vDrive > 0 ? fmtHosMinutes(vDrive) : '—'}
-                  </td>
-
                   {/* Daily rest */}
                   <FatigueMeter
                     className="bpl-fatigue-td-daily bpl-fatigue-td-meter bpl-fatigue-field-start"

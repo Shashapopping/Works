@@ -756,7 +756,6 @@ export const ROUTE_PERMISSIONS = {
   '/fuel/consumption': 'fuel-consumption',
   '/trips': 'trips',
   '/reports': 'reports',
-  '/reports/documents': 'documents',
   '/maintenance': 'maintenance',
   '/aria': 'aria',
   '/settings': 'settings',
