@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { fetchOAuthProviders, fetchTransporters, startGoogleOAuth } from '../lib/authApi';
+import { fetchOAuthProviders, startGoogleOAuth } from '../lib/authApi';
 import { brandLogoAlt, brandLogoSrc, productName } from '../lib/branding';
 import { Lock, Check, Building2, Truck, ChevronLeft } from 'lucide-react';
 
@@ -15,9 +15,6 @@ export default function Login() {
   const [portal, setPortal] = useState<LoginPortal | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [selectedTransporter, setSelectedTransporter] = useState('');
-  const [transporters, setTransporters] = useState<string[]>([]);
-  const [transportersLoading, setTransportersLoading] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -32,26 +29,6 @@ export default function Login() {
     const oauthErr = params.get('msg');
     if (params.get('oauth') && oauthErr) setError(oauthErr);
   }, []);
-
-  useEffect(() => {
-    if (portal !== 'transporter') return;
-    let cancelled = false;
-    setTransportersLoading(true);
-    fetchTransporters()
-      .then(list => {
-        if (!cancelled) {
-          setTransporters(list);
-          if (list.length && !selectedTransporter) setSelectedTransporter(list[0]);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setError('Could not load transporter list');
-      })
-      .finally(() => {
-        if (!cancelled) setTransportersLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [portal]);
 
   if (loading) {
     return (
@@ -79,17 +56,9 @@ export default function Login() {
   const onLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (portal === 'transporter' && !selectedTransporter) {
-      setError('Select your transporter');
-      return;
-    }
     setBusy(true);
     try {
-      await login(
-        email.trim(),
-        password,
-        portal === 'transporter' ? selectedTransporter : undefined,
-      );
+      await login(email.trim(), password, portal === 'transporter');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -272,27 +241,6 @@ export default function Login() {
             }}>
               {portal === 'admin' ? 'HBM Admin' : 'Transporter'}
             </div>
-
-            {portal === 'transporter' && (
-              <div>
-                <label style={labelStyle}>Transporter</label>
-                <select
-                  style={{ ...fieldStyle, cursor: 'pointer' }}
-                  value={selectedTransporter}
-                  onChange={e => setSelectedTransporter(e.target.value)}
-                  disabled={transportersLoading || transporters.length === 0}
-                  required
-                >
-                  {transportersLoading && <option value="">Loading transporters…</option>}
-                  {!transportersLoading && transporters.length === 0 && (
-                    <option value="">No transporters found</option>
-                  )}
-                  {transporters.map(name => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
 
             <div>
               <label style={labelStyle}>Email</label>

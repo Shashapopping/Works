@@ -173,7 +173,7 @@ export async function handleAuthRequest(req, res) {
       const jwtMode = isJwtAuthMode();
       const result = await login(body.email, body.password, {
         createSession: !jwtMode,
-        transporter: body.transporter,
+        viaTransporterPortal: body.portal === 'transporter',
       });
       if (jwtMode) {
         const token = signAccessToken(result.user);
@@ -271,7 +271,10 @@ export async function handleAuthRequest(req, res) {
           roleId: body.roleId,
           actorId: user.id,
           isOrganisational: wantOrg,
-          transporter: body.transporter,
+          transporters: Array.isArray(body.transporters)
+            ? body.transporters
+            : (body.transporter ? [body.transporter] : []),
+          fleetName: body.fleetName,
         });
         sendJson(res, 201, { user: created, seats: getSeatInfo() });
       } catch (e) {
@@ -299,8 +302,16 @@ export async function handleAuthRequest(req, res) {
         sendJson(res, 403, { error: 'Only organisational accounts can change the organisational flag' });
         return true;
       }
+      const updateBody = {
+        ...body,
+        transporters: Array.isArray(body.transporters)
+          ? body.transporters
+          : (body.transporter !== undefined
+            ? (body.transporter ? [body.transporter] : [])
+            : undefined),
+      };
       try {
-        const updated = await updateUser(decodeURIComponent(userMatch[1]), body, actor.id);
+        const updated = await updateUser(decodeURIComponent(userMatch[1]), updateBody, actor.id);
         sendJson(res, 200, { user: updated, seats: getSeatInfo() });
       } catch (e) {
         if (e?.code === 'seat_limit' || e?.status === 402) {

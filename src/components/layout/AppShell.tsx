@@ -320,9 +320,9 @@ export default function AppShell() {
               </button>
             )}
             <span style={{ fontSize: 15, fontWeight: 500, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
-              {user?.transporter && (
+              {!!user?.transporters?.length && (
                 <>
-                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.transporter}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.transporters.join(', ')}</span>
                   <span style={{ color: 'rgba(255,255,255,0.25)', fontWeight: 400 }}>·</span>
                 </>
               )}

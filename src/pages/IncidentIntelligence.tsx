@@ -810,8 +810,9 @@ function PatternsTab({
     { label: 'Harsh Accel.', value: responseSummary.harshAccel, color: '#0078D4' },
   ];
 
-  const goToCoaching = (driverKey: string) => {
-    navigateTo(`/drivers/coaching?q=${encodeURIComponent(driverKey)}&open=${encodeURIComponent(driverKey)}`);
+  const goToCoaching = (driverName: string) => {
+    const q = driverName.trim();
+    navigateTo(`/drivers/coaching?q=${encodeURIComponent(q)}&open=${encodeURIComponent(q)}`);
   };
 
   const filteredRows = useMemo(() => {
@@ -990,7 +991,7 @@ function PatternsTab({
                       <button
                         type="button"
                         className="bpl-btn-secondary"
-                        onClick={e => { e.stopPropagation(); goToCoaching(row.key); }}
+                        onClick={e => { e.stopPropagation(); goToCoaching(row.name); }}
                         style={{ fontSize: 11, padding: '4px 8px' }}
                       >
                         Make comment

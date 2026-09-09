@@ -6,7 +6,7 @@ import {
 import { useFleet } from '../../context/FleetContext';
 import { SIDEBAR_NAV, type NavGroup } from '../../config/nav';
 import { useAuth } from '../../context/AuthContext';
-import { permissionForPath, getAuthMode, getStoredToken, decodeJwtPayload } from '../../lib/authApi';
+import { permissionForPath } from '../../lib/authApi';
 import { brandLogoAlt, brandLogoMarkSrc, clientName, platformName } from '../../lib/branding';
 
 const NAV: NavGroup[] = SIDEBAR_NAV;
@@ -56,9 +56,6 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
   const { user, hasPermission } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const jwtToken = getAuthMode() === 'jwt' ? getStoredToken() : null;
-  const jwtClaims = jwtToken ? decodeJwtPayload(jwtToken) : null;
-
   const canSeePath = (path: string) => {
     const perm = permissionForPath(path);
     if (!perm) return true;
@@ -111,7 +108,7 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             </div>
           )}
           <div className="bpl-sidebar-brand-block">
-            <div className="bpl-sidebar-brand-name">{clientName()}</div>
+            <div className="bpl-sidebar-brand-name">{user?.fleetName || clientName()}</div>
             <div className="bpl-sidebar-brand-text">{platformName()}</div>
           </div>
         </div>
@@ -274,32 +271,6 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
             <Settings size={15} />
             Settings
           </NavLink>
-        )}
-
-        {jwtToken && (
-          <div style={{
-            margin: '8px 10px 0',
-            background: 'rgba(234,179,8,0.1)',
-            border: '0.5px solid rgba(234,179,8,0.35)',
-            borderRadius: 8,
-            padding: '8px 10px',
-            fontSize: 10,
-            color: 'rgba(255,255,255,0.65)',
-            lineHeight: 1.45,
-          }}>
-            <div style={{ fontWeight: 700, color: 'rgba(234,179,8,0.95)', marginBottom: 4 }}>
-              JWT mode (local)
-            </div>
-            {jwtClaims && (
-              <div style={{ fontFamily: 'monospace', fontSize: 9, wordBreak: 'break-all' }}>
-                sub: {String(jwtClaims.sub)}<br />
-                exp: {jwtClaims.exp ? new Date(Number(jwtClaims.exp) * 1000).toLocaleString() : '—'}
-              </div>
-            )}
-            <div style={{ marginTop: 4, opacity: 0.75 }}>
-              Token in localStorage · sent as Authorization: Bearer
-            </div>
-          </div>
         )}
 
         <div style={{
