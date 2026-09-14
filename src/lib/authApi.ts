@@ -9,7 +9,9 @@ export interface AuthUser {
   status: string;
   mustChangePassword: boolean;
   isOrganisational?: boolean;
-  transporter?: string | null;
+  transporters?: string[];
+  /** Custom display name for a transporter account — shown as the sidebar title instead of the default client name. */
+  fleetName?: string | null;
   permissions: string[];
   lastLoginAt: string | null;
   createdAt: string;
@@ -142,7 +144,7 @@ export async function fetchTransporters(): Promise<string[]> {
 export async function authLogin(
   email: string,
   password: string,
-  transporter?: string | null,
+  viaTransporterPortal?: boolean,
 ): Promise<AuthUser> {
   const res = await fetch('/api/auth/login', {
     method: 'POST',
@@ -151,7 +153,7 @@ export async function authLogin(
     body: JSON.stringify({
       email,
       password,
-      ...(transporter ? { transporter } : {}),
+      ...(viaTransporterPortal ? { portal: 'transporter' } : {}),
     }),
   });
   const data = await parseJson(res) as {
@@ -209,7 +211,8 @@ export async function createUserApi(body: {
   password: string;
   roleId: string;
   isOrganisational?: boolean;
-  transporter?: string | null;
+  transporters?: string[];
+  fleetName?: string;
 }) {
   const res = await fetch('/api/users', authFetchInit({
     method: 'POST',
@@ -228,7 +231,8 @@ export async function patchUserApi(id: string, body: {
   status?: string;
   password?: string;
   isOrganisational?: boolean;
-  transporter?: string | null;
+  transporters?: string[];
+  fleetName?: string;
 }) {
   const res = await fetch(`/api/users/${encodeURIComponent(id)}`, authFetchInit({
     method: 'PATCH',
@@ -247,7 +251,6 @@ export function permissionForPath(pathname: string): string | null {
     ['/fuel/consumption', 'fuel-consumption'],
     ['/fuel/monitoring', 'fuel-monitoring'],
     ['/fuel', 'fuel-monitoring'],
-    ['/reports/documents', 'documents'],
     ['/reports', 'reports'],
     ['/incidents', 'incidents'],
     ['/trends', 'incidents'],
@@ -260,6 +263,8 @@ export function permissionForPath(pathname: string): string | null {
     ['/trips', 'trips'],
     ['/maintenance', 'maintenance'],
     ['/aria', 'aria'],
+    ['/assets', 'assets'],
+    ['/operations/utilization', 'utilization'],
     ['/fleet', 'fleet'],
     ['/', 'dashboard'],
   ];

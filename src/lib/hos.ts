@@ -22,8 +22,10 @@ export interface HosViolationEvent {
 export interface HosRecord {
   id: string;
   driverName: string;
+  assetId?: string | null;
   vehicleReg: string;
   site: string;
+  siteId?: string | null;
   driveMinutesToday: number;
   dutyMinutesToday: number;
   /** Total driving minutes in the rolling 24h cycle. */

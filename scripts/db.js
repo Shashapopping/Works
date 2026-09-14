@@ -301,6 +301,7 @@ function initSchema() {
     db.exec(`ALTER TABLE users ADD COLUMN is_organisational INTEGER NOT NULL DEFAULT 0`);
   }
   ensureColumn('users', 'transporter', 'TEXT');
+  ensureColumn('users', 'fleet_name', 'TEXT');
   const eventCols = db.prepare(`PRAGMA table_info(events)`).all().map(c => c.name);
   if (!eventCols.includes('speed')) {
     db.exec(`ALTER TABLE events ADD COLUMN speed REAL`);

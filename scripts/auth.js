@@ -16,20 +16,22 @@ const BCRYPT_ROUNDS = 10;
 export const ACCESS_CATALOG = [
   { id: 'dashboard', label: 'Dashboard', group: 'Core' },
   { id: 'fleet', label: 'Fleet', group: 'Core' },
+  { id: 'assets', label: 'Assets', group: 'Core' },
   { id: 'drivers', label: 'Driver Management', group: 'Core' },
   { id: 'incidents', label: 'Incident Intelligence', group: 'Core' },
   { id: 'tankers', label: 'Bulk Tankers', group: 'Fleet segments' },
   { id: 'quarry', label: 'Quarry', group: 'Fleet segments' },
   { id: 'cement', label: 'Cement', group: 'Fleet segments' },
   { id: 'ready-mix', label: 'Ready Mix', group: 'Fleet segments' },
-  { id: 'safety', label: 'Safety Vault', group: 'Safety' },
+  { id: 'safety', label: 'Safety', group: 'Safety' },
   { id: 'fuel-monitoring', label: 'Fuel Monitoring', group: 'Operations' },
   { id: 'fuel-consumption', label: 'Fuel Consumption', group: 'Operations' },
-  { id: 'trips', label: 'Trips & Dispatch', group: 'Operations' },
+  { id: 'utilization', label: 'Utilization', group: 'Operations' },
+  { id: 'trips', label: 'Journey Management', group: 'Operations' },
+  { id: 'maintenance', label: 'Maintenance', group: 'Operations' },
   { id: 'reports', label: 'Reports', group: 'Reporting' },
   { id: 'documents', label: 'Documents', group: 'Reporting' },
-  { id: 'maintenance', label: 'Maintenance', group: 'Operations' },
-  { id: 'aria', label: 'BPL Analyst', group: 'AI Intelligence' },
+  { id: 'aria', label: 'AI Insights', group: 'AI Intelligence' },
   { id: 'settings', label: 'Settings', group: 'Administration' },
   { id: 'user-management', label: 'User Management', group: 'Administration' },
   { id: 'reset-data', label: 'Reset Data', group: 'Administration' },
@@ -48,14 +50,14 @@ const DEFAULT_ROLES = [
   {
     id: 'hse-officer',
     name: 'HSE Officer',
-    description: 'Safety Vault, BPL Analyst, Driver Management, Incident Intelligence',
+    description: 'Safety, BPL Analyst, Driver Management, Incident Intelligence',
     permissions: ['safety', 'aria', 'drivers', 'incidents', 'reports', 'dashboard'],
   },
   {
     id: 'operations-manager',
     name: 'Operations Manager',
     description: 'Dashboard, Fleet, Operations, limited Safety access',
-    permissions: ['dashboard', 'fleet', 'trips', 'fuel-monitoring', 'fuel-consumption', 'drivers', 'incidents', 'quarry', 'tankers', 'cement', 'ready-mix'],
+    permissions: ['dashboard', 'fleet', 'assets', 'utilization', 'trips', 'fuel-monitoring', 'fuel-consumption', 'drivers', 'incidents', 'quarry', 'tankers', 'cement', 'ready-mix'],
   },
   {
     id: 'view-only',
@@ -66,9 +68,9 @@ const DEFAULT_ROLES = [
   {
     id: 'transporter',
     name: 'Transporter',
-    description: 'Scoped to one transporter site — no fleet segment pages',
+    description: 'Scoped to one or more transporter organizations — no fleet segment pages',
     permissions: [
-      'dashboard', 'fleet', 'drivers', 'incidents', 'reports',
+      'dashboard', 'fleet', 'assets', 'drivers', 'incidents', 'reports',
       'trips', 'fuel-monitoring', 'fuel-consumption', 'maintenance',
     ],
   },
@@ -102,7 +104,6 @@ function newId() {
 
 export function publicUser(row, permissions) {
   if (!row) return null;
-  const transporter = row.transporter ? String(row.transporter).trim() : null;
   return {
     id: row.id,
     email: row.email,
@@ -112,7 +113,8 @@ export function publicUser(row, permissions) {
     status: row.status,
     mustChangePassword: !!row.must_change_password,
     isOrganisational: !!row.is_organisational,
-    transporter: transporter || null,
+    transporters: parseTransporterList(row.transporter),
+    fleetName: row.fleet_name ? String(row.fleet_name).trim() || null : null,
     permissions: permissions || [],
     lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at,
@@ -148,6 +150,7 @@ export function seedRolesIfNeeded() {
   const count = db.prepare('SELECT COUNT(*) AS c FROM roles').get().c;
   if (count > 0) {
     ensureTransporterRole();
+    ensureNewCatalogPermissions();
     return;
   }
 
@@ -188,6 +191,27 @@ export function ensureTransporterRole() {
   }
 }
 
+/**
+ * One-time backfill for existing installs: the Assets and Utilization sidebar pages
+ * used to be reachable by any signed-in user (no permission gated them). Now that they
+ * do have permission ids, grant them to the default roles that already implied access
+ * so this fix doesn't newly lock anyone out. Additive only (INSERT OR IGNORE) — never
+ * touches a role an admin has already customized away from these defaults.
+ */
+function ensureNewCatalogPermissions() {
+  const db = getDb();
+  const insertPerm = db.prepare(
+    'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
+  );
+  const grants = {
+    'operations-manager': ['assets', 'utilization'],
+  };
+  for (const [roleId, permissionIds] of Object.entries(grants)) {
+    if (!db.prepare('SELECT id FROM roles WHERE id = ?').get(roleId)) continue;
+    for (const pid of permissionIds) insertPerm.run(roleId, pid);
+  }
+}
+
 export function listTransporters() {
   const dataPath = path.join(process.cwd(), 'public', 'data.json');
   try {
@@ -211,11 +235,45 @@ function normalizeTransporterName(value) {
   return String(value || '').trim();
 }
 
-function transporterNamesMatch(a, b) {
-  const left = normalizeTransporterName(a);
-  const right = normalizeTransporterName(b);
-  if (!left || !right) return false;
-  return left.localeCompare(right, undefined, { sensitivity: 'base' }) === 0;
+/** Normalize a list of org names into a deduped, trimmed array (order preserved). */
+function normalizeTransporterList(value) {
+  const raw = Array.isArray(value) ? value : (value == null ? [] : [value]);
+  const seen = new Set();
+  const out = [];
+  for (const v of raw) {
+    const name = normalizeTransporterName(v);
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/** Serialize a list of org names for the `transporter` TEXT column. Empty list → null ("HBM — Entire fleet"). */
+function serializeTransporterList(list) {
+  const names = normalizeTransporterList(list);
+  return names.length ? JSON.stringify(names) : null;
+}
+
+/**
+ * Parse the `transporter` column back into a list. Understands the current JSON-array
+ * format as well as the legacy plain-string format (a single org name, pre multi-select).
+ */
+function parseTransporterList(raw) {
+  if (!raw) return [];
+  const str = String(raw).trim();
+  if (!str) return [];
+  if (str.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(str);
+      if (Array.isArray(parsed)) return normalizeTransporterList(parsed);
+    } catch {
+      /* fall through to legacy handling */
+    }
+  }
+  return normalizeTransporterList([str]);
 }
 
 export async function bootstrapAdminIfNeeded() {
@@ -271,7 +329,7 @@ export function saveRoles(roles) {
     const name = String(r.name || '').trim();
     if (!name) throw Object.assign(new Error('Role name is required'), { status: 400 });
     let permissions = Array.isArray(r.permissions)
-      ? r.permissions.filter(p => VALID_PERMISSIONS.has(p))
+      ? [...new Set(r.permissions.filter(p => VALID_PERMISSIONS.has(p)))]
       : [];
     // Hard floor: Admin role always keeps Settings + User Management (prevents sole-admin lockout)
     if (id === 'admin') {
@@ -364,23 +422,25 @@ export async function createUser({
   actorId,
   isOrganisational = false,
   sendInviteEmail = true,
-  transporter = null,
+  transporters = [],
+  fleetName = null,
 }) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const displayName = String(name || '').trim();
   const role = String(roleId || '').trim();
   const pwd = String(password || '');
   const orgFlag = !!isOrganisational;
-  const transporterName = normalizeTransporterName(transporter) || null;
+  const transporterList = normalizeTransporterList(transporters);
+  const transporterColumn = serializeTransporterList(transporterList);
+  const fleetDisplayName = role === 'transporter' ? (String(fleetName || '').trim() || null) : null;
 
   if (!normalizedEmail || !normalizedEmail.includes('@')) {
     throw Object.assign(new Error('Valid email is required'), { status: 400 });
   }
   if (!displayName) throw Object.assign(new Error('Name is required'), { status: 400 });
   if (pwd.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
-  if (role === 'transporter' && !transporterName) {
-    throw Object.assign(new Error('Transporter site is required for transporter accounts'), { status: 400 });
-  }
+  // transporterName may be null for a transporter-role account — that signifies the
+  // "HBM — Entire fleet" option (full-fleet HBM staff), not a scoping gap.
 
   const db = getDb();
   const roleExists = db.prepare('SELECT id FROM roles WHERE id = ?').get(role);
@@ -402,11 +462,11 @@ export async function createUser({
   const id = newId();
   const hash = await bcrypt.hash(pwd, BCRYPT_ROUNDS);
   db.prepare(`
-    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, is_organisational, transporter, created_at)
-    VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)
-  `).run(id, normalizedEmail, displayName, hash, role, orgFlag ? 1 : 0, transporterName, nowIso());
+    INSERT INTO users (id, email, name, password_hash, role_id, status, must_change_password, is_organisational, transporter, fleet_name, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?)
+  `).run(id, normalizedEmail, displayName, hash, role, orgFlag ? 1 : 0, transporterColumn, fleetDisplayName, nowIso());
 
-  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role, isOrganisational: orgFlag, transporter: transporterName });
+  writeAudit(actorId, 'user.create', id, { email: normalizedEmail, roleId: role, isOrganisational: orgFlag, transporters: transporterList, fleetName: fleetDisplayName });
   const row = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
     LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
@@ -434,7 +494,7 @@ export async function createUser({
   return { ...created, emailSent: !!emailResult.sent, emailError: emailResult.error || null };
 }
 
-export async function updateUser(userId, { name, roleId, status, password, isOrganisational, transporter }, actorId) {
+export async function updateUser(userId, { name, roleId, status, password, isOrganisational, transporters, fleetName }, actorId) {
   const db = getDb();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -443,9 +503,12 @@ export async function updateUser(userId, { name, roleId, status, password, isOrg
   const nextRole = roleId !== undefined ? String(roleId).trim() : user.role_id;
   const nextStatus = status !== undefined ? String(status).trim() : user.status;
   const nextOrg = isOrganisational !== undefined ? (!!isOrganisational ? 1 : 0) : (user.is_organisational || 0);
-  let nextTransporter = transporter !== undefined
-    ? (normalizeTransporterName(transporter) || null)
-    : (user.transporter ? normalizeTransporterName(user.transporter) : null);
+  let nextTransporterList = transporters !== undefined
+    ? normalizeTransporterList(transporters)
+    : parseTransporterList(user.transporter);
+  let nextFleetName = fleetName !== undefined
+    ? (String(fleetName || '').trim() || null)
+    : (user.fleet_name ? String(user.fleet_name).trim() || null : null);
 
   if (!nextName) throw Object.assign(new Error('Name is required'), { status: 400 });
   if (!['active', 'disabled'].includes(nextStatus)) {
@@ -454,11 +517,9 @@ export async function updateUser(userId, { name, roleId, status, password, isOrg
   if (!db.prepare('SELECT id FROM roles WHERE id = ?').get(nextRole)) {
     throw Object.assign(new Error('Invalid role'), { status: 400 });
   }
-  if (nextRole === 'transporter' && !nextTransporter) {
-    throw Object.assign(new Error('Transporter site is required for transporter accounts'), { status: 400 });
-  }
   if (nextRole !== 'transporter') {
-    nextTransporter = null;
+    nextTransporterList = [];
+    nextFleetName = null;
   }
 
   // Don't allow disabling or demoting the last active admin with user-management
@@ -493,11 +554,11 @@ export async function updateUser(userId, { name, roleId, status, password, isOrg
   }
 
   db.prepare(`
-    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?, is_organisational = ?, transporter = ?
+    UPDATE users SET name = ?, role_id = ?, status = ?, password_hash = ?, must_change_password = ?, is_organisational = ?, transporter = ?, fleet_name = ?
     WHERE id = ?
-  `).run(nextName, nextRole, nextStatus, hash, mustChange, nextOrg, nextTransporter, userId);
+  `).run(nextName, nextRole, nextStatus, hash, mustChange, nextOrg, serializeTransporterList(nextTransporterList), nextFleetName, userId);
 
-  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus, isOrganisational: !!nextOrg, transporter: nextTransporter });
+  writeAudit(actorId, 'user.update', userId, { roleId: nextRole, status: nextStatus, isOrganisational: !!nextOrg, transporters: nextTransporterList, fleetName: nextFleetName });
   const row = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
     LEFT JOIN roles r ON r.id = u.role_id WHERE u.id = ?
@@ -567,9 +628,8 @@ export async function changePassword(userId, currentPassword, newPassword) {
   return { ok: true };
 }
 
-export async function login(email, password, { createSession = true, transporter: portalTransporter = null } = {}) {
+export async function login(email, password, { createSession = true, viaTransporterPortal = false } = {}) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
-  const expectedTransporter = normalizeTransporterName(portalTransporter) || null;
   const db = getDb();
   const user = db.prepare(`
     SELECT u.*, r.name AS role_name FROM users u
@@ -582,15 +642,17 @@ export async function login(email, password, { createSession = true, transporter
     throw Object.assign(new Error('Invalid email or password'), { status: 401 });
   }
 
-  const userTransporter = normalizeTransporterName(user.transporter) || null;
+  // Each transporter account's fleet scope is fixed by its stored `transporter` value
+  // (or full-fleet HBM access when that value is null) — the portal only gates which
+  // login form the account uses, not a site selection.
+  const isTransporterAccount = user.role_id === 'transporter';
 
-  if (expectedTransporter) {
-    if (!userTransporter || !transporterNamesMatch(userTransporter, expectedTransporter)) {
-      throw Object.assign(new Error('Invalid email or password'), { status: 401 });
-    }
-  } else if (userTransporter) {
+  if (viaTransporterPortal && !isTransporterAccount) {
+    throw Object.assign(new Error('Invalid email or password'), { status: 401 });
+  }
+  if (!viaTransporterPortal && isTransporterAccount) {
     throw Object.assign(
-      new Error('Use the Transporter login and select your company'),
+      new Error('Use the Transporter login for this account'),
       { status: 403, code: 'transporter_portal_required' },
     );
   }
@@ -634,9 +696,9 @@ export async function loginWithEmail(email, { displayName = null, provider = 'oa
     throw Object.assign(new Error('No active account for this email'), { status: 403 });
   }
 
-  if (normalizeTransporterName(user.transporter)) {
+  if (user.role_id === 'transporter') {
     throw Object.assign(
-      new Error('Use the Transporter login and select your company'),
+      new Error('Use the Transporter login for this account'),
       { status: 403, code: 'transporter_portal_required' },
     );
   }
@@ -756,7 +818,6 @@ export const ROUTE_PERMISSIONS = {
   '/fuel/consumption': 'fuel-consumption',
   '/trips': 'trips',
   '/reports': 'reports',
-  '/reports/documents': 'documents',
   '/maintenance': 'maintenance',
   '/aria': 'aria',
   '/settings': 'settings',

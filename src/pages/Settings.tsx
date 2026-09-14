@@ -582,6 +582,7 @@ function RoleSettings() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [dragOverRoleId, setDragOverRoleId] = useState<string | null>(null);
   const [dragOverPool, setDragOverPool] = useState(false);
@@ -589,7 +590,7 @@ function RoleSettings() {
   const [editDraft, setEditDraft] = useState({ name: '', desc: '' });
 
   const serialize = (roles: RoleDefinition[]) => JSON.stringify(
-    roles.map(r => ({ id: r.id, name: r.name, desc: r.desc, permissions: [...r.permissions].sort() })),
+    roles.map(r => ({ id: r.id, name: r.name, desc: r.desc, permissions: [...new Set(r.permissions)].sort() })),
   );
 
   const dirty = !loading && baseline !== '' && serialize(config.roles) !== baseline;
@@ -696,7 +697,10 @@ function RoleSettings() {
   };
 
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
     setSaveError('');
+    setSaved(false);
     // Flush in-progress name/desc edit into config before persist
     let rolesToSave = config.roles;
     if (editingId) {
@@ -708,6 +712,10 @@ function RoleSettings() {
       setConfig({ roles: rolesToSave });
       setEditingId(null);
     }
+    rolesToSave = rolesToSave.map(role => ({
+      ...role,
+      permissions: [...new Set(role.permissions)],
+    }));
     try {
       const data = await putRoles(rolesToSave);
       const roles = data.roles.map(r => ({
@@ -723,6 +731,8 @@ function RoleSettings() {
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -971,8 +981,8 @@ function RoleSettings() {
             >
               Reset defaults
             </button>
-            <button className="bpl-btn-primary" onClick={save}>
-              {saved ? <><Check size={14} /> Saved</> : dirty ? 'Save roles*' : 'Save roles'}
+            <button type="button" className="bpl-btn-primary" onClick={save} disabled={saving}>
+              {saving ? 'Saving...' : saved ? <><Check size={14} /> Saved</> : dirty ? 'Save roles*' : 'Save roles'}
             </button>
           </div>
         </div>
@@ -988,7 +998,10 @@ function UserSettings() {
   const [seats, setSeats] = useState<SeatInfo>({ used: 0, limit: 3, remaining: 3 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [form, setForm] = useState({ name: '', email: '', password: '', roleId: 'view-only', transporter: '' });
+  const [form, setForm] = useState({
+    name: '', email: '', password: '', roleId: 'view-only',
+    transporters: [] as string[], fleetName: '',
+  });
   const [transporterOptions, setTransporterOptions] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [createdTemp, setCreatedTemp] = useState<{ email: string; password: string; emailSent?: boolean; emailError?: string | null } | null>(null);
@@ -1023,12 +1036,7 @@ function UserSettings() {
     let cancelled = false;
     fetchTransporters()
       .then(list => {
-        if (!cancelled) {
-          setTransporterOptions(list);
-          if (list.length) {
-            setForm(p => (p.transporter ? p : { ...p, transporter: list[0] }));
-          }
-        }
+        if (!cancelled) setTransporterOptions(list);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -1048,7 +1056,8 @@ function UserSettings() {
     try {
       const payload = {
         ...form,
-        transporter: form.roleId === 'transporter' ? form.transporter : undefined,
+        transporters: form.roleId === 'transporter' ? form.transporters : undefined,
+        fleetName: form.roleId === 'transporter' ? (form.fleetName.trim() || undefined) : undefined,
       };
       const result = await createUserApi(payload);
       setCreatedTemp({
@@ -1057,7 +1066,10 @@ function UserSettings() {
         emailSent: !!(result.user as AuthUser & { emailSent?: boolean }).emailSent,
         emailError: (result.user as AuthUser & { emailError?: string | null }).emailError ?? null,
       });
-      setForm({ name: '', email: '', password: '', roleId: form.roleId || 'view-only', transporter: '' });
+      setForm({
+        name: '', email: '', password: '', roleId: form.roleId || 'view-only',
+        transporters: [], fleetName: '',
+      });
       if (result.seats) setSeats(result.seats);
       await reload();
     } catch (err) {
@@ -1167,25 +1179,59 @@ function UserSettings() {
           </div>
           <div>
             <label style={labelStyle}>Role</label>
-            <select style={fieldStyle} value={form.roleId} onChange={e => setForm(p => ({ ...p, roleId: e.target.value, transporter: '' }))}>
+            <select
+              style={fieldStyle}
+              value={form.roleId}
+              onChange={e => setForm(p => ({ ...p, roleId: e.target.value, transporters: [], fleetName: '' }))}
+            >
               {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
           {form.roleId === 'transporter' && (
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label style={labelStyle}>Transporter site</label>
-              <select
-                style={fieldStyle}
-                required
-                value={form.transporter}
-                onChange={e => setForm(p => ({ ...p, transporter: e.target.value }))}
-              >
-                {transporterOptions.length === 0 && <option value="">Loading transporters…</option>}
-                {transporterOptions.map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-            </div>
+            <>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={labelStyle}>Organizations</label>
+                <div style={{
+                  ...fieldStyle, cursor: 'default', padding: 10,
+                  display: 'flex', flexDirection: 'column', gap: 6,
+                  maxHeight: 200, overflowY: 'auto',
+                }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={form.transporters.length === 0}
+                      onChange={() => setForm(p => ({ ...p, transporters: [] }))}
+                    />
+                    HBM — Entire fleet
+                  </label>
+                  <div style={{ height: 1, background: 'var(--cd-border)', margin: '2px 0' }} />
+                  {transporterOptions.map(name => (
+                    <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={form.transporters.includes(name)}
+                        onChange={e => setForm(p => ({
+                          ...p,
+                          transporters: e.target.checked
+                            ? [...p.transporters, name]
+                            : p.transporters.filter(t => t !== name),
+                        }))}
+                      />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={labelStyle}>Fleet display name (optional)</label>
+                <input
+                  style={fieldStyle}
+                  placeholder="Shown in place of HBM Nigeria for this account"
+                  value={form.fleetName}
+                  onChange={e => setForm(p => ({ ...p, fleetName: e.target.value }))}
+                />
+              </div>
+            </>
           )}
           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
@@ -1222,7 +1268,10 @@ function UserSettings() {
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cd-text)' }}>{u.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>
                   {u.email}
-                  {u.transporter ? ` · ${u.transporter}` : ''}
+                  {u.roleId === 'transporter'
+                    ? ` · ${u.transporters?.length ? u.transporters.join(', ') : 'HBM — Entire fleet'}`
+                    : ''}
+                  {u.fleetName ? ` · "${u.fleetName}"` : ''}
                 </div>
               </div>
               <select

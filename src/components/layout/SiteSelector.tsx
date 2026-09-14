@@ -4,7 +4,7 @@ import SiteScopeDropdown from '../SiteScopeDropdown';
 export default function SiteSelector() {
   const {
     selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
-    siteLock, lockedTransporter,
+    siteLock, lockedTransporters,
   } = useFleet();
   return (
     <SiteScopeDropdown
@@ -14,7 +14,7 @@ export default function SiteSelector() {
       siteOptions={siteOptions}
       siteNameOptions={siteNameOptions}
       locked={siteLock}
-      lockedLabel={lockedTransporter || undefined}
+      lockedLabel={lockedTransporters.length ? lockedTransporters.join(', ') : undefined}
     />
   );
 }

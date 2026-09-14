@@ -13,6 +13,7 @@ import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeUtilization } from './scripts/util-engine.js'
 import { importWeekSeed } from './scripts/import-seed.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
+import { getRequestUser } from './scripts/auth-jwt.js'
 import { authExpressMiddleware } from './scripts/auth-http.js'
 import { startReportAutomateScheduler } from './scripts/report-automate.js'
 
@@ -56,6 +57,43 @@ function isAuthorized(req) {
 
 function unauthorized(res) {
   res.status(401).end('Unauthorized')
+}
+
+function parseAssetIdList(value) {
+  if (value == null || value === '') return null
+  return String(value)
+    .split(',')
+    .map(id => id.trim())
+    .filter(Boolean)
+}
+
+function scopedTransporterAssetIds(req) {
+  const user = getRequestUser(req)
+  const transporters = Array.isArray(user?.transporters)
+    ? user.transporters.map(t => String(t || '').trim()).filter(Boolean)
+    : []
+  if (transporters.length === 0) return null
+
+  const allowed = new Set(transporters)
+  const dataPath = path.join(process.cwd(), 'public', 'data.json')
+  const vehicles = JSON.parse(fs.readFileSync(dataPath, 'utf8'))
+  return vehicles
+    .filter(v =>
+      allowed.has(String(v.site || '').trim()) ||
+      allowed.has(String(v.transporter || '').trim()) ||
+      allowed.has(String(v.zone || '').trim())
+    )
+    .map(v => v.id != null ? String(v.id) : '')
+    .filter(Boolean)
+}
+
+function applySignedInTransporterScope(req, assetIds) {
+  const scopedIds = scopedTransporterAssetIds(req)
+  if (!scopedIds) return assetIds
+  const scoped = new Set(scopedIds)
+  const requested = parseAssetIdList(assetIds)
+  if (!requested) return scopedIds
+  return requested.filter(id => scoped.has(id))
 }
 
 // Block direct access to sensitive JSON files
@@ -293,11 +331,12 @@ app.get('/api/events/trends', (req, res) => {
 app.get('/api/risk/drivers', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
+    const assetIds = applySignedInTransporterScope(req, req.query.assetIds?.toString() || null)
     res.json(getRiskDrivers({
       range: req.query.range?.toString() || '30d',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
-      assetIds: req.query.assetIds?.toString() || null,
+      assetIds,
       siteScope: req.query.siteScope?.toString() || null,
       groupBy: req.query.groupBy?.toString() || 'driver',
     }))

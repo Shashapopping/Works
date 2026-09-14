@@ -43,6 +43,7 @@ import { appendUrlScope, filterDistanceAssetsByVehicles, filterTripDriversByVehi
 import { buildDriverDistanceUrl } from '../lib/pagePeriod';
 import { defaultPageCustomRange } from '../lib/pagePeriod';
 import { useAuth } from './AuthContext';
+import { authFetchInit } from '../lib/authApi';
 
 export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, TripItem };
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
@@ -120,7 +121,7 @@ Return only valid JSON, no markdown, nothing outside the JSON object.`;
 const API_SECRET = import.meta.env.VITE_API_SECRET;
 
 export const authFetch = (url: string, options: RequestInit = {}) =>
-  fetch(url, { ...options, headers: { ...options.headers, 'x-api-secret': API_SECRET } });
+  fetch(url, authFetchInit({ ...options, headers: { ...options.headers, 'x-api-secret': API_SECRET } }));
 
 export interface Metadata {
   totalVehicles: number;
@@ -300,9 +301,9 @@ interface FleetContextType {
   siteOptions: { key: string; label: string; count: number }[];
   /** Distinct `site` values (transporter/depot names within a zone) derived from live data, with asset counts. */
   siteNameOptions: { key: string; label: string; count: number }[];
-  /** True when the signed-in user is scoped to one transporter site. */
+  /** True when the signed-in user is scoped to one or more transporter organizations. */
   siteLock: boolean;
-  lockedTransporter: string | null;
+  lockedTransporters: string[];
   /** True when header site filter is active. */
   siteFilterActive: boolean;
   /** Asset IDs for the current site filter (from filtered fleet). Empty when unfiltered. */
@@ -370,8 +371,11 @@ const FleetContext = createContext<FleetContextType>({} as FleetContextType);
 
 export function FleetProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  const lockedTransporter = user?.transporter?.trim() || null;
-  const siteLock = !!lockedTransporter;
+  const lockedTransporters = useMemo(
+    () => (user?.transporters || []).map(t => t.trim()).filter(Boolean),
+    [user?.transporters],
+  );
+  const siteLock = lockedTransporters.length > 0;
   const [metadata, setMetadata] = useState<Metadata>(() =>
     cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? readMetadataSnapshot() ?? defaultMeta,
   );
@@ -476,12 +480,12 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setSelectedSites = useCallback((sites: string[]) => {
-    if (siteLock && lockedTransporter) {
-      persistSites([lockedTransporter]);
+    if (siteLock) {
+      persistSites(lockedTransporters);
       return;
     }
     persistSites(sites);
-  }, [persistSites, siteLock, lockedTransporter]);
+  }, [persistSites, siteLock, lockedTransporters]);
 
   const toggleSite = useCallback((siteKey: string) => {
     if (siteLock) return;
@@ -498,8 +502,8 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (lockedTransporter) persistSites([lockedTransporter]);
-  }, [lockedTransporter, persistSites]);
+    if (lockedTransporters.length) persistSites(lockedTransporters);
+  }, [lockedTransporters, persistSites]);
 
   const updateScoreConfig = useCallback((config: FleetScoreConfig) => {
     setScoreConfig(saveFleetScoreConfig(config));
@@ -1138,7 +1142,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
       selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
-      siteLock, lockedTransporter, siteFilterActive, scopedAssetIds,
+      siteLock, lockedTransporters, siteFilterActive, scopedAssetIds,
     }}>
       {children}
     </FleetContext.Provider>

@@ -16,6 +16,14 @@ export function makeScopedVehicleIdSet(vehicles: FleetVehicle[]) {
   );
 }
 
+export function makeScopedVehicleSiteIdSet(vehicles: FleetVehicle[]) {
+  return new Set(
+    vehicles
+      .map(v => v.siteId?.toString().trim())
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
 /** Sorted unique scope keys for cache keys / query params. */
 export function normalizeScopeKeys(keys: string[] = []) {
   return [...new Set(keys.map(k => k.trim()).filter(Boolean))].sort();

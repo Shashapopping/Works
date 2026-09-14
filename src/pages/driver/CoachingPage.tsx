@@ -143,6 +143,7 @@ function CoachingActions({ driver, onSaved }: { driver: QueueRow; onSaved: () =>
       )}
       <textarea
         data-driver-key={driver.key}
+        data-driver-name={driver.name}
         value={comment}
         onChange={e => setComment(e.target.value)}
         placeholder={mode === 'warning' ? 'Warning details — what happened and what the driver must improve…' : 'Internal coaching note…'}
@@ -548,7 +549,8 @@ export function InterventionQueuePage({ mode }: { mode: InterventionMode }) {
       const openKey = searchParams.get('open');
       if (openKey) {
         setTimeout(() => {
-          const el = document.querySelector<HTMLTextAreaElement>(`textarea[data-driver-key="${openKey}"]`);
+          const el = Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea[data-driver-key]'))
+            .find(textarea => textarea.dataset.driverKey === openKey || textarea.dataset.driverName === openKey);
           if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.focus(); }
         }, 300);
       }

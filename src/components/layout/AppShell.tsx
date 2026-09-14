@@ -47,7 +47,6 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/fuel/consumption': { title: 'Fuel', sub: '— consumption' },
     '/reports': { title: 'Reports', sub: '— event log and trends' },
     '/reports/automation': { title: 'Automation', sub: '— scheduled reporting' },
-    '/reports/documents': { title: 'Documents', sub: '— report repository' },
     '/maintenance': { title: 'Maintenance', sub: '— scheduling & service' },
     '/settings/general': { title: 'Settings', sub: '— general' },
     '/settings/scoring': { title: 'Settings', sub: '— scoring' },
@@ -320,9 +319,9 @@ export default function AppShell() {
               </button>
             )}
             <span style={{ fontSize: 15, fontWeight: 500, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
-              {user?.transporter && (
+              {!!user?.transporters?.length && (
                 <>
-                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.transporter}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.transporters.join(', ')}</span>
                   <span style={{ color: 'rgba(255,255,255,0.25)', fontWeight: 400 }}>·</span>
                 </>
               )}

@@ -1,9 +1,12 @@
+import { useState } from 'react';
 import { Bot, Folder, MailCheck } from 'lucide-react';
 import FeatureGate from '../components/FeatureGate';
 import ReportAutomate from '../components/ReportAutomate';
 import { DocumentsExplorer } from './DocumentsPage';
 
 export default function ReportsAutomationPage() {
+  const [selectedAutomationId, setSelectedAutomationId] = useState('');
+
   return (
     <FeatureGate featureId="reports">
       <div>
@@ -32,6 +35,7 @@ export default function ReportsAutomationPage() {
               embedded
               defaultOpen
               defaultFrequency="weekly"
+              onSelectedAutomationChange={setSelectedAutomationId}
             />
           </section>
 
@@ -43,7 +47,7 @@ export default function ReportsAutomationPage() {
                 <span>Reports generated or downloaded by the system</span>
               </div>
             </div>
-            <DocumentsExplorer showHeader={false} />
+            <DocumentsExplorer showHeader={false} highlightedAutomationId={selectedAutomationId} />
           </section>
         </div>
       </div>

@@ -32,6 +32,10 @@ interface DocFile {
   mime: string;
   sizeBytes: number;
   source: string | null;
+  meta?: {
+    automationId?: string;
+    [key: string]: unknown;
+  } | null;
   createdAt: string;
 }
 
@@ -73,6 +77,15 @@ function FileIcon({ name, mime }: { name: string; mime: string }) {
     return <FileText size={16} color="#CC0000" />;
   }
   return <FileText size={16} color="var(--cd-text-muted)" />;
+}
+
+function findFolderByName(folders: DocFolder[], name: string): DocFolder | null {
+  for (const folder of folders) {
+    if (folder.name === name) return folder;
+    const child = findFolderByName(folder.children || [], name);
+    if (child) return child;
+  }
+  return null;
 }
 
 function TreeNode({
@@ -133,7 +146,13 @@ function TreeNode({
   );
 }
 
-export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean } = {}) {
+export function DocumentsExplorer({
+  showHeader = true,
+  highlightedAutomationId = '',
+}: {
+  showHeader?: boolean;
+  highlightedAutomationId?: string;
+} = {}) {
   const [tree, setTree] = useState<DocFolder[]>(() =>
     peekAuthJson<{ tree?: DocFolder[] }>(DOCUMENTS_TREE_URL)?.tree ?? [],
   );
@@ -225,6 +244,14 @@ export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean 
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!highlightedAutomationId || tree.length === 0) return;
+    const automationFolder = findFolderByName(tree, 'Automation');
+    if (automationFolder && folderId !== automationFolder.id) {
+      void openFolder(automationFolder.id);
+    }
+  }, [highlightedAutomationId, tree, folderId]);
 
   const downloadFile = async (file: DocFile) => {
     setDownloadingId(file.id);
@@ -365,7 +392,7 @@ export function DocumentsExplorer({ showHeader = true }: { showHeader?: boolean 
                     {files.map(file => (
                       <tr
                         key={file.id}
-                        className="bpl-docs-row"
+                        className={`bpl-docs-row${file.meta?.automationId === highlightedAutomationId ? ' selected' : ''}`}
                         onDoubleClick={() => void downloadFile(file)}
                       >
                         <td>

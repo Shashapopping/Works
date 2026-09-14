@@ -36,7 +36,6 @@ import VisionPage from './pages/driver/VisionPage';
 import FuelConsumption from './pages/FuelConsumption';
 import ReportsPage from './pages/ReportsPage';
 import ReportsAutomationPage from './pages/ReportsAutomationPage';
-import DocumentsPage from './pages/DocumentsPage';
 import Maintenance from './pages/Maintenance';
 import Settings from './pages/Settings';
 import FatigueManagementPage from './pages/driver/FatigueManagementPage';
@@ -115,8 +114,6 @@ export default function App() {
                 <Route path="/reports" element={<ReportsPage />} />
 
                 <Route path="/reports/automation" element={<ReportsAutomationPage />} />
-
-                <Route path="/reports/documents" element={<DocumentsPage />} />
 
                 <Route path="/reports/*" element={<Navigate to="/reports" replace />} />
 
