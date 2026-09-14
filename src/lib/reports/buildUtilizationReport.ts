@@ -21,9 +21,10 @@ export function buildUtilizationReport(opts: {
     { header: 'Zone', width: 16 },
     { header: 'Class', width: 12 },
     { header: 'Engine hours', width: 12 },
+    { header: 'Driving hours', width: 12 },
+    { header: 'Idle hours', width: 12 },
     { header: 'Trip count', width: 10 },
     { header: 'Distance km', width: 12 },
-    { header: 'Loaded hours', width: 12 },
     { header: 'Utilization %', width: 12 },
     { header: 'Availability %', width: 12 },
   ];
@@ -36,7 +37,7 @@ export function buildUtilizationReport(opts: {
     }
     // Keep assets with any activity signal
     if (
-      !(a.engineHours > 0 || a.tripCount > 0 || a.distanceKm > 0 || a.loadedHours > 0)
+      !(a.engineHours > 0 || a.tripCount > 0 || a.distanceKm > 0 || a.drivingHours > 0)
     ) continue;
 
     rows.push([
@@ -46,17 +47,18 @@ export function buildUtilizationReport(opts: {
       a.zone || 'N/A',
       ASSET_CLASS_LABELS[a.assetClass] || a.assetClass || 'Other',
       Number(a.engineHours || 0).toFixed(1),
+      Number(a.drivingHours || 0).toFixed(1),
+      Number(a.idleHours || 0).toFixed(1),
       String(a.tripCount || 0),
       Number(a.distanceKm || 0).toFixed(1),
-      Number(a.loadedHours || 0).toFixed(1),
       pct(a.utilizationPct),
       pct(a.availabilityPct),
     ]);
   }
 
   rows.sort((a, b) => {
-    const ua = a[9] === '—' ? -1 : Number(a[9].replace('%', ''));
-    const ub = b[9] === '—' ? -1 : Number(b[9].replace('%', ''));
+    const ua = a[10] === '—' ? -1 : Number(a[10].replace('%', ''));
+    const ub = b[10] === '—' ? -1 : Number(b[10].replace('%', ''));
     return ub - ua;
   });
 

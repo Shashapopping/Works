@@ -20,7 +20,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useTableSort } from '../hooks/useTableSort';
 import { filterOverspeedEvents, isOverspeedLabel } from '../lib/overspeedFilter';
-import { filterTripDriversByVehicles } from '../lib/siteScope';
+import { appendUrlScope, normalizeScopeKeys } from '../lib/siteScope';
 import { tripStatsByDriverKey } from '../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../hooks/useAssessmentTripDrivers';
 import { COACHING_SCORE_THRESHOLD } from '../config/interventionRules';
@@ -87,19 +87,21 @@ function isoIncidentRange(range: DateRange, customFrom = '', customTo = ''): { f
   return { from: '2020-01-01T00:00:00.000Z', to: bucketedNowIso() };
 }
 
-function incidentSummaryUrl(range: DateRange, customFrom = '', customTo = '') {
+type IncidentScope = { assetIds?: string[]; siteScope?: string[] };
+
+function incidentSummaryUrl(range: DateRange, customFrom = '', customTo = '', scope: IncidentScope = {}) {
   const token = incidentApiRange(range);
-  if (token && token !== 'all') return `/api/safety/summary?range=${token}`;
-  if (token === 'all') return '/api/safety/summary?range=30d'; // fallback wide window
+  if (token && token !== 'all') return appendUrlScope(`/api/safety/summary?range=${token}`, scope);
+  if (token === 'all') return appendUrlScope('/api/safety/summary?range=30d', scope);
   const { from, to } = isoIncidentRange(range, customFrom, customTo);
-  return `/api/safety/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  return appendUrlScope(`/api/safety/summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, scope);
 }
 
-function incidentRiskDriversUrl(range: DateRange, customFrom = '', customTo = '') {
+function incidentRiskDriversUrl(range: DateRange, customFrom = '', customTo = '', scope: IncidentScope = {}) {
   const token = incidentApiRange(range);
-  if (token && token !== 'all') return `/api/risk/drivers?range=${token}`;
+  if (token && token !== 'all') return appendUrlScope(`/api/risk/drivers?range=${token}`, scope);
   const { from, to } = isoIncidentRange(range, customFrom, customTo);
-  return `/api/risk/drivers?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  return appendUrlScope(`/api/risk/drivers?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, scope);
 }
 
 function incidentEventsPageUrl(range: DateRange, opts: {
@@ -107,6 +109,8 @@ function incidentEventsPageUrl(range: DateRange, opts: {
   eventFilter: EventFilter;
   search: string;
   assetId?: string;
+  assetIds?: string[];
+  siteScope?: string[];
 }, customFrom = '', customTo = '') {
   const { from, to } = isoIncidentRange(range, customFrom, customTo);
   const params = new URLSearchParams();
@@ -120,10 +124,19 @@ function incidentEventsPageUrl(range: DateRange, opts: {
   const q = opts.search.trim();
   if (q) params.set('q', q);
   if (opts.assetId) params.set('assetId', opts.assetId);
-  return `/api/events/log?${params}`;
+  return appendUrlScope(`/api/events/log?${params}`, {
+    assetIds: opts.assetIds,
+    siteScope: opts.siteScope,
+  });
 }
 
-function incidentPatternsEventsUrl(range: DateRange, driverName: string, customFrom = '', customTo = '') {
+function incidentPatternsEventsUrl(
+  range: DateRange,
+  driverName: string,
+  customFrom = '',
+  customTo = '',
+  scope: IncidentScope = {},
+) {
   const { from, to } = isoIncidentRange(range, customFrom, customTo);
   const params = new URLSearchParams();
   params.set('from', from);
@@ -132,7 +145,7 @@ function incidentPatternsEventsUrl(range: DateRange, driverName: string, customF
   params.set('limit', '10');
   params.set('offset', '0');
   params.set('driver', driverName);
-  return `/api/events/log?${params}`;
+  return appendUrlScope(`/api/events/log?${params}`, scope);
 }
 
 
@@ -158,6 +171,7 @@ function EventsTab({
   highlightEventId,
   initialSearch,
   initialAssetId,
+  scope = {},
 }: {
   dateRange: DateRange;
   customFrom: string;
@@ -170,6 +184,7 @@ function EventsTab({
   highlightEventId: string | null;
   initialSearch: string;
   initialAssetId: string | null;
+  scope?: IncidentScope;
 }) {
   const [searchParams] = useSearchParams();
   const filterParam = searchParams.get('filter');
@@ -183,12 +198,14 @@ function EventsTab({
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const debouncedSearch = useDebouncedValue(search, 250);
   const deferredSearch = useDeferredValue(debouncedSearch);
+  const scopeKey = `${normalizeScopeKeys(scope.assetIds).join(',')}|${normalizeScopeKeys(scope.siteScope).join(',')}`;
 
   const pageUrl = incidentEventsPageUrl(dateRange, {
     page,
     eventFilter,
     search: deferredSearch,
     assetId: initialAssetId || undefined,
+    ...scope,
   }, customFrom, customTo);
   const [visibleRows, setVisibleRows] = useState<LogEntry[]>(() => {
     const cached = cachePeek<{ entries?: LogEntry[] } | LogEntry[]>(pageUrl);
@@ -214,7 +231,7 @@ function EventsTab({
 
   useEffect(() => {
     setPage(0);
-  }, [dateRange, eventFilter, deferredSearch, customFrom, customTo, initialAssetId]);
+  }, [dateRange, eventFilter, deferredSearch, customFrom, customTo, initialAssetId, scopeKey]);
 
   useEffect(() => {
     if (highlightEventId) return;
@@ -241,12 +258,15 @@ function EventsTab({
         eventFilter,
         search: deferredSearch,
         assetId: initialAssetId || undefined,
+        ...scope,
       }, customFrom, customTo);
       const cached = cachePeek<{ entries?: LogEntry[]; total?: number } | LogEntry[]>(url);
       if (cached != null) {
         applyPayload(cached);
         setEventsLoading(false);
       } else if (!silent) {
+        setVisibleRows([]);
+        setCensusTotal(0);
         setEventsLoading(true);
       }
 
@@ -275,7 +295,7 @@ function EventsTab({
       cancelled = true;
       stop();
     };
-  }, [dateRange, eventFilter, deferredSearch, page, customFrom, customTo, initialAssetId]);
+  }, [dateRange, eventFilter, deferredSearch, page, customFrom, customTo, initialAssetId, scopeKey]);
 
   const pageCount = Math.max(1, Math.ceil(censusTotal / EVENT_PAGE_SIZE) || 1);
   const from = censusTotal === 0 ? 0 : page * EVENT_PAGE_SIZE + 1;
@@ -396,6 +416,8 @@ function EventsTab({
             customFrom={customFrom}
             customTo={customTo}
             activeFilter={eventFilter}
+            assetIds={scope.assetIds}
+            siteScope={scope.siteScope}
           />
         </div>
       ) : (
@@ -499,8 +521,19 @@ type RiskDriverRow = {
   total?: number;
 };
 
-function ByDriverTab({ dateRange, customFrom, customTo }: { dateRange: DateRange; customFrom: string; customTo: string }) {
-  const url = incidentRiskDriversUrl(dateRange, customFrom, customTo);
+function ByDriverTab({
+  dateRange,
+  customFrom,
+  customTo,
+  scope = {},
+}: {
+  dateRange: DateRange;
+  customFrom: string;
+  customTo: string;
+  scope?: IncidentScope;
+}) {
+  const scopeKey = `${normalizeScopeKeys(scope.assetIds).join(',')}|${normalizeScopeKeys(scope.siteScope).join(',')}`;
+  const url = incidentRiskDriversUrl(dateRange, customFrom, customTo, scope);
   const [rows, setRows] = useState(() => {
     const cached = cachePeek<{ drivers?: RiskDriverRow[] }>(url);
     return (cached?.drivers ?? [])
@@ -519,7 +552,7 @@ function ByDriverTab({ dateRange, customFrom, customTo }: { dateRange: DateRange
 
   useEffect(() => {
     let cancelled = false;
-    const nextUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo);
+    const nextUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo, scope);
     const cached = cachePeek<{ drivers?: RiskDriverRow[] }>(nextUrl);
     if (cached?.drivers) {
       setRows(
@@ -537,6 +570,7 @@ function ByDriverTab({ dateRange, customFrom, customTo }: { dateRange: DateRange
       );
       setEventsLoading(false);
     } else {
+      setRows([]);
       setEventsLoading(true);
     }
 
@@ -565,12 +599,12 @@ function ByDriverTab({ dateRange, customFrom, customTo }: { dateRange: DateRange
       });
 
     return () => { cancelled = true; };
-  }, [dateRange, customFrom, customTo]);
+  }, [dateRange, customFrom, customTo, scopeKey]);
 
   const pagination = useClientPagination(
     rows,
     DRIVER_TABLE_PAGE_SIZE,
-    `${dateRange}|${customFrom}|${customTo}`,
+    `${dateRange}|${customFrom}|${customTo}|${scopeKey}`,
   );
 
   return (
@@ -645,20 +679,25 @@ function PatternsTab({
   dateRange,
   customFrom,
   customTo,
-  vehicles,
-  selectedSites,
+  scope = {},
+  scopeReady = true,
 }: {
   dateRange: DateRange;
   customFrom: string;
   customTo: string;
-  vehicles: ReturnType<typeof useFleet>['vehicles'];
-  selectedSites: string[];
+  scope?: IncidentScope;
+  scopeReady?: boolean;
 }) {
   // Distance baseline stays a fixed current+last month window regardless of the
   // selected tab range — tying it to the page's date filter (as a prior change
   // briefly did) shrinks the km denominator for narrow ranges and pushes far
   // more drivers out of "Green".
-  const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers();
+  const scopeKey = `${normalizeScopeKeys(scope.assetIds).join(',')}|${normalizeScopeKeys(scope.siteScope).join(',')}`;
+  const scopeAssetIds = normalizeScopeKeys(scope.assetIds);
+  const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers(
+    scopeAssetIds,
+    scopeReady,
+  );
   const [occurrences] = useState<OccurrenceStore>(() => loadConsequenceOccurrences());
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -666,8 +705,8 @@ function PatternsTab({
   const [expandLoading, setExpandLoading] = useState<Record<string, boolean>>({});
   const navigateTo = useNavigate();
 
-  const periodRiskUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo);
-  const windowRiskUrl = incidentRiskDriversUrl('7days');
+  const periodRiskUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo, scope);
+  const windowRiskUrl = incidentRiskDriversUrl('7days', '', '', scope);
   const [periodRisk, setPeriodRisk] = useState<RiskDriverRow[]>(() =>
     cachePeek<{ drivers?: RiskDriverRow[] }>(periodRiskUrl)?.drivers ?? [],
   );
@@ -684,13 +723,12 @@ function PatternsTab({
 
   useEffect(() => {
     let cancelled = false;
-    const periodUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo);
-    const winUrl = incidentRiskDriversUrl('7days');
+    const periodUrl = incidentRiskDriversUrl(dateRange, customFrom, customTo, scope);
+    const winUrl = incidentRiskDriversUrl('7days', '', '', scope);
     const periodCached = cachePeek<{ drivers?: RiskDriverRow[] }>(periodUrl);
     const winCached = cachePeek<{ drivers?: RiskDriverRow[] }>(winUrl);
-    if (periodCached?.drivers) setPeriodRisk(periodCached.drivers);
-    if (winCached?.drivers) setWindowRisk(winCached.drivers);
-    // Only block the UI when neither request has cached payload yet.
+    setPeriodRisk(periodCached?.drivers ?? []);
+    setWindowRisk(winCached?.drivers ?? []);
     const hasCache = !!(periodCached?.drivers && winCached?.drivers);
     setRiskLoading(!hasCache);
     setExpandEvents({});
@@ -714,12 +752,10 @@ function PatternsTab({
         if (!cancelled) setRiskLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dateRange, customFrom, customTo]);
+  }, [dateRange, customFrom, customTo, scopeKey]);
 
-  const scopedTripDrivers = useMemo(
-    () => selectedSites.length ? filterTripDriversByVehicles(tripDrivers, vehicles) : tripDrivers,
-    [selectedSites.length, tripDrivers, vehicles],
-  );
+  // Server already scoped via assetIds — do not re-filter by reg (drops empty vehicles[]).
+  const scopedTripDrivers = tripDrivers;
 
   const distanceByKey = useMemo(() => tripStatsByDriverKey(scopedTripDrivers), [scopedTripDrivers]);
 
@@ -834,7 +870,7 @@ function PatternsTab({
 
   const loadExpandEvents = (row: { key: string; name: string }) => {
     if (expandEvents[row.key] || expandLoading[row.key]) return;
-    const url = incidentPatternsEventsUrl(dateRange, row.name, customFrom, customTo);
+    const url = incidentPatternsEventsUrl(dateRange, row.name, customFrom, customTo, scope);
     const cached = cachePeek<{ entries?: LogEntry[] } | LogEntry[]>(url);
     if (cached) {
       const rows = Array.isArray(cached) ? cached : cached.entries ?? [];
@@ -1097,9 +1133,13 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
   const [dateRange, setDateRange] = useState<DateRange>(initialDateRange);
   const [customRange, setCustomRange] = useState(defaultPageCustomRange);
   const [eventsView, setEventsView] = useState<EventsView>(viewParam === 'trends' ? 'trends' : 'events');
-  const { vehicles, selectedSites } = useFleet();
-
-  const summaryUrl = incidentSummaryUrl(dateRange, customRange.from, customRange.to);
+  const { scopedAssetIds, siteFilterActive } = useFleet();
+  const incidentScope = useMemo<IncidentScope>(
+    () => ({ assetIds: siteFilterActive ? scopedAssetIds : [] }),
+    [siteFilterActive, scopedAssetIds.join(',')],
+  );
+  const scopeKey = incidentScope.assetIds?.join(',') ?? '';
+  const summaryUrl = incidentSummaryUrl(dateRange, customRange.from, customRange.to, incidentScope);
   const [summaryExposure, setSummaryExposure] = useState(() =>
     cachePeek<{ incidentTotal?: number; byLabel?: Record<string, number> }>(summaryUrl),
   );
@@ -1107,14 +1147,10 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
 
   useEffect(() => {
     let cancelled = false;
-    const url = incidentSummaryUrl(dateRange, customRange.from, customRange.to);
+    const url = incidentSummaryUrl(dateRange, customRange.from, customRange.to, incidentScope);
     const cached = cachePeek<{ incidentTotal?: number; byLabel?: Record<string, number> }>(url);
-    if (cached) {
-      setSummaryExposure(cached);
-      setSummaryLoading(false);
-    } else {
-      setSummaryLoading(true);
-    }
+    setSummaryExposure(cached);
+    setSummaryLoading(!cached);
     authCachedJson<{ incidentTotal?: number; byLabel?: Record<string, number> }>(url, authFetch, {
       ttlMs: CACHE_TTL.safetySummary,
     })
@@ -1127,7 +1163,7 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
         if (!cancelled) setSummaryLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dateRange, customRange.from, customRange.to]);
+  }, [dateRange, customRange.from, customRange.to, scopeKey]);
 
   useEffect(() => {
     if (rangeParam === 'today' || rangeParam === '7days' || rangeParam === '30days' || rangeParam === 'alltime') {
@@ -1226,16 +1262,24 @@ export default function IncidentIntelligence({ tab }: { tab: Tab }) {
           highlightEventId={highlightEventId}
           initialSearch={querySearch}
           initialAssetId={assetIdParam}
+          scope={incidentScope}
         />
       )}
-      {tab === 'by-driver' && <ByDriverTab dateRange={dateRange} customFrom={customRange.from} customTo={customRange.to} />}
+      {tab === 'by-driver' && (
+        <ByDriverTab
+          dateRange={dateRange}
+          customFrom={customRange.from}
+          customTo={customRange.to}
+          scope={incidentScope}
+        />
+      )}
       {tab === 'patterns' && (
         <PatternsTab
           dateRange={dateRange}
           customFrom={customRange.from}
           customTo={customRange.to}
-          vehicles={vehicles}
-          selectedSites={selectedSites}
+          scope={incidentScope}
+          scopeReady={!siteFilterActive || scopedAssetIds.length > 0}
         />
       )}
     </div>

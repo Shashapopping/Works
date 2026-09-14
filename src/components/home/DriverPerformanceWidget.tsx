@@ -29,8 +29,11 @@ function timeAgo(iso: string) {
 }
 
 export default function DriverPerformanceWidget() {
-  const { events } = useFleet();
-  const { tripDrivers } = useAssessmentTripDrivers();
+  const { events, scopedAssetIds, siteFilterActive } = useFleet();
+  const { tripDrivers } = useAssessmentTripDrivers(
+    siteFilterActive ? scopedAssetIds : [],
+    !siteFilterActive || scopedAssetIds.length > 0,
+  );
   const [consequenceConfig, setConsequenceConfig] = useState<ConsequenceScoreConfig>(() => loadConsequenceConfig());
 
   useEffect(() => {

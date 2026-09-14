@@ -92,12 +92,18 @@ function defaultCustomRange() {
   };
 }
 
-function historyUrl(period: FuelPeriod, custom: { from: string; to: string }) {
+function historyUrl(period: FuelPeriod, custom: { from: string; to: string }, assetIds: string[] = []) {
+  const params = new URLSearchParams();
   if (period === 'custom' && custom.from && custom.to) {
-    return `/api/fuel/history?from=${encodeURIComponent(custom.from)}&to=${encodeURIComponent(custom.to)}`;
+    params.set('from', custom.from);
+    params.set('to', custom.to);
+  } else {
+    const mapped = period === 'day' || period === 'week' || period === 'month' ? period : 'week';
+    params.set('period', mapped);
   }
-  const mapped = period === 'day' || period === 'week' || period === 'month' ? period : 'week';
-  return `/api/fuel/history?period=${mapped}`;
+  const ids = [...new Set(assetIds.map(id => id.trim()).filter(Boolean))].sort();
+  if (ids.length) params.set('assetIds', ids.join(','));
+  return `/api/fuel/series?${params.toString()}`;
 }
 
 function isQuarryZone(zone: string | undefined): zone is QuarrySiteKey {
@@ -143,13 +149,11 @@ function pickActiveQuarrySeries(
   period: FuelPeriod,
   pinnedAssetId?: string | null,
 ): FuelSeries | null {
-  const withData = all.filter(s => s.data.length > 0);
+  // Never fall back to non-quarry probes — Fuel Used is quarry-only too.
+  const withData = all.filter(s => s.data.length > 0 && isQuarryZone(s.zone));
   if (!withData.length) return null;
 
-  const quarryTagged = withData.filter(s => isQuarryZone(s.zone));
-  const pool = quarryTagged.length ? quarryTagged : withData;
-
-  const scored = pool.map(s => scoreFuelSeries(s, liveLevels, period));
+  const scored = withData.map(s => scoreFuelSeries(s, liveLevels, period));
   const drawable = scored.filter(s => s.points >= 2);
   const withPoints = scored.filter(s => s.points >= 1);
   const ranked = (drawable.length ? drawable : withPoints.length ? withPoints : scored)
@@ -204,15 +208,28 @@ export default function FuelChartWidget() {
   const { vehicles } = useFleet();
   const [period, setPeriod] = useState<FuelPeriod>('week');
   const [customRange, setCustomRange] = useState(defaultCustomRange);
-  const histUrl = historyUrl(period, customRange);
+
+  // Same quarry-only scope as Fuel Used — never mix in cement/inbound probes.
+  const quarryAssetIds = useMemo(
+    () => vehicles
+      .filter(v => isQuarryZone(v.zone))
+      .map(v => String(v.id))
+      .filter(Boolean)
+      .sort(),
+    [vehicles],
+  );
+  const histUrl = quarryAssetIds.length
+    ? historyUrl(period, customRange, quarryAssetIds)
+    : '';
   const [allSeries, setAllSeries] = useState<FuelSeries[]>(
-    () => peekFuelHistory<FuelSeries[]>(histUrl) ?? [],
+    () => (histUrl ? peekFuelHistory<FuelSeries[]>(histUrl) : null) ?? [],
   );
   const [loading, setLoading] = useState(
-    () => !peekFuelHistory(histUrl),
+    () => Boolean(histUrl) && !peekFuelHistory(histUrl),
   );
 
   const pinnedAssetRef = useRef<string | null>(null);
+  const scopeKey = quarryAssetIds.join(',');
 
   const liveLevels = useMemo(() => {
     const map = new Map<string, number>();
@@ -228,21 +245,26 @@ export default function FuelChartWidget() {
   // History drives the card; consumption (refills) is optional and must not block display.
   useEffect(() => {
     pinnedAssetRef.current = null;
-  }, [period, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, scopeKey]);
 
   useEffect(() => {
-    let cancelled = false;
-    const url = historyUrl(period, customRange);
-    const cached = peekFuelHistory<FuelSeries[]>(url);
-    const hasCached = Boolean(cached?.length);
-    if (hasCached) setLoading(false);
-    else setLoading(true);
-    if (cached?.length) {
-      setAllSeries(cached.map(s => ({
-        ...s,
-        data: s.data.map(pt => ({ ...pt, level: Math.max(0, pt.level) })),
-      })));
+    if (!histUrl) {
+      setAllSeries([]);
+      setLoading(false);
+      return;
     }
+    let cancelled = false;
+    const url = histUrl;
+    const cached = peekFuelHistory<FuelSeries[]>(url);
+    setAllSeries(
+      cached?.length
+        ? cached.map(s => ({
+          ...s,
+          data: s.data.map(pt => ({ ...pt, level: Math.max(0, pt.level) })),
+        }))
+        : [],
+    );
+    setLoading(!cached);
 
     const pull = async (silent = false) => {
       try {
@@ -259,17 +281,22 @@ export default function FuelChartWidget() {
       }
     };
 
-    void pull(!hasCached);
+    void pull(Boolean(cached));
     const stop = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void pull(true);
     }, period === 'day' ? 60_000 : 5 * 60_000);
     return () => { cancelled = true; stop(); };
-  }, [period, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, scopeKey, histUrl]);
+
+  const scopedSeries = useMemo(
+    () => allSeries.filter(s => isQuarryZone(s.zone)),
+    [allSeries],
+  );
 
   const active = useMemo(() => {
     const picked = pickActiveQuarrySeries(
-      allSeries,
+      scopedSeries,
       liveLevels,
       period,
       pinnedAssetRef.current,
@@ -277,7 +304,7 @@ export default function FuelChartWidget() {
     if (picked) pinnedAssetRef.current = String(picked.assetId);
     else pinnedAssetRef.current = null;
     return picked;
-  }, [allSeries, liveLevels, period]);
+  }, [scopedSeries, liveLevels, period]);
 
   // Live probe fallback: show a real non-zero quarry reading even before history arrives
   const liveFallback = useMemo(() => {
@@ -298,8 +325,8 @@ export default function FuelChartWidget() {
   const displaySeries = useMemo(() => {
     if (active) return active;
     if (!liveFallback) return null;
-    return findFuelSeries(allSeries, { assetId: liveFallback.id, regNo: liveFallback.regNo }) ?? null;
-  }, [active, liveFallback, allSeries]);
+    return findFuelSeries(scopedSeries, { assetId: liveFallback.id, regNo: liveFallback.regNo }) ?? null;
+  }, [active, liveFallback, scopedSeries]);
 
   const chartData = useMemo(
     () => (displaySeries ? bucketSeries(displaySeries, period) : []),
@@ -330,8 +357,9 @@ export default function FuelChartWidget() {
 
   const lastRefill = displaySeries ? lastRefillFromSeries(displaySeries, period) : null;
   const zone = ((displaySeries?.zone || liveFallback?.zone) || '').toUpperCase() as QuarrySiteKey;
-  const color = fuelZoneColor(zone);
-  const siteLabel = isQuarryZone(zone) ? QUARRY_SITE_LABELS[zone] : 'Quarry';
+  const hasQuarryDisplay = Boolean(displaySeries || liveFallback);
+  const color = hasQuarryDisplay ? fuelZoneColor(zone) : 'var(--cd-text-muted)';
+  const siteLabel = isQuarryZone(zone) ? QUARRY_SITE_LABELS[zone] : null;
   const displayReg = (displaySeries?.regNo || liveFallback?.regNo || '').trim();
   const detailAssetId = displaySeries?.assetId || liveFallback?.id;
   const signalMetrics = useMemo<FuelSignalMetrics | null>(() => {
@@ -340,9 +368,11 @@ export default function FuelChartWidget() {
     const stable = buildStableFuelSeries(displaySeries.data, bucketMin);
     return analyzeFuelSignal(stable, bucketMin);
   }, [displaySeries, period, chartData.length]);
-  const signalNote = formatFuelSignalSummary(signalMetrics);
+  const signalNote = quarryAssetIds.length === 0
+    ? 'No quarry assets in the selected sites.'
+    : formatFuelSignalSummary(signalMetrics);
 
-  const detailHref = detailAssetId
+  const detailHref = detailAssetId && isQuarryZone(zone)
     ? `/fuel/monitoring?site=${encodeURIComponent(zone)}&asset=${encodeURIComponent(detailAssetId)}`
     : '/fuel/monitoring';
 
@@ -391,18 +421,18 @@ export default function FuelChartWidget() {
               />
             </div>
             <div className="bpl-fuel-total" style={{ color }}>
-              {currentLevel != null && currentLevel > 0
+              {hasQuarryDisplay && currentLevel != null
                 ? `${Math.round(currentLevel).toLocaleString()} L`
-                : loading
+                : loading && quarryAssetIds.length > 0
                   ? '—'
-                  : currentLevel != null
-                    ? `${Math.round(currentLevel).toLocaleString()} L`
-                    : '—'}
+                  : '0 L'}
             </div>
             <div className="bpl-fuel-total-scope">
-              {displayReg
+              {displayReg && siteLabel
                 ? `${displayReg} · ${siteLabel} probe`
-                : 'Quarry probe'}
+                : quarryAssetIds.length === 0
+                  ? 'No quarry probes in scope'
+                  : 'Quarry probe'}
             </div>
             <p className="hbm-fuel-signal-note bpl-fuel-signal-note bpl-fuel-signal-note-compact">
               {signalNote}
@@ -411,9 +441,13 @@ export default function FuelChartWidget() {
         </div>
 
         <div className="bpl-fuel-chart-area">
-          <DataRegion busy={loading && chartData.length === 0} variant="chart" tall label="Loading fuel data">
+          <DataRegion busy={loading && chartData.length === 0 && !liveFallback} variant="chart" tall label="Loading fuel data">
             {chartData.length === 0 ? (
-              <div className="bpl-fuel-chart-empty">No quarry probe readings in this period</div>
+              <div className="bpl-fuel-chart-empty">
+                {quarryAssetIds.length === 0
+                  ? 'No quarry assets in the selected sites'
+                  : 'No quarry probe readings in this period'}
+              </div>
             ) : (
               <ResponsiveContainer width="100%" height={160}>
                 <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>

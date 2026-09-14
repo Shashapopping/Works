@@ -16,15 +16,22 @@ export function getFleetDataResponse({ cwd = process.cwd(), view = null } = {}) 
 
   if (view !== 'live') return cachedFullText;
   if (cachedLiveText == null) {
+    // Ultra-slim live merge payload — status/position only (warnings/events come from dedicated APIs).
     const live = JSON.parse(cachedFullText).map(v => ({
       id: v.id,
       status: v.status,
       date: v.date,
-      panic: v.panic,
-      warnings: v.warnings,
-      fuelLevel: v.fuelLevel,
-      position: v.position,
-      activeEvents: v.activeEvents,
+      panic: !!v.panic,
+      fuelLevel: v.fuelLevel ?? null,
+      position: v.position
+        ? {
+          latitude: v.position.latitude,
+          longitude: v.position.longitude,
+          speed: v.position.speed,
+          heading: v.position.heading,
+          address: v.position.address,
+        }
+        : null,
     }));
     cachedLiveText = JSON.stringify(live);
   }

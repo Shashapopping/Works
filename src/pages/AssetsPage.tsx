@@ -40,9 +40,8 @@ function assetsPeriodBounds(range: AssetsDateRange, customFrom: string, customTo
   return pagePeriodIsoBounds(range, customFrom, customTo);
 }
 
-function riskAssetsUrl(range: AssetsDateRange, customFrom: string, customTo: string) {
+function riskAssetsUrl(range: AssetsDateRange, customFrom: string, customTo: string, assetIds: string[] = []) {
   const params = new URLSearchParams();
-  params.set('groupBy', 'asset');
   if (range === 'today') params.set('range', 'today');
   else if (range === '7days') params.set('range', '7d');
   else if (range === '30days') params.set('range', '30d');
@@ -51,6 +50,9 @@ function riskAssetsUrl(range: AssetsDateRange, customFrom: string, customTo: str
     if (b.from) params.set('from', b.from);
     if (b.to) params.set('to', b.to);
   }
+  const ids = [...new Set(assetIds.map(id => id.trim()).filter(Boolean))].sort();
+  if (ids.length) params.set('assetIds', ids.join(','));
+  params.set('groupBy', 'asset');
   return `/api/risk/drivers?${params}`;
 }
 
@@ -80,40 +82,46 @@ function peekRiskAssets(url: string) {
 }
 
 export default function AssetsPage() {
-  const { vehicles } = useFleet();
+  const { vehicles, scopedAssetIds, siteFilterActive } = useFleet();
   const [searchParams] = useSearchParams();
   const [dateRange, setDateRange] = useState<AssetsDateRange>('7days');
   const [customRange, setCustomRange] = useState(defaultPageCustomRange);
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '');
-  const [showQuiet, setShowQuiet] = useState(false);
+  const [showQuiet, setShowQuiet] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [expandEvents, setExpandEvents] = useState<Record<string, LogEntry[]>>({});
   const [expandLoading, setExpandLoading] = useState<Record<string, boolean>>({});
 
   const deferredSearch = useDeferredValue(search);
+  const scopeReady = !siteFilterActive || scopedAssetIds.length > 0;
+  const riskScopeIds = siteFilterActive ? scopedAssetIds : [];
+  const scopeKey = riskScopeIds.join(',');
 
-  const url = riskAssetsUrl(dateRange, customRange.from, customRange.to);
+  const url = scopeReady ? riskAssetsUrl(dateRange, customRange.from, customRange.to, riskScopeIds) : '';
   const [rows, setRows] = useState<AssetRiskRow[]>(() => {
+    if (!url) return [];
     const cached = peekRiskAssets(url);
     return cached?.assets ?? cached?.drivers ?? [];
   });
   const [loading, setLoading] = useState(() => {
+    if (!url) return false;
     const cached = peekRiskAssets(url);
     return !(cached?.assets?.length || cached?.drivers?.length);
   });
 
   useEffect(() => {
+    if (!scopeReady || !url) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
-    const nextUrl = riskAssetsUrl(dateRange, customRange.from, customRange.to);
+    const nextUrl = url;
     const cached = peekRiskAssets(nextUrl);
     const seed = cached?.assets ?? cached?.drivers;
-    if (seed?.length) {
-      setRows(seed);
-      setLoading(false);
-    } else {
-      // Keep prior rows painted; skeleton only when rows empty (see render).
-      setLoading(true);
-    }
+    // Only paint this URL's cache — never leave another site's risk rows up.
+    setRows(seed ?? []);
+    setLoading(!seed?.length);
     authCachedJson<{ assets?: AssetRiskRow[]; drivers?: AssetRiskRow[] }>(nextUrl, authFetch, {
       ttlMs: CACHE_TTL.riskDrivers,
     })
@@ -124,7 +132,7 @@ export default function AssetsPage() {
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [dateRange, customRange.from, customRange.to]);
+  }, [dateRange, customRange.from, customRange.to, scopeKey, scopeReady, url]);
 
   const vehicleById = useMemo(() => {
     const m = new Map<string, typeof vehicles[number]>();
@@ -132,50 +140,47 @@ export default function AssetsPage() {
     return m;
   }, [vehicles]);
 
-  const usingFleetFallback = loading && rows.length === 0 && vehicles.length > 0;
+  const riskByAssetId = useMemo(() => {
+    const m = new Map<string, AssetRiskRow>();
+    rows.forEach(r => {
+      if (r.assetId) m.set(String(r.assetId), r);
+    });
+    return m;
+  }, [rows]);
 
   const merged = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
-    const sourceRows = rows.length > 0
-      ? rows
-      : vehicles.map(v => ({
-          assetId: String(v.id),
-          regNo: v.regNo,
-          assetName: v.assetName,
-          total: 0,
-        }));
-    return sourceRows
-      .map(r => {
-        const v = vehicleById.get(String(r.assetId));
-        const reg = r.regNo || v?.regNo || '—';
-        const name = r.assetName || v?.assetName || '—';
-        const site = v?.site || v?.zone || '—';
-        const address = v?.position?.address;
+    // Fleet list is source of truth (already site-filtered). Risk rows only add counts.
+    return vehicles
+      .map(v => {
+        const id = String(v.id);
+        const r = riskByAssetId.get(id);
+        const address = v.position?.address;
         return {
-          id: String(r.assetId),
-          reg,
-          name,
-          site,
+          id,
+          reg: r?.regNo || v.regNo || '—',
+          name: r?.assetName || v.assetName || '—',
+          site: v.site || v.zone || '—',
           address: address && address !== 'N/A' ? address : null,
-          transporter: v?.transporter,
-          status: v?.status ?? '—',
-          total: r.total ?? 0,
-          harshBraking: r.harshBraking ?? 0,
-          harshAcceleration: r.harshAcceleration ?? 0,
-          overspeeding: r.overspeeding ?? 0,
-          overspeedTiered: r.overspeedTiered ?? 0,
-          harshCornering: r.harshCornering ?? 0,
+          transporter: v.transporter,
+          status: v.status ?? '—',
+          total: r?.total ?? 0,
+          harshBraking: r?.harshBraking ?? 0,
+          harshAcceleration: r?.harshAcceleration ?? 0,
+          overspeeding: r?.overspeeding ?? 0,
+          overspeedTiered: r?.overspeedTiered ?? 0,
+          harshCornering: r?.harshCornering ?? 0,
         };
       })
-      .filter(a => usingFleetFallback || showQuiet || a.total > 0)
+      .filter(a => showQuiet || a.total > 0)
       .filter(a => {
         if (!q) return true;
         return a.reg.toLowerCase().includes(q)
           || a.name.toLowerCase().includes(q)
           || a.site.toLowerCase().includes(q);
       })
-      .sort((a, b) => b.total - a.total);
-  }, [rows, vehicles, deferredSearch, vehicleById, showQuiet, usingFleetFallback]);
+      .sort((a, b) => b.total - a.total || a.reg.localeCompare(b.reg));
+  }, [vehicles, deferredSearch, riskByAssetId, showQuiet]);
 
   const {
     pageRows,
@@ -194,8 +199,11 @@ export default function AssetsPage() {
     `${dateRange}|${customRange.from}|${customRange.to}|${deferredSearch}|${showQuiet}`,
   );
 
+  const expandKey = (assetId: string) => [assetId, dateRange, customRange.from, customRange.to].join('|');
+
   const loadExpandEvents = (asset: typeof merged[number]) => {
-    if (expandEvents[asset.id] || expandLoading[asset.id]) return;
+    const key = expandKey(asset.id);
+    if (expandEvents[key] || expandLoading[key]) return;
     const eventsUrl = assetEventsUrl(
       { assetId: asset.id, regNo: asset.reg },
       dateRange,
@@ -204,19 +212,19 @@ export default function AssetsPage() {
     );
     const cached = cachePeek(eventsUrl);
     if (cached) {
-      setExpandEvents(prev => ({ ...prev, [asset.id]: parseEventsLogPayload(cached) }));
+      setExpandEvents(prev => ({ ...prev, [key]: parseEventsLogPayload(cached) }));
       return;
     }
-    setExpandLoading(prev => ({ ...prev, [asset.id]: true }));
+    setExpandLoading(prev => ({ ...prev, [key]: true }));
     authCachedJson(eventsUrl, authFetch, { ttlMs: CACHE_TTL.fleetEvents })
       .then(data => {
-        setExpandEvents(prev => ({ ...prev, [asset.id]: parseEventsLogPayload(data) }));
+        setExpandEvents(prev => ({ ...prev, [key]: parseEventsLogPayload(data) }));
       })
       .catch(() => {
-        setExpandEvents(prev => ({ ...prev, [asset.id]: [] }));
+        setExpandEvents(prev => ({ ...prev, [key]: [] }));
       })
       .finally(() => {
-        setExpandLoading(prev => ({ ...prev, [asset.id]: false }));
+        setExpandLoading(prev => ({ ...prev, [key]: false }));
       });
   };
 
@@ -305,10 +313,11 @@ export default function AssetsPage() {
             <div style={{ padding: 16 }}><SkelTable rows={6} /></div>
           ) : pageRows.length === 0 ? (
             <div className="bpl-asset-empty">
-              No data found{!showQuiet ? ' — try “All fleet vehicles”' : ''}
+              No data found{!showQuiet ? ' - try "All fleet vehicles"' : ''}
             </div>
           ) : pageRows.map((asset, idx) => {
             const open = expanded.has(asset.id);
+            const detailKey = expandKey(asset.id);
             const hasInfractions = asset.total > 0;
             return (
               <div
@@ -320,19 +329,19 @@ export default function AssetsPage() {
                   <div className="bpl-asset-meta">
                     <div className="bpl-asset-title">
                       {asset.reg}
-                      <span className="bpl-asset-name">· {brandLabel(asset.name)}</span>
+                      <span className="bpl-asset-name"> - {brandLabel(asset.name)}</span>
                     </div>
                     <div className="bpl-asset-sub">
                       {[
                         asset.site !== '—' ? brandLabel(asset.site) : null,
                         asset.transporter && asset.transporter !== 'N/A' ? brandLabel(asset.transporter) : null,
-                        asset.status !== '—' ? statusDisplayLabel(asset.status) : null,
+                        asset.status !== '-' ? statusDisplayLabel(asset.status) : null,
                         asset.address,
-                      ].filter(Boolean).join(' · ')}
+                      ].filter(Boolean).join(' - ')}
                     </div>
                   </div>
                   <div className="bpl-asset-badges">
-                    {!usingFleetFallback && (
+                    {!loading && (
                       <>
                         <InfractionBadge label="Harsh Braking" count={asset.harshBraking} />
                         <InfractionBadge label="Harsh Acceleration" count={asset.harshAcceleration} />
@@ -342,7 +351,7 @@ export default function AssetsPage() {
                       </>
                     )}
                     <span className="bpl-asset-total" title="Warning count">
-                      {usingFleetFallback ? <SkelValue /> : asset.total}
+                      {loading && asset.total === 0 ? <SkelValue /> : asset.total}
                     </span>
                     {open
                       ? <ChevronUp size={14} className="bpl-asset-chevron" />
@@ -351,8 +360,8 @@ export default function AssetsPage() {
                 </button>
                 {open && (
                   <ExpandedEventsList
-                    events={expandEvents[asset.id] ?? []}
-                    loading={!!expandLoading[asset.id]}
+                    events={expandEvents[detailKey] ?? []}
+                    loading={!!expandLoading[detailKey]}
                     emptyMessage={hasInfractions ? 'No event detail loaded.' : 'No infractions in this period.'}
                   />
                 )}

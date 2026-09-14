@@ -1,12 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Gauge, Search, Truck, Activity, Clock } from 'lucide-react';
-import { authFetch } from '../context/FleetContext';
+import { authFetch, useFleet } from '../context/FleetContext';
 import {
   type KpiPeriodMode,
-  type KpiScope,
   type KpiData,
   type KpiAssetRow,
-  buildKpiUrl,
+  buildUtilUrl,
   defaultKpiCustomRange,
   ASSET_CLASS_LABELS,
 } from '../lib/operationalKpi';
@@ -70,10 +69,15 @@ function PctBar({ pct }: { pct: number | null }) {
 }
 
 export default function OperationalKpi() {
-  const [scope, setScope] = useState<KpiScope>('quarry');
+  const { scopedAssetIds, siteFilterActive } = useFleet();
+  const kpiScope = useMemo(
+    () => ({ assetIds: siteFilterActive ? scopedAssetIds : [] }),
+    [siteFilterActive, scopedAssetIds.join(',')],
+  );
+  const kpiScopeKey = kpiScope.assetIds.join(',');
   const [period, setPeriod] = useState<KpiPeriodMode>('week');
   const [customRange, setCustomRange] = useState(defaultKpiCustomRange);
-  const initialUrl = buildKpiUrl('week', 'quarry');
+  const initialUrl = buildUtilUrl('week', 'quarry', undefined, undefined, kpiScope);
   const [data, setData] = useState<KpiData | null>(
     () => peekUrlOrLegacy<KpiData>(initialUrl, CACHE_KEYS.kpi(initialUrl)),
   );
@@ -83,18 +87,13 @@ export default function OperationalKpi() {
   const [sortDesc, setSortDesc] = useState(false);
 
   const fetchData = useCallback(async (silent = false) => {
-    const url = buildKpiUrl(period, scope, customRange.from, customRange.to);
+    const url = buildUtilUrl(period, 'quarry', customRange.from, customRange.to, kpiScope);
     const legacyKey = CACHE_KEYS.kpi(url);
 
     if (!silent) {
       const cached = peekUrlOrLegacy<KpiData>(url, legacyKey);
-      if (cached) {
-        setData(cached);
-        setLoading(false);
-      } else {
-        setData(null);
-        setLoading(true);
-      }
+      setData(cached);
+      setLoading(!cached);
     }
 
     try {
@@ -109,11 +108,11 @@ export default function OperationalKpi() {
         // Never force — TTL + server cache handle freshness; force made every poll ~20s
       );
       if (next) setData(next);
-    } catch { /* keep prior on silent poll failure */ }
+    } catch { /* keep current-scope paint */ }
     finally {
       if (!silent) setLoading(false);
     }
-  }, [period, scope, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, kpiScopeKey]);
 
   useEffect(() => { void fetchData(false); }, [fetchData]);
   useEffect(() => {
@@ -151,15 +150,16 @@ export default function OperationalKpi() {
   };
 
   const kpiCards = [
-    { label: 'Utilization (avg)', value: fmtPct(summary?.avgUtilizationPct), hint: 'Working while in use', tip: KPI_DEFINITIONS.utilization, color: '#0078D4', icon: Gauge },
+    { label: 'Utilization (avg)', value: fmtPct(summary?.avgUtilizationPct), hint: 'Driving ÷ engine-on', tip: KPI_DEFINITIONS.utilization, color: '#0078D4', icon: Gauge },
     { label: 'Availability (avg)', value: fmtPct(summary?.avgAvailabilityPct), hint: 'Engine runtime / period hours', tip: KPI_DEFINITIONS.availability, color: '#0d9488', icon: Activity },
-    { label: 'Engine runtime', value: fmtHours(summary?.totalEngineHours ?? 0), hint: `${summary?.assetCount ?? 0} assets`, tip: KPI_DEFINITIONS.engineRuntime, color: '#7c3aed', icon: Clock },
+    { label: 'Engine runtime', value: fmtHours(summary?.totalEngineHours ?? 0), hint: `${summary?.assetCount ?? 0} quarry assets`, tip: KPI_DEFINITIONS.engineRuntime, color: '#7c3aed', icon: Clock },
   ];
 
   const columns: { key: keyof KpiAssetRow; label: string; tip?: string; dot?: string }[] = [
     { key: 'regNo', label: 'Reg' },
     { key: 'assetClass', label: 'Class' },
     { key: 'engineHours', label: 'Engine h', tip: KPI_DEFINITIONS.engineRuntime, dot: '#7c3aed' },
+    { key: 'drivingHours', label: 'Drive h', tip: KPI_DEFINITIONS.drivingTime, dot: '#2563eb' },
     { key: 'utilizationPct', label: 'Utilization', tip: KPI_DEFINITIONS.utilization, dot: '#0078D4' },
     { key: 'availabilityPct', label: 'Availability', tip: KPI_DEFINITIONS.availability, dot: '#0d9488' },
   ];
@@ -168,11 +168,11 @@ export default function OperationalKpi() {
     <div>
       <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
         <Gauge size={18} color="#0078D4" />
-        Utilization &amp; KPIs
+        Quarry utilization
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 20 }}>
-        Utilization = how much the truck was actually working while it was in use (operational time ÷ available engine time).
-        Availability = engine runtime vs hours in the selected period.
+        Quarry assets only. Utilization = driving time ÷ engine-on time.
+        Availability = engine-on vs hours in the selected period.
       </p>
 
       {/* Controls */}
@@ -190,25 +190,6 @@ export default function OperationalKpi() {
               background: 'var(--cd-surface-2)', color: 'var(--cd-text)', outline: 'none',
             }}
           />
-        </div>
-
-        <div style={{ display: 'flex', gap: 4 }}>
-          {(['quarry', 'all'] as const).map(s => (
-            <button
-              key={s}
-              onClick={() => setScope(s)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                border: scope === s ? '1px solid #0078D4' : '1px solid var(--cd-border)',
-                background: scope === s ? 'rgba(0,120,212,0.12)' : 'transparent',
-                color: scope === s ? '#0078D4' : 'var(--cd-text-muted)',
-              }}
-            >
-              <Truck size={13} />
-              {s === 'quarry' ? 'Quarry (DT/EXC)' : 'All fleet'}
-            </button>
-          ))}
         </div>
 
         <PagePeriodBar
@@ -288,6 +269,7 @@ export default function OperationalKpi() {
                   <td style={{ padding: '8px 12px', fontWeight: 600, whiteSpace: 'nowrap' }} title={a.assetName}>{a.regNo}</td>
                   <td style={{ padding: '8px 12px', color: 'var(--cd-text-muted)', whiteSpace: 'nowrap' }}>{ASSET_CLASS_LABELS[a.assetClass]}</td>
                   <td style={{ padding: '8px 12px' }}>{fmt(a.engineHours)}</td>
+                  <td style={{ padding: '8px 12px' }}>{fmt(a.drivingHours)}</td>
                   <td style={{ padding: '8px 12px' }}><PctBar pct={a.utilizationPct} /></td>
                   <td style={{ padding: '8px 12px' }}><PctBar pct={a.availabilityPct} /></td>
                 </tr>

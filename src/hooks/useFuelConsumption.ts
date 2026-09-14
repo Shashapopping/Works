@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { authFetch } from '../context/FleetContext';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { startJitteredInterval } from '../lib/pollSchedule';
+import { appendUrlScope, normalizeScopeKeys } from '../lib/siteScope';
 import {
   type PeriodMode,
   type ConsumptionData,
@@ -59,12 +60,23 @@ export function useFuelConsumption(
   period: PeriodMode,
   customRange?: { from: string; to: string },
   site: string | 'ALL' = 'ALL',
+  assetIds: string[] = [],
+  enabled = true,
+  siteScope: string[] = [],
 ) {
-  const url = buildConsumptionUrl(period, site, customRange?.from, customRange?.to);
-  const [data, setData] = useState<ConsumptionData | null>(() => peekFuelConsumption(url));
-  const [loading, setLoading] = useState(() => !peekFuelConsumption(url));
+  const base = buildConsumptionUrl(period, site, customRange?.from, customRange?.to);
+  const url = appendUrlScope(base, {
+    siteScope: normalizeScopeKeys(siteScope),
+    assetIds: normalizeScopeKeys(assetIds),
+  });
+  const [data, setData] = useState<ConsumptionData | null>(() => enabled ? peekFuelConsumption(url) : null);
+  const [loading, setLoading] = useState(() => enabled && !peekFuelConsumption(url));
 
   const fetchData = useCallback(async (silent = false) => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     if (!silent) {
       const cached = peekFuelConsumption(url);
       if (cached) {
@@ -83,13 +95,22 @@ export function useFuelConsumption(
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [url]);
+  }, [url, enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
+    // Never paint another scope's payload for this URL.
+    const cached = peekFuelConsumption(url);
+    setData(cached);
+    setLoading(!cached);
     void fetchData(false);
     const stop = startJitteredInterval(() => void fetchData(true));
     return stop;
-  }, [fetchData]);
+  }, [fetchData, enabled, url]);
 
   const derived = useMemo(
     () => (data ? deriveFromConsumptionData(data, period) : null),
@@ -103,7 +124,7 @@ export function useFuelConsumption(
     totalLiters: Math.round(derived?.summary.fuel ?? 0),
     totalDistanceKm: Math.round(derived?.summary.distance ?? 0),
     fuelSeries: derived?.fuelSeries ?? [],
-    loading: loading && !data,
+    loading: enabled && loading && !data,
     refetch: fetchData,
   };
 }
@@ -112,17 +133,30 @@ export function useFuelConsumption(
 export function useFuelConsumptionByDistanceRange(
   range: DistanceFuelRange,
   custom?: { from: string; to: string },
+  assetIds: string[] = [],
+  enabled = true,
+  siteScope: string[] = [],
 ) {
   const { period, customFrom, customTo } = distanceRangeToConsumptionRequest(range, custom);
   const customRange = period === 'custom' && customFrom && customTo
     ? { from: customFrom, to: customTo }
     : undefined;
   const base = buildConsumptionUrl(period, 'ALL', customRange?.from, customRange?.to);
-  const url = `${base}${base.includes('?') ? '&' : '?'}summary=1`;
-  const [data, setData] = useState<ConsumptionData | null>(() => peekFuelConsumption(url));
-  const [loading, setLoading] = useState(() => !peekFuelConsumption(url));
+  const url = appendUrlScope(
+    `${base}${base.includes('?') ? '&' : '?'}summary=1`,
+    {
+      siteScope: normalizeScopeKeys(siteScope),
+      assetIds: normalizeScopeKeys(assetIds),
+    },
+  );
+  const [data, setData] = useState<ConsumptionData | null>(() => enabled ? peekFuelConsumption(url) : null);
+  const [loading, setLoading] = useState(() => enabled && !peekFuelConsumption(url));
 
   const fetchData = useCallback(async (silent = false) => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     if (!silent) {
       const cached = peekFuelConsumption(url);
       if (cached) {
@@ -140,16 +174,24 @@ export function useFuelConsumptionByDistanceRange(
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [url]);
+  }, [url, enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
+    const cached = peekFuelConsumption(url);
+    setData(cached);
+    setLoading(!cached);
     void fetchData(false);
     const stop = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void fetchData(true);
     });
     return stop;
-  }, [fetchData]);
+  }, [fetchData, enabled, url]);
 
   const derived = useMemo(
     () => (data ? deriveFromConsumptionData(data, period) : null),
@@ -163,7 +205,7 @@ export function useFuelConsumptionByDistanceRange(
     totalLiters: Math.round(derived?.summary.fuel ?? 0),
     totalDistanceKm: Math.round(derived?.summary.distance ?? 0),
     fuelSeries: derived?.fuelSeries ?? [],
-    loading: loading && !data,
+    loading: enabled && loading && !data,
     refetch: fetchData,
   };
 }

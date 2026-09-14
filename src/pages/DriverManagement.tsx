@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useDeferredValue } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Search, ChevronDown, ChevronUp } from 'lucide-react';
 import { useFleet, authFetch, type LogEntry } from '../context/FleetContext';
 import { displayDriverName } from '../lib/driverUtils';
@@ -21,7 +21,7 @@ import PageControls from '../components/PageControls';
 import { brandLabel } from '../lib/branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
-import { filterTripDriversByVehicles } from '../lib/siteScope';
+import { appendUrlScope } from '../lib/siteScope';
 import InfoTip from '../components/InfoTip';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 import { fetchDriverWarnings, type DriverWarning } from '../lib/coachingWarningsApi';
@@ -174,7 +174,15 @@ function DriverCard({ driver, expanded, onToggle, stats, latestWarning, recentEv
           <div className="dm-stat-lbl">km</div>
         </div>
         <div className="dm-stat" title={HOS_WINDOW_TIP}>
-          <div className="dm-stat-val" style={{ color: hosHasData ? undefined : 'var(--cd-text-muted)' }}>{hosLabel}</div>
+          <Link
+            to={`/drivers/fatigue?q=${encodeURIComponent(driver.name)}`}
+            className="dm-stat-val"
+            style={{ color: hosHasData ? undefined : 'var(--cd-text-muted)', textDecoration: 'none' }}
+            onClick={e => e.stopPropagation()}
+            title="Open this driver on the HOS / Fatigue page"
+          >
+            {hosLabel}
+          </Link>
           <div className="dm-stat-lbl">HOS</div>
         </div>
 
@@ -264,13 +272,20 @@ export default function DriverManagement() {
   const [dateRange, setDateRange] = useState<DateRange>('7days');
   const [customRange, setCustomRange] = useState(defaultDriverCustomRange);
   const [expandedDrivers, setExpandedDrivers] = useState<Set<string>>(new Set());
-  const { tripDrivers: periodTrips, loading: periodTripLoading } = usePeriodTripDrivers(dateRange, customRange);
-  const { vehicles, selectedSites, siteOptions, siteNameOptions } = useFleet();
+  const { selectedSites, scopedAssetIds, siteFilterActive, siteOptions, siteNameOptions } = useFleet();
+  const { tripDrivers: periodTrips, loading: periodTripLoading } = usePeriodTripDrivers(
+    dateRange,
+    customRange,
+    siteFilterActive ? scopedAssetIds : [],
+    !siteFilterActive || scopedAssetIds.length > 0,
+  );
   const [driverWarnings, setDriverWarnings] = useState<Map<string, DriverWarning>>(new Map());
   const [expandEvents, setExpandEvents] = useState<Record<string, LogEntry[]>>({});
   const [expandLoading, setExpandLoading] = useState<Record<string, boolean>>({});
 
-  const riskUrl = driverRiskUrl(dateRange, customRange);
+  const riskUrl = appendUrlScope(driverRiskUrl(dateRange, customRange), {
+    assetIds: siteFilterActive ? scopedAssetIds : [],
+  });
   const [riskRows, setRiskRows] = useState(() =>
     cachePeek<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(riskUrl)?.drivers ?? [],
   );
@@ -283,22 +298,16 @@ export default function DriverManagement() {
     return selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions);
   }, [selectedSites, siteFiltered, siteNameOptions, siteOptions]);
 
-  const scopedPeriodTrips = useMemo(
-    () => siteFiltered ? filterTripDriversByVehicles(periodTrips, vehicles) : periodTrips,
-    [periodTrips, siteFiltered, vehicles],
-  );
+  const scopedPeriodTrips = periodTrips;
 
   useEffect(() => {
     let cancelled = false;
-    const url = driverRiskUrl(dateRange, customRange);
+    const url = appendUrlScope(driverRiskUrl(dateRange, customRange), {
+      assetIds: siteFilterActive ? scopedAssetIds : [],
+    });
     const cached = cachePeek<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(url);
-    if (cached?.drivers?.length) {
-      setRiskRows(cached.drivers);
-      setRiskLoading(false);
-    } else {
-      // Keep prior rows; seedBusy only skeletons when riskRows is empty.
-      setRiskLoading(true);
-    }
+    setRiskRows(cached?.drivers ?? []);
+    setRiskLoading(!cached?.drivers);
     authCachedJson<{ drivers?: Parameters<typeof assessDriversFromRisk>[0] }>(url, authFetch, {
       ttlMs: CACHE_TTL.riskDrivers,
     })
@@ -311,7 +320,7 @@ export default function DriverManagement() {
         if (!cancelled) setRiskLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dateRange, customRange]);
+  }, [dateRange, customRange, scopedAssetIds.join(','), siteFilterActive]);
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -323,7 +332,7 @@ export default function DriverManagement() {
   useEffect(() => {
     setExpandEvents({});
     setExpandLoading({});
-  }, [dateRange, customRange.from, customRange.to]);
+  }, [dateRange, customRange.from, customRange.to, scopedAssetIds.join(','), siteFilterActive]);
 
   const drivers: DriverProfile[] = useMemo(
     () => assessDriversFromRisk(riskRows, scopedPeriodTrips),

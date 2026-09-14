@@ -6,17 +6,14 @@ import MockNamesBadge from '../../components/MockNamesBadge';
 import InfoTip from '../../components/InfoTip';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useClientPagination } from '../../hooks/useClientPagination';
-import { useHosRecords } from '../../hooks/useHosRecords';
 import { useFleet } from '../../context/FleetContext';
 import { fmtHosMinutes, type HosRecord, type HosRuleId, type HosStatus } from '../../lib/hos';
 import { hosPointsFromHeldMinutes, type FleetScoreConfig } from '../../lib/fleetSafetyScore';
 import { makeScopedVehicleRegSet } from '../../lib/siteScope';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import PageControls from '../../components/PageControls';
-import { CustomDatePicker } from '../../components/CustomDateTimeRange';
 
 type FatigueViewFilter = 'all' | HosStatus | HosRuleId;
-type FatigueDateMode = 'today' | 'yesterday' | 'custom';
 const FATIGUE_PAGE_SIZE = 40;
 const FOUR_H_WARNING_MINUTES = 20;
 
@@ -68,14 +65,14 @@ const STATUS_META: Record<HosStatus, { label: string; bg: string; color: string 
 const COL_TIPS: Record<string, string> = {
   Driver: 'Driver name from completed trips.',
   Site: 'Site or pool linked to that vehicle.',
-  '4h continuous': 'Max 4 hours continuous driving. A parked gap of ≥20 minutes resets the block.',
+  '4h continuous': 'Max 4 hours continuous driving. A parked gap of >=20 minutes resets the block.',
   'Daily rest': 'Driver needs at least 8 hours continuous rest inside each rolling 24-hour cycle.',
   'Weekly rest': 'At least 24 hours continuous off-duty rest required in every rolling 7-day week.',
   'Drive time': 'Total minutes driven in the selected Lagos calendar day.',
   'Trip time': 'Sum of each trip’s clock time inside the selected day (clipped at midnight). Gaps between trips are not counted — so an overnight open trip cannot stretch Trip time to ~23h.',
   'Violation value': 'Extra driving minutes past the 4-hour continuous limit.',
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',
-  'Present Block': 'How full the continuous drive block is toward 4 hours. The time under the bar is the actual minutes in the block. Resets after a ≥20 min rest.',
+  'Present Block': 'How full the continuous drive block is toward 4 hours. The time under the bar is the actual minutes in the block. Resets after a >=20 min rest.',
   'Drive left': 'Time left before the 4h continuous-driving breach. Negative time means the 4h limit has already been passed.',
   'Since 8h rest': 'Elapsed time since the last >=8h continuous rest ended. The bar breaches at 24h and can show over 100%.',
   '24h rest': 'Rolling 7-day lookback ending now. Green marks the qualifying 24-hour rest block; all red means no 24-hour rest was found.',
@@ -136,15 +133,14 @@ function fmtTime(iso: string) {
 
 type HosSiteScope = {
   allowedRegs: Set<string>;
-  allowedSites: Set<string>;
 };
 
 function filterHosRecordsToSiteScope(records: HosRecord[], scope: HosSiteScope | null): HosRecord[] {
   if (!scope) return records;
+  if (scope.allowedRegs.size === 0) return [];
   return records.filter(record => {
     const reg = (record.vehicleReg || '').trim().toLowerCase();
-    const site = (record.site || '').trim().toLowerCase();
-    return scope.allowedRegs.has(reg) || scope.allowedSites.has(site);
+    return scope.allowedRegs.has(reg);
   });
 }
 
@@ -497,43 +493,29 @@ function ThLabel({
 }
 
 export default function FatigueManagementPage() {
-  const { scoreConfig, vehicles, selectedSites } = useFleet();
+  const {
+    scoreConfig,
+    vehicles,
+    selectedSites,
+    hosRecords: ctxHos,
+    hosLoading: ctxHosLoading,
+    hosLastTripDay: ctxLastTripDay,
+  } = useFleet();
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);
   const [statusFilter, setStatusFilter] = useState<FatigueViewFilter>('all');
-  const [dateMode, setDateMode] = useState<FatigueDateMode>('today');
-  const [customHosDate, setCustomHosDate] = useState(lagosDateStr(0));
-  const [hosPointsDate, setHosPointsDate] = useState(lagosDateStr(0));
   const [sortState, setSortState] = useState<FatigueSortState>(null);
-
   const todayDate = lagosDateStr(0);
-  const yesterdayDate = lagosDateStr(1);
-  const targetDate = dateMode === 'yesterday'
-    ? yesterdayDate
-    : dateMode === 'custom'
-      ? customHosDate
-      : todayDate;
-  const isTodayView = targetDate === todayDate;
-
-  // Today stays on the shared live HOS feed; dated history is used for yesterday/custom days.
-  const {
-    hosRecords: ctxHos,
-    hosLoading: ctxHosLoading,
-    hosLastTripDay: ctxLastTripDay,
-  } = useFleet();
-  const dated = useHosRecords(targetDate, { enabled: !isTodayView });
-  const hosRaw = isTodayView
-    ? ctxHos
-    : dated.records;
-  const hosLoading = isTodayView
-    ? (ctxHosLoading && hosRaw.length === 0)
-    : dated.loading;
-  const lastTripDay = isTodayView
-    ? ctxLastTripDay
-    : dated.lastTripDay;
-  const { records: hosPointsRaw, loading: hosPointsLoading } = useHosRecords(hosPointsDate);
+  const targetDate = todayDate;
+  const hosPointsDate = todayDate;
+  const isTodayView = true;
+  const hosRaw = ctxHos;
+  const hosLoading = ctxHosLoading && hosRaw.length === 0;
+  const lastTripDay = ctxLastTripDay;
+  const hosPointsRaw = hosRaw;
+  const hosPointsLoading = hosLoading;
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -544,7 +526,6 @@ export default function FatigueManagementPage() {
     if (selectedSites.length === 0) return null;
     return {
       allowedRegs: makeScopedVehicleRegSet(vehicles),
-      allowedSites: new Set(selectedSites.map(site => site.trim().toLowerCase()).filter(Boolean)),
     };
   }, [selectedSites, vehicles]);
 
@@ -764,39 +745,6 @@ export default function FatigueManagementPage() {
       : statusFilter === 'weekly_rest'
         ? ' bpl-fatigue-focus-weekly'
         : '';
-  const hosDayOptions = useMemo(
-    () => {
-      const opts = Array.from({ length: 7 }, (_, daysBack) => {
-      const day = lagosDateStr(daysBack);
-      return { day, label: hosDayOptionLabel(day, daysBack) };
-      });
-      if (!opts.some(opt => opt.day === hosPointsDate)) {
-        opts.push({ day: hosPointsDate, label: compactDateLabel(hosPointsDate) });
-      }
-      return opts;
-    },
-    [hosPointsDate],
-  );
-  const onHosDayChange = (day: string) => {
-    setHosPointsDate(day);
-  };
-  const pickDateMode = (next: FatigueDateMode) => {
-    setDateMode(next);
-    setStatusFilter('all');
-    const nextDate = next === 'yesterday'
-      ? yesterdayDate
-      : next === 'custom'
-        ? customHosDate
-        : todayDate;
-    setHosPointsDate(nextDate);
-  };
-  const pickCustomHosDate = (day: string) => {
-    setCustomHosDate(day);
-    setDateMode('custom');
-    setStatusFilter('all');
-    setHosPointsDate(day);
-  };
-
   return (
     <div>
       <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--cd-text)', fontFamily: 'var(--cd-font-display)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -804,32 +752,12 @@ export default function FatigueManagementPage() {
         Driver Management — Fatigue Management <MockNamesBadge />
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-        Hours of service — 4h continuous (20-min rest resets), daily rest (8h rest in 24h), and weekly rest (≥24h off in 7 days).
+        Hours of service — 4h continuous (20-min rest resets), daily rest (8h rest in 24h), and weekly rest (at least 24h off in 7 days).
       </p>
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        {(['today', 'yesterday', 'custom'] as FatigueDateMode[]).map(mode => (
-          <button
-            key={mode}
-            type="button"
-            className={`bpl-page-period-chip${dateMode === mode ? ' active' : ''}`}
-            onClick={() => pickDateMode(mode)}
-          >
-            {mode === 'today' ? 'Today' : mode === 'yesterday' ? 'Yesterday' : 'Custom'}
-          </button>
-        ))}
-        {dateMode === 'custom' && (
-          <CustomDatePicker
-            value={customHosDate}
-            onChange={pickCustomHosDate}
-            max={todayDate}
-          />
-        )}
-      </div>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
         <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
-          Showing HOS records for {compactDateLabel(targetDate)}. HOS points are inspected from {compactDateLabel(hosPointsDate)}.
+          Showing live HOS records for today.
         </span>
       </div>
 
@@ -1041,16 +969,6 @@ export default function FatigueManagementPage() {
                       <InfoTip text={COL_TIPS['HOS points']} label="HOS points" />
                     </span>
                   </button>
-                  <select
-                    className="bpl-fatigue-hos-day-select"
-                    value={hosPointsDate}
-                    onChange={e => onHosDayChange(e.target.value)}
-                    aria-label="Inspect HOS points day"
-                  >
-                    {hosDayOptions.map(opt => (
-                      <option key={opt.day} value={opt.day}>{opt.label}</option>
-                    ))}
-                  </select>
                 </span>
               </th>
             </tr>
@@ -1116,7 +1034,7 @@ export default function FatigueManagementPage() {
                     color={meterColor(currentMin, limit)}
                     title={
                       currentMin <= 0 && isTodayView
-                        ? 'Present block reset after a ≥20 min rest (0 min)'
+                        ? 'Present block reset after a >=20 min rest (0 min)'
                         : `Present continuous block: ${fmtHosMinutes(currentMin)} (${currentMin} min) toward the 4h limit`
                     }
                     showTime
@@ -1131,7 +1049,7 @@ export default function FatigueManagementPage() {
                     }}
                     title={
                       currentMin <= 0 && isTodayView
-                        ? 'Present block reset after a ≥20 min rest — full 4h available again'
+                        ? 'Present block reset after a >=20 min rest — full 4h available again'
                         : driveMinutesLeft < 0
                           ? `4h continuous-driving limit is overdue by ${fmtHosMinutes(Math.abs(driveMinutesLeft))}`
                           : `${fmtHosMinutes(driveMinutesLeft)} left before the 4h continuous-driving breach`

@@ -5,7 +5,6 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { KPI_EVENT_IDS, serializeKpiLogEntry } from "./kpi-constants.js";
 import {
   extractMixEventSpeedKph,
   isOverspeedLabel,
@@ -15,7 +14,6 @@ import {
 import {
   getDb,
   insertEvent,
-  insertPanic,
   updateEventAddress,
   upsertTrips,
   getTripsInRange,
@@ -27,9 +25,9 @@ import {
   loadTripDriverAssets,
   loadLastDriverIdByAsset,
   insertFuelReadings,
-  insertKpiEvents,
   pruneFleetHistory,
 } from "./db.js";
+import { splitTripFuel } from "./trip-metrics.js";
 import { querySafetyEventAggregates, queryRiskAggregates, queryEventTrendBuckets } from "./event-aggregates.js";
 import { memoApiResponse, apiCacheKey } from "./api-response-cache.js";
 import { fuelEventTypeFromId } from "./fuel-constants.js";
@@ -97,19 +95,28 @@ const TRIPS_MAX_LOOKBACK_DAYS = 6;
 /** Unknown EventTypeIds already sampled this process — avoid unbounded unknown-events.log growth. */
 const unknownEventTypesLogged = new Set();
 
-/** Keep fields needed for KPI / distance / HOS. */
+/** Keep fields needed for util / distance / HOS. SubTrips are rolled up, not stored. */
 function slimTrip(trip) {
   if (!trip || typeof trip !== 'object') return trip;
+  const metrics = splitTripFuel(trip);
+  const driveSec = metrics.drivingHours > 0
+    ? Math.round(metrics.drivingHours * 3600)
+    : (trip.DrivingTime ?? trip.drivingTimeSeconds ?? null);
   return {
     TripId: trip.TripId ?? trip.TripID ?? trip.Id ?? trip.tripId ?? null,
     AssetId: (trip.AssetId ?? trip.AssetID ?? trip.assetId)?.toString?.() ?? trip.AssetId ?? null,
     DriverId: (trip.DriverId ?? trip.driverId)?.toString?.() ?? trip.DriverId ?? null,
     TripStart: trip.TripStart || trip.tripStart || trip.StartDateTime || null,
     TripEnd: trip.TripEnd || trip.tripEnd || trip.EndDateTime || null,
-    DistanceKilometers: Number(trip.DistanceKilometers ?? trip.distanceKm ?? 0),
-    DrivingTime: trip.DrivingTime ?? trip.drivingTimeSeconds ?? null,
+    DistanceKilometers: Number(trip.DistanceKilometers ?? trip.DistanceKilometres ?? trip.distanceKm ?? 0),
+    DrivingTime: driveSec,
     Duration: trip.Duration ?? trip.durationSeconds ?? null,
     MaxSpeedKilometersPerHour: trip.MaxSpeedKilometersPerHour ?? trip.maxSpeedKph ?? null,
+    drivingHours: metrics.drivingHours || null,
+    standingHours: metrics.standingHours || null,
+    idleHours: metrics.idleHours || null,
+    engineHours: metrics.engineHours || null,
+    hasSubTrips: metrics.hasSubTrips ? 1 : 0,
   };
 }
 
@@ -193,7 +200,8 @@ function normalizeTripForDistance(trip) {
     distanceKm:         Number(trip.DistanceKilometers ?? trip.distanceKm ?? 0),
     tripStart:          trip.TripStart  || trip.tripStart  || trip.StartDateTime || null,
     tripEnd:            trip.TripEnd    || trip.tripEnd    || trip.EndDateTime   || null,
-    drivingTimeSeconds: trip.DrivingTime ?? trip.drivingTimeSeconds ?? null,
+    drivingTimeSeconds: trip.DrivingTime ?? trip.drivingTimeSeconds
+      ?? (Number(trip.drivingHours) > 0 ? Math.round(Number(trip.drivingHours) * 3600) : null),
     durationSeconds:    trip.Duration   ?? trip.durationSeconds    ?? null,
     maxSpeedKph:        trip.MaxSpeedKilometersPerHour ?? trip.maxSpeedKph ?? null,
   };
@@ -285,6 +293,7 @@ const WARNING_EVENT_TYPES = {
   '-5725594963738269514': 'Overspeed Tiered',
   // Road-limit overspeed (lives in KPI; promote into Safety events when ≥60 kph)
   '-2864371101042705250': 'Road Speed Overspeeding',
+  '-8136342741862439235': 'Overspeeding — Excessive Speed',
   '4291175374538259638': 'Harsh Cornering',
 };
 
@@ -881,28 +890,6 @@ async function getLatestPositions(token) {
   return JSON.parse(safe);
 }
 
-async function getActivePanicEvents(token) {
-  const endpoint = `${API_BASE}/activeevents/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/NEW/quantity/1000`;
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-    },
-    body: `["-4444421556390778105"]`,
-  });
-  if (response.status === 401) {
-    cachedToken = null; tokenExpiresAt = 0;
-    console.log('⚠️ Token rejected by panic events endpoint, will re-authenticate next poll');
-    return [];
-  }
-  if (response.status === 204 || !response.ok) return [];
-  const text = await response.text();
-  const safe = text.replace(/:\s*(-?\d{16,})/g, ': "$1"');
-  return JSON.parse(safe);
-}
-
 async function getLatestActiveEvents(token, speedByAsset = new Map()) {
   const endpoint = `${API_BASE}/activeevents/groups/createdsince/entitytype/Asset/sincetoken/${activeSinceToken}/quantity/1000`;
   const response = await fetch(endpoint, {
@@ -942,34 +929,6 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
 
   activeParseRetryDone = false;
   if (newToken) { activeSinceToken = newToken; console.log(`📌 Updated activeSinceToken: ${activeSinceToken}`); }
-
-  // Handle panic events
-  const panicEvents = parsed.filter(e => e.EventTypeId === PANIC_EVENT_TYPE_ID);
-  if (panicEvents.length > 0) {
-    console.log(`🔎 Active Panic found: ${panicEvents.length}`);
-    panicEvents.forEach(e => {
-      console.log(`🔎 Active Panic - AssetId: ${e.AssetId} | EventTime: ${e.EventDateTime}`);
-      const driver = getDriverInfo(e.DriverId);
-      const formattedAddress = e.Position?.FormattedAddress;
-      insertPanic({
-        timestamp: new Date().toISOString(),
-        assetId: e.AssetId,
-        driverId: e.DriverId,
-        driverName: driver.name,
-        driverPhone: driver.phone,
-        eventId: e.EventId,
-        eventTime: e.EventDateTime,
-        receivedAt: e.ReceivedDateTime,
-        latitude: e.Position?.Latitude || null,
-        longitude: e.Position?.Longitude || null,
-        address: formattedAddress || null,
-      });
-      if (!formattedAddress && e.Position?.Latitude && e.Position?.Longitude) {
-        enrichEntryWithAddress(null, e.EventId, e.Position.Latitude, e.Position.Longitude);
-      }
-    });
-    console.log(`📝 Panic saved to SQLite`);
-  }
 
   // Handle idle events
   idleEventVehicles.clear();
@@ -1094,42 +1053,11 @@ async function getLatestActiveEvents(token, speedByAsset = new Map()) {
     }
   }
 
-  // Handle KPI events (loaded truck, load duration, fatigue/DMS, overspeed variants)
-  const kpiEvents = parsed.filter(e => KPI_EVENT_IDS.has(e.EventTypeId));
-  if (kpiEvents.length > 0) {
-    const rows = [];
-    let skippedOverspeed = 0;
-    for (const e of kpiEvents) {
-      const line = serializeKpiLogEntry(e, getDriverInfo(e.DriverId));
-      if (!line) continue;
-      try {
-        const row = JSON.parse(line);
-        if (row.category === 'overspeed') {
-          const speed = row.speed ?? extractMixEventSpeedKph(e, speedByAsset, { allowLiveFallback: false });
-          row.speed = speed;
-          if (!qualifiesAsOverspeed(row.label || row.category, speed, { requireSpeed: true })) {
-            skippedOverspeed += 1;
-            continue;
-          }
-        }
-        rows.push(row);
-      } catch { /* skip */ }
-    }
-    if (skippedOverspeed > 0) {
-      console.log(`⏩ Skipped ${skippedOverspeed} KPI overspeed event(s) below ${OVERSPEED_MIN_KPH} kph`);
-    }
-    if (rows.length > 0) {
-      insertKpiEvents(rows);
-      console.log(`📈 KPI events saved to SQLite: ${rows.length}`);
-    }
-  }
-
-  // Log all unknown event type IDs so we can discover new ones (e.g. Fuel Probe)
+  // Log unknown event type IDs so we can discover new ones (e.g. Fuel Probe)
   const knownIds = new Set([
     PANIC_EVENT_TYPE_ID, IDLE_EVENT_TYPE_ID, EXCESSIVE_IDLE_EVENT_TYPE_ID,
     ...FUEL_PROBE_EVENT_IDS,
     ...Object.keys(WARNING_EVENT_TYPES),
-    ...KPI_EVENT_IDS,
   ]);
   const unknownEvents = parsed.filter(e => e.EventTypeId && !knownIds.has(e.EventTypeId));
   if (unknownEvents.length > 0) {
@@ -1176,7 +1104,7 @@ function mergeData(positions) {
     const pos = positionsByAsset.get(assetId);
 
     const vehicleEvents = triggeredEvents.get(assetId) || [];
-    const hasPanic = vehicleEvents.some(e => e.EventTypeId === PANIC_EVENT_TYPE_ID);
+    const hasPanic = false;
     const warningEvents = triggeredWarningEvents.get(assetId) || [];
 
     const hasExcessiveIdleEvent = excessiveIdleVehicles.has(assetId);
@@ -1263,7 +1191,7 @@ async function getLatestTrips(token) {
 
   while (pages < TRIPS_MAX_PAGES_PER_CYCLE && (Date.now() - started) < TRIPS_CATCHUP_BUDGET_MS) {
     pages += 1;
-    const url = `${API_BASE}/trips/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/${tripSinceToken}/quantity/${TRIPS_PAGE_SIZE}`;
+    const url = `${API_BASE}/trips/groups/createdsince/organisation/${LAFARGE_ORG_ID}/sincetoken/${tripSinceToken}/quantity/${TRIPS_PAGE_SIZE}?includeSubTrips=true`;
     let res;
     try {
       res = await fetch(url, {
@@ -1428,24 +1356,24 @@ export function getDriverDistanceSummary(options = {}) {
   const month = options.month || null;
   const from = options.from || null;
   const to = options.to || null;
-  const includeTrips = options.includeTrips !== false;
+  const includeTrips = options.includeTrips === true;
   const summaryOnly = options.summaryOnly === true;
+  const ids = resolveAssetScope(options.assetIds ?? null, options.siteScope ?? options.sites ?? null);
   const ttlMs = summaryOnly || !includeTrips ? 60_000 : 15_000;
   return memoApiResponse(
     'driver-distance',
     ttlMs,
-    apiCacheKey({ range, month, from, to, includeTrips, summaryOnly }),
-    () => computeDriverDistanceSummary({ range, month, from, to, includeTrips, summaryOnly }),
+    apiCacheKey({ range, month, from, to, includeTrips, summaryOnly, assetScope: assetScopeCacheKey(ids) }),
+    () => computeDriverDistanceSummary({ range, month, from, to, includeTrips, summaryOnly, assetIds: ids }),
   );
 }
-
-function computeDriverDistanceSummary({ range = '24h', month = null, from = null, to = null, includeTrips = true, summaryOnly = false } = {}) {
+function computeDriverDistanceSummary({ range = '24h', month = null, from = null, to = null, includeTrips = false, summaryOnly = false, assetIds = null } = {}) {
   const { start, end } = getDistanceRangeBounds(range, month, from, to);
   const fromIso = start.toISOString();
   const toIso = end.toISOString();
 
   if (summaryOnly) {
-    const totals = loadTripTotalsInRange(fromIso, toIso) || {};
+    const totals = loadTripTotalsInRange(fromIso, toIso, assetIds) || {};
     const rawTripCount = Number(totals.rawTripCount) || 0;
     return {
       generatedAt: new Date().toISOString(),
@@ -1475,10 +1403,10 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
       '-7564450339336730068', // Unknown
       '-4331286019934761070', // No Driver Assigned
     ]);
-    const assetRows = loadTripRollupsByAsset(fromIso, toIso);
-    const driverRows = loadTripRollupsByDriver(fromIso, toIso);
+    const assetRows = loadTripRollupsByAsset(fromIso, toIso, assetIds);
+    const driverRows = loadTripRollupsByDriver(fromIso, toIso, assetIds);
     const lastDrivers = loadLastDriverIdByAsset(fromIso, toIso);
-    const driverAssets = loadTripDriverAssets(fromIso, toIso);
+    const driverAssets = loadTripDriverAssets(fromIso, toIso, assetIds);
     const lastDriverByAsset = new Map(
       lastDrivers.map(r => [String(r.assetId), r.driverId != null ? String(r.driverId) : '']),
     );
@@ -1492,7 +1420,7 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
       if (!vehiclesByDriver.has(driverId)) vehiclesByDriver.set(driverId, new Set());
       vehiclesByDriver.get(driverId).add(reg);
     }
-    const tripCount = countTripsInRange(fromIso, toIso);
+    const tripCount = countTripsInRange(fromIso, toIso, assetIds);
 
     const assets = assetRows
       .map(row => {
@@ -1572,7 +1500,7 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
     .filter(trip => {
       if (!(trip.distanceKm >= 0.5)) return false;
       if (!trip.tripStart && !trip.tripEnd) return false;
-      const secs = trip.drivingTimeSeconds ?? trip.durationSeconds;
+      const secs = trip.drivingTimeSeconds;
       if (secs !== null && secs !== undefined && secs < 60) return false;
       return true;
     });
@@ -1638,7 +1566,7 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
       const d = byDriver.get(key);
       d.totalDistanceKm += journey.distanceKm;
       d.journeyCount += 1;
-      d.totalDrivingTimeSeconds += journey.drivingTimeSeconds || journey.durationSeconds || 0;
+      d.totalDrivingTimeSeconds += journey.drivingTimeSeconds || 0;
       if (asset.regNo && asset.regNo !== 'N/A') d.vehicles.add(asset.regNo);
     });
   });
@@ -2241,7 +2169,7 @@ function siteKeyFor(zone) {
 function assetIdsForSiteScope(siteScope) {
   const keys = parseScopeKeyList(siteScope);
   if (!keys) return null;
-  const allowed = new Set(keys);
+  const allowed = new Set(keys.map(k => String(k).trim().toLowerCase()));
   try {
     const dataPath = path.join(process.cwd(), 'public', 'data.json');
     if (!fs.existsSync(dataPath)) return [];
@@ -2249,7 +2177,12 @@ function assetIdsForSiteScope(siteScope) {
     if (!Array.isArray(vehicles)) return [];
     return [...new Set(
       vehicles
-        .filter(v => allowed.has(siteKeyFor(v.zone)) || allowed.has(String(v.site || '').trim()))
+        .filter(v => {
+          const zone = siteKeyFor(v.zone).toLowerCase();
+          const site = String(v.site || '').trim().toLowerCase();
+          const transporter = String(v.transporter || '').trim().toLowerCase();
+          return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
+        })
         .map(v => v.id?.toString())
         .filter(Boolean),
     )];
@@ -2326,14 +2259,10 @@ export function getFleetSafetyExposure({ range = '30d', from = null, to = null, 
     from: start.toISOString(),
     to: end.toISOString(),
     includeTrips: false,
+    summaryOnly: true,
+    assetIds: ids,
   });
-  let distanceKm = dist.totalDistanceKm;
-  if (ids) {
-    const set = new Set(ids);
-    distanceKm = dist.assets
-      .filter(a => a.assetId && set.has(String(a.assetId)))
-      .reduce((s, a) => s + (a.totalDistanceKm || 0), 0);
-  }
+  const distanceKm = Number(dist.totalDistanceKm) || 0;
   const hos = getHosHeldMinutesInRange(dist.start, dist.end, ids);
   const value = {
     generatedAt: new Date().toISOString(),
@@ -2436,16 +2365,6 @@ export async function pollOnce() {
         lastTripsFetch = Date.now();
       }
 
-      if (Date.now() - lastDbPrune >= DB_PRUNE_INTERVAL_MS || lastDbPrune === 0) {
-        try {
-          const pruned = pruneFleetHistory(DB_RETENTION_DAYS);
-          console.log(`🧹 SQLite prune: trips−${pruned.trips} events−${pruned.events} fuel−${pruned.fuel} kpi−${pruned.kpi}`);
-        } catch (e) {
-          console.log('⚠️ SQLite prune skipped:', e?.message || e);
-        }
-        lastDbPrune = Date.now();
-      }
-
       const speedByAsset = new Map(
         positions.map(p => [p.AssetId?.toString(), p.SpeedKilometresPerHour ?? null])
       );
@@ -2453,18 +2372,6 @@ export async function pollOnce() {
       const latestActiveEvents = await getLatestActiveEvents(token, speedByAsset);
 
       console.log(`✅ Vehicles: ${vehicleLookup.size} | Active Events: ${latestActiveEvents.length} | Positions: ${positions.length}`);
-
-      latestActiveEvents.forEach(event => {
-        if (event.EventTypeId === PANIC_EVENT_TYPE_ID) {
-          const assetId = event.AssetId?.toString();
-          if (assetId) {
-            if (!triggeredEvents.has(assetId)) triggeredEvents.set(assetId, []);
-            const existing = triggeredEvents.get(assetId);
-            const alreadyStored = existing.some(e => e.EventId === event.EventId);
-            if (!alreadyStored) existing.push(event);
-          }
-        }
-      });
 
       if (vehicleLookup.size === 0 || positions.length === 0) {
         console.log('⚠️ Empty response from MiX, skipping write to data.json');
@@ -2474,7 +2381,6 @@ export async function pollOnce() {
       const merged = mergeData(positions);
 
       const stats = {
-        panic: merged.filter(v => v.panic).length,
         moving: merged.filter(v => v.status === 'Moving').length,
         idle: merged.filter(v => v.status === 'Idle').length,
         excessiveIdle: merged.filter(v => v.status === 'Excessive Idle').length,
@@ -2487,42 +2393,55 @@ export async function pollOnce() {
 
       const dataPath = path.join(process.cwd(), 'public', 'data.json');
       const metadataPath = path.join(process.cwd(), 'public', 'metadata.json');
-      // Compact JSON — pretty-print doubled disk IO every poll on ~2MB fleet dumps
-      fs.writeFileSync(dataPath, JSON.stringify(merged));
+      // Apply only already-cached addresses on the critical path — never await Nominatim here.
+      const applied = applyCachedAddresses(merged);
+      const finalVehicles = applied.vehicles;
+      fs.writeFileSync(dataPath, JSON.stringify(finalVehicles));
 
       const metadata = {
         lastUpdate: new Date().toISOString(),
         runNumber: runCount,
-        totalVehicles: merged.length,
-        ...stats
+        totalVehicles: finalVehicles.length,
+        ...stats,
       };
       fs.writeFileSync(metadataPath, JSON.stringify(metadata));
-
-      // Fill Unknown/coord locations from Nominatim (cached; rate-limited)
-      const geocoded = await processGeocodeQueue();
-      const applied = applyCachedAddresses(merged);
-      let finalVehicles = merged;
-      if (geocoded > 0 || applied.updated > 0) {
-        fs.writeFileSync(dataPath, JSON.stringify(applied.vehicles));
-        finalVehicles = applied.vehicles;
-        if (applied.updated > 0) {
-          console.log(`📍 Applied ${applied.updated} cached place name(s) to fleet positions`);
-        }
+      if (applied.updated > 0) {
+        console.log(`📍 Applied ${applied.updated} cached place name(s) to fleet positions`);
       }
-      saveAddressCacheIfDirty();
+
+      // Background geocode — does not block this poll or API handlers.
+      void processGeocodeQueue().then((filled) => {
+        if (!filled) return;
+        try {
+          const current = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+          const next = applyCachedAddresses(current);
+          if (next.updated > 0) {
+            fs.writeFileSync(dataPath, JSON.stringify(next.vehicles));
+            console.log(`📍 Background geocode applied ${next.updated} address(es)`);
+          }
+        } catch { /* next poll will pick up cache */ }
+      }).catch(() => {});
+
+      // Prune off the critical path so SQLite DELETE doesn't stall this poll's response path.
+      if (Date.now() - lastDbPrune >= DB_PRUNE_INTERVAL_MS || lastDbPrune === 0) {
+        lastDbPrune = Date.now();
+        setImmediate(() => {
+          try {
+            const pruned = pruneFleetHistory(DB_RETENTION_DAYS);
+            console.log(`🧹 SQLite prune: trips−${pruned.trips} events−${pruned.events} fuel−${pruned.fuel}`);
+          } catch (e) {
+            console.log('⚠️ SQLite prune skipped:', e?.message || e);
+          }
+        });
+      }
+
       const triggerResult = queueConnectivityTriggersForPoll(finalVehicles);
       if (triggerResult.queued > 0) {
         console.log(`📬 Queued ${triggerResult.queued} connectivity threshold trigger(s)`);
       }
 
-      console.log(`📊 Panic: ${stats.panic} | Warnings: ${stats.warnings} | Moving: ${stats.moving} | Idle: ${stats.idle} | Excessive Idle: ${stats.excessiveIdle} | Stationary: ${stats.stationary} | Parked: ${stats.parked} | Inactive: ${stats.inactive} | Offline: ${stats.offline}`);
-      console.log("💾 Saved to data.json");
-
-      if (stats.panic > 0) {
-        console.log("\n🚨 PANIC ALERT DETECTED! 🚨");
-        const panicVehicles = merged.filter(v => v.panic);
-        panicVehicles.forEach(v => console.log(`   ${v.regNo} - ${v.assetName}`));
-      }
+      console.log(`📊 Warnings: ${stats.warnings} | Moving: ${stats.moving} | Idle: ${stats.idle} | Excessive Idle: ${stats.excessiveIdle} | Stationary: ${stats.stationary} | Parked: ${stats.parked} | Inactive: ${stats.inactive} | Offline: ${stats.offline}`);
+      console.log(`💾 Saved to data.json (${finalVehicles.length} vehicles)`);
 
       if (stats.warnings > 0) {
         console.log(`\n⚠️ ${stats.warnings} vehicle(s) with active warnings`);

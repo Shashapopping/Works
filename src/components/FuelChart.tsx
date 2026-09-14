@@ -211,21 +211,27 @@ function latestReading(series: FuelSeries): number {
   return Math.max(0, sorted[sorted.length - 1].level);
 }
 
-function historyUrl(mode: FuelTimeMode, windowHours: number, customFrom: string, customTo: string) {
+function appendAssetScope(url: string, assetIds: string[]) {
+  if (!assetIds.length) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}assetIds=${encodeURIComponent(assetIds.join(','))}`;
+}
+
+function historyUrl(mode: FuelTimeMode, windowHours: number, customFrom: string, customTo: string, assetIds: string[] = []) {
   if (mode === 'custom' && customFrom && customTo) {
-    return `/api/fuel/history?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}`;
+    return appendAssetScope(`/api/fuel/history?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}`, assetIds);
   }
   if (mode === 'yesterday') {
     const day = lagosDate(-1);
-    return `/api/fuel/history?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`;
+    return appendAssetScope(`/api/fuel/history?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`, assetIds);
   }
   if (mode === 'today') {
     const day = lagosDate(0);
-    return `/api/fuel/history?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`;
+    return appendAssetScope(`/api/fuel/history?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`, assetIds);
   }
   const from = new Date(Date.now() - windowHours * 3_600_000).toISOString().slice(0, 10);
   const to = new Date().toISOString().slice(0, 10);
-  return `/api/fuel/history?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  return appendAssetScope(`/api/fuel/history?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, assetIds);
 }
 
 interface Props {
@@ -234,16 +240,23 @@ interface Props {
   zone: QuarrySiteKey;
   onSeriesLoaded?: (series: FuelSeries[]) => void;
   onSignalMetrics?: (metrics: FuelSignalMetrics | null) => void;
+  assetIds?: string[];
 }
 
-export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeriesLoaded, onSignalMetrics }: Props) {
+export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeriesLoaded, onSignalMetrics, assetIds }: Props) {
   const [timeMode, setTimeMode] = useState<FuelTimeMode>('today');
   const [customRange, setCustomRange] = useState(defaultCustomRange);
-  const initialHistoryUrl = historyUrl('today', 24, customRange.from, customRange.to);
-  const [allSeries, setAllSeries] = useState<FuelSeries[]>(
-    () => peekFuelHistory<FuelSeries[]>(initialHistoryUrl) ?? [],
+  const scopedAssetIds = useMemo(
+    () => assetIds ? [...new Set(assetIds.map(id => id.trim()).filter(Boolean))].sort() : null,
+    [assetIds?.join(',')],
   );
-  const [loading, setLoading] = useState(() => !peekFuelHistory<FuelSeries[]>(initialHistoryUrl));
+  const assetScopeKey = scopedAssetIds?.join(',') ?? '';
+  const scopeHasNoAssets = Array.isArray(assetIds) && assetScopeKey === '';
+  const initialHistoryUrl = scopeHasNoAssets ? '' : historyUrl('today', 24, customRange.from, customRange.to, scopedAssetIds ?? []);
+  const [allSeries, setAllSeries] = useState<FuelSeries[]>(
+    () => (initialHistoryUrl ? peekFuelHistory<FuelSeries[]>(initialHistoryUrl) : null) ?? [],
+  );
+  const [loading, setLoading] = useState(() => Boolean(initialHistoryUrl) && !peekFuelHistory<FuelSeries[]>(initialHistoryUrl));
   const [lastFetch, setLastFetch] = useState<string | null>(null);
   const [highlightedSparkId, setHighlightedSparkId] = useState<string | null>(null);
 
@@ -270,8 +283,15 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
 
   const fetchWindowHours = timeMode === 'custom' ? null : windowHours;
   const load = useCallback(async (silent = false) => {
+    if (scopeHasNoAssets) {
+      setAllSeries([]);
+      onSeriesLoaded?.([]);
+      onSignalMetrics?.(null);
+      setLoading(false);
+      return;
+    }
     if (timeMode === 'custom' && (!customRange.from || !customRange.to)) return;
-    const url = historyUrl(timeMode, fetchWindowHours ?? 0, customRange.from, customRange.to);
+    const url = historyUrl(timeMode, fetchWindowHours ?? 0, customRange.from, customRange.to, scopedAssetIds ?? []);
     if (!silent) {
       const cached = peekFuelHistory<FuelSeries[]>(url);
       if (cached) {
@@ -300,7 +320,7 @@ export default function FuelChart({ selectedRegNo, selectedAssetId, zone, onSeri
       }
     } catch { /* ignore */ }
     if (!silent) setLoading(false);
-  }, [timeMode, fetchWindowHours, customRange.from, customRange.to, onSeriesLoaded]);
+  }, [timeMode, fetchWindowHours, customRange.from, customRange.to, onSeriesLoaded, onSignalMetrics, scopedAssetIds, scopeHasNoAssets]);
 
   useEffect(() => { load(); }, [load]);
 

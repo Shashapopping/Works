@@ -94,10 +94,15 @@ export default function SiteScopeDropdown({
 
   const activeCount = useMemo(() => {
     if (!isFiltered) return totalCount;
-    return siteOptions
+    const zoneHits = siteOptions
       .filter(o => selectedSet.has(o.key))
       .reduce((s, o) => s + o.count, 0);
-  }, [isFiltered, siteOptions, selectedSet, totalCount]);
+    const siteHits = siteNameOptions
+      .filter(o => selectedSet.has(o.key))
+      .reduce((s, o) => s + o.count, 0);
+    // Prefer zone totals when zones were selected; otherwise transporter/site totals.
+    return zoneHits > 0 ? zoneHits : siteHits;
+  }, [isFiltered, siteOptions, siteNameOptions, selectedSet, totalCount]);
 
   const orgLabel = brandLabel(CEMENT_SITE_TREE.label);
   const activeLabel = useMemo(

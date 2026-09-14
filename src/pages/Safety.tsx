@@ -18,6 +18,7 @@ import {
   scoreBandColor,
   scoreBandLabel,
   ratePer100Km,
+  computeFleetScore,
   totalSafetyPointsFromCensus,
   SCORE_DROP_PER_IVMS_UNIT,
   FLEET_SCORE_SCALE,
@@ -27,6 +28,7 @@ import {
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
 import { SkelValue } from '../components/data/DataBusy';
+import { appendUrlScope } from '../lib/siteScope';
 import { authCachedJson, cachePeek, CACHE_TTL, peekSafetySummary } from '../lib/apiCache';
 import PagePeriodBar from '../components/PagePeriodBar';
 import { type PageDateRange, defaultPageCustomRange, pagePeriodIsoBounds } from '../lib/pagePeriod';
@@ -172,9 +174,6 @@ function ScoreGauge({
             </div>
           ))}
         </div>
-        <div style={{ fontSize: 10, color: '#0078D4', marginTop: 10, fontWeight: 600 }}>
-          Click for a 10-second explainer
-        </div>
       </div>
     </button>
   );
@@ -209,12 +208,25 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Last 30 days · weighted deduction total: <strong style={{ color: 'var(--cd-text)' }}>{totalDeduction.toFixed(0)}</strong></div>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 220, paddingTop: 16 }}>
+      <div style={{ flex: 1, minHeight: 220, paddingTop: 8 }}>
         <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} barSize={28} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
+        <BarChart data={data} barSize={28} margin={{ top: 8, right: 8, bottom: 28, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" vertical={false} />
-          <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="name"
+            interval={0}
+            tick={{ fontSize: 9, fill: 'var(--cd-text-muted)' }}
+            axisLine={false}
+            tickLine={false}
+            tickMargin={8}
+          />
+          <YAxis
+            width={32}
+            tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
+            axisLine={false}
+            tickLine={false}
+            allowDecimals={false}
+          />
           <Tooltip
             contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 6, fontSize: 12 }}
             formatter={(value: number, name: string, props: any) => [`${value} incidents (−${(value * props.payload.weight).toFixed(0)} pts)`, 'Count']}
@@ -230,9 +242,21 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
 }
 
 // ─── WorstPerformers ─────────────────────────────────────────────────────────
-function WorstPerformers() {
+function WorstPerformers({
+  assetIds = [],
+  scoped,
+}: {
+  assetIds?: string[];
+  scoped: boolean;
+}) {
   const { scoreConfig } = useFleet();
-  const url = '/api/risk/drivers?range=30d';
+  const assetScopeKey = assetIds.join(',');
+  const url = useMemo(() => {
+    const params = new URLSearchParams({ range: '30d' });
+    return appendUrlScope(`/api/risk/drivers?${params.toString()}`, {
+      assetIds: scoped ? assetIds : [],
+    });
+  }, [assetScopeKey, scoped]);
   const [rows, setRows] = useState<{
     name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string;
   }[]>(() => {
@@ -271,12 +295,21 @@ function WorstPerformers() {
       .sort((a, b) => b.riskScore - a.riskScore)
       .slice(0, 10);
   });
-  const [loading, setLoading] = useState(() => !cachePeek(url));
+  const [loading, setLoading] = useState(() => Boolean(url) && !cachePeek(url));
 
   useEffect(() => {
+    if (!url) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
-    if (cachePeek(url)) setLoading(false);
-    else setLoading(true);
+    const cached = cachePeek(url);
+    if (cached) {
+      setLoading(false);
+    } else {
+      setRows([]);
+      setLoading(true);
+    }
     authCachedJson<{
       drivers?: Array<{
         driverName?: string;
@@ -322,7 +355,7 @@ function WorstPerformers() {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [scoreConfig]);
+  }, [url, scoreConfig]);
 
   const driverMap = rows;
 
@@ -665,22 +698,21 @@ export default function Safety() {
     safetyDelta,
     safetyExposure,
     safetyExposureLoading,
-    selectedSites,
+    scopedAssetIds,
+    siteFilterActive,
   } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
   const [dateRange, setDateRange] = useState<PageDateRange>('30days');
   const [customRange, setCustomRange] = useState(defaultPageCustomRange);
-  const [periodExposure, setPeriodExposure] = useState<FleetSafetyExposure | null>(() =>
-    peekSafetySummary<FleetSafetyExposure>('30d'),
-  );
-  const [periodLoading, setPeriodLoading] = useState(
-    () => !peekSafetySummary<FleetSafetyExposure>('30d'),
-  );
+  const [periodExposure, setPeriodExposure] = useState<FleetSafetyExposure | null>(null);
+  const [periodLoading, setPeriodLoading] = useState(false);
 
-  const siteFiltered = selectedSites.length > 0;
-  const useContextExposure = dateRange === '30days' && !siteFiltered;
+  const siteFiltered = siteFilterActive;
+  const useContextExposure = dateRange === '30days';
+  const assetScopeKey = scopedAssetIds.join(',');
 
   const periodUrl = useMemo(() => {
+    if (useContextExposure) return '';
     const b = pagePeriodIsoBounds(dateRange, customRange.from, customRange.to);
     const params = new URLSearchParams();
     if (b.from && b.to) {
@@ -689,26 +721,25 @@ export default function Safety() {
     } else if (dateRange === 'today') params.set('range', 'today');
     else if (dateRange === '7days') params.set('range', '7d');
     else params.set('range', '30d');
-    if (siteFiltered) {
-      const ids = vehicles.map(v => v.id).filter(Boolean).map(String);
-      if (ids.length) params.set('assetIds', ids.join(','));
-    }
-    return `/api/safety/summary?${params}`;
-  }, [dateRange, customRange.from, customRange.to, siteFiltered, vehicles]);
+    return appendUrlScope(`/api/safety/summary?${params}`, {
+      assetIds: siteFiltered ? scopedAssetIds : [],
+    });
+  }, [dateRange, customRange.from, customRange.to, siteFiltered, assetScopeKey, useContextExposure]);
 
   useEffect(() => {
     if (useContextExposure) {
       setPeriodLoading(false);
       return;
     }
+    if (!periodUrl) {
+      setPeriodExposure(null);
+      setPeriodLoading(false);
+      return;
+    }
     let cancelled = false;
     const cached = cachePeek<FleetSafetyExposure>(periodUrl);
-    if (cached) {
-      setPeriodExposure(cached);
-      setPeriodLoading(false);
-    } else {
-      setPeriodLoading(true);
-    }
+    setPeriodExposure(cached);
+    setPeriodLoading(!cached);
     authCachedJson<FleetSafetyExposure>(periodUrl, authFetch, {
       ttlMs: CACHE_TTL.safetySummary,
     })
@@ -721,57 +752,21 @@ export default function Safety() {
     return () => { cancelled = true; };
   }, [periodUrl, useContextExposure]);
 
-  const scopedUrl = useMemo(() => {
-    if (!siteFiltered) return '';
-    const ids = vehicles.map(v => v.id).filter(Boolean).map(String);
-    if (!ids.length) return '';
-    return `/api/safety/summary?range=30d&assetIds=${encodeURIComponent(ids.join(','))}`;
-  }, [siteFiltered, vehicles]);
-
-  const [scopedExposure, setScopedExposure] = useState<FleetSafetyExposure | null>(() =>
-    scopedUrl ? cachePeek<FleetSafetyExposure>(scopedUrl) : null,
-  );
-  const [scopedLoading, setScopedLoading] = useState(() => siteFiltered && !!scopedUrl && !cachePeek(scopedUrl));
-
-  useEffect(() => {
-    if (!siteFiltered || !scopedUrl) {
-      setScopedExposure(null);
-      setScopedLoading(false);
-      return;
-    }
-    let cancelled = false;
-    const cached = cachePeek<FleetSafetyExposure>(scopedUrl);
-    if (cached) {
-      setScopedExposure(cached);
-      setScopedLoading(false);
-    } else {
-      setScopedLoading(true);
-    }
-    authCachedJson<FleetSafetyExposure>(scopedUrl, authFetch, {
-      ttlMs: CACHE_TTL.safetySummary,
-    })
-      .then(data => {
-        if (cancelled || !data) return;
-        setScopedExposure(data);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setScopedLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [siteFiltered, scopedUrl]);
-
   const pageExposure = useContextExposure
-    ? (safetyExposure ?? periodExposure)
-    : (periodExposure ?? (siteFiltered ? scopedExposure : safetyExposure));
+    ? safetyExposure
+    : (periodExposure ?? safetyExposure);
   const totalIncidents = pageExposure?.incidentTotal ?? 0;
   const distanceKm = pageExposure?.distanceKm ?? 0;
   const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
+  const pageScoreResult = useMemo(() => {
+    if (useContextExposure && safetyExposure) return { score: safetyScore, delta: safetyDelta };
+    return computeFleetScore(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0, byLabel: {} }, null, scoreConfig);
+  }, [useContextExposure, safetyExposure, safetyScore, safetyDelta, pageExposure, scoreConfig]);
   const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.ivms, distanceKm);
   const altLoading = useContextExposure
     ? safetyExposureLoading
-    : (periodLoading || (siteFiltered ? scopedLoading : safetyExposureLoading));
+    : (periodLoading || safetyExposureLoading);
   const pageBusy = !pageExposure && altLoading;
   const scoreBusy = pageBusy;
 
@@ -796,10 +791,10 @@ export default function Safety() {
       <KpiStrip vehicleCount={vehicles.length} exposure={pageExposure} busy={pageBusy} />
 
       {/* Score + Breakdown + Radar */}
-      <div style={{ display: 'grid', gridTemplateColumns: '45fr 35fr 20fr', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '40fr 35fr 25fr', gap: 14, marginBottom: 20 }}>
         <ScoreGauge
-          score={safetyScore}
-          delta={safetyDelta}
+          score={pageScoreResult.score}
+          delta={pageScoreResult.delta}
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
           hosHeldMinutes={hosHeldMinutes}
@@ -814,16 +809,16 @@ export default function Safety() {
 
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
-        <WorstPerformers />
+        <WorstPerformers assetIds={scopedAssetIds} scoped={siteFiltered} />
       </div>
 
       {/* Priority actions */}
-      <PriorityActions byLabel={pageExposure?.byLabel} score={safetyScore} vehicleCount={vehicles.length} />
+      <PriorityActions byLabel={pageExposure?.byLabel} score={pageScoreResult.score} vehicleCount={vehicles.length} />
 
       {explainerOpen && (
         <ConsequenceExplainerModal
-          fleetScore={safetyScore}
-          fleetDelta={safetyDelta}
+          fleetScore={pageScoreResult.score}
+          fleetDelta={pageScoreResult.delta}
           totalIncidents={totalIncidents}
           vehicleCount={vehicles.length}
           actualWeightedRate={weightedRate}

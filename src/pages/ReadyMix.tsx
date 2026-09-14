@@ -288,11 +288,14 @@ function SiteSection({
 }
 
 export default function ReadyMix() {
-  const { vehicles, vehiclesLoading } = useFleet();
+  const { vehicles, vehiclesLoading, scopedAssetIds, siteFilterActive } = useFleet();
   const {
     period, setPeriod, customRange, setCustomRange,
     assets: periodAssets, loading: distanceLoading, label: periodLabel,
-  } = useSegmentPeriod('today');
+  } = useSegmentPeriod('today', {
+    assetIds: siteFilterActive ? scopedAssetIds : [],
+    enabled: !siteFilterActive || scopedAssetIds.length > 0,
+  });
   const [filter, setFilter] = useState<DispatchFilter>('all');
   const [allOpen, setAllOpen] = useState(true);
   const [density, setDensity] = useState<BoardDensity>('cards');

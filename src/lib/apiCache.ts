@@ -25,7 +25,7 @@ const MEMORY_ONLY_PREFIXES = [
   '/api/events/log',
   '/api/events/trends',
   '/api/safety/summary',
-  '/api/kpi',
+  '/api/utilization',
   'driver:period:',
   'driver:assessment-distance',
   'hos:',
@@ -243,6 +243,7 @@ export const BOOT_PRIORITY_URLS = [
   '/api/hos',
   '/api/safety/summary?range=30d',
   '/api/driver-distance?range=7d&trips=0&summary=1',
+  '/api/fuel/series?period=week',
 ] as const;
 
 /** Warm shortly after login so common pages open from cache (Chevron-style). */
@@ -252,7 +253,7 @@ export const BOOT_PREFETCH_URLS = [
   '/api/driver-distance?range=prev30d&trips=0&summary=1',
   '/api/driver-distance?range=today&trips=0&summary=1',
   '/api/fuel/consumption?period=week&trips=0&summary=1',
-  '/api/kpi?period=week&scope=all&summary=1',
+  '/api/utilization?period=week&scope=all&summary=1',
   '/api/safety/summary?range=prev30d',
   '/api/risk/drivers?range=30d',
 ] as const;

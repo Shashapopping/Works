@@ -14,7 +14,6 @@ import {
   withTransaction,
   countTrips,
   insertFuelReading,
-  insertKpiEvent,
 } from './db.js';
 import { iterateJsonLines } from './jsonl-stream.js';
 import { FUEL_EVENT_TYPE } from './fuel-constants.js';
@@ -183,44 +182,6 @@ function migrateFuel() {
   return { inserted, failed };
 }
 
-function migrateKpi() {
-  const p = path.join(ROOT, 'kpi-events.log');
-  if (!fs.existsSync(p)) {
-    console.log('kpi-events.log — skip (missing)');
-    return { inserted: 0, failed: 0 };
-  }
-  let inserted = 0;
-  let failed = 0;
-  withTransaction(() => {
-    for (const e of iterateJsonLines(p)) {
-      try {
-        if (!e.eventId) { failed += 1; continue; }
-        insertKpiEvent({
-          eventId: e.eventId,
-          timestamp: e.timestamp,
-          assetId: e.assetId,
-          driverId: e.driverId,
-          driverName: e.driverName,
-          eventTypeId: e.eventTypeId,
-          category: e.category,
-          label: e.label,
-          eventTime: e.eventTime,
-          endTime: e.endTime,
-          value: e.value,
-          speed: e.speed,
-          latitude: e.latitude ?? e.lat ?? null,
-          longitude: e.longitude ?? e.lon ?? null,
-        });
-        inserted += 1;
-      } catch {
-        failed += 1;
-      }
-    }
-  });
-  console.log(`kpi-events.log — attempted: ${inserted}, failed: ${failed}`);
-  return { inserted, failed };
-}
-
 getDb();
 console.log('Migrating into', path.join(ROOT, 'fleet.db'));
 migrateEvents();
@@ -228,6 +189,5 @@ migratePanic();
 migrateAcknowledged();
 migrateTrips();
 migrateFuel();
-migrateKpi();
 closeDb();
 console.log('Done.');

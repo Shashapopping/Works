@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useFleet } from '../context/FleetContext';
 import { Fuel, MapPin, ChevronDown, ChevronRight, AlertTriangle, Route, Search, Clock, Gauge, Zap, Truck } from 'lucide-react';
 import {
   QUARRY_SITE_KEYS,
@@ -25,6 +26,7 @@ import { SkelValue, SkelTable } from '../components/data/DataBusy';
 import FuelRefuelChartPanel from '../components/FuelRefuelChartPanel';
 import { refuelRowKey } from '../lib/fuelSignal';
 import FeatureGate from '../components/FeatureGate';
+import { appendUrlScope } from '../lib/siteScope';
 
 const COL_COUNT = 10;
 
@@ -251,6 +253,7 @@ function AssetDetailPanel({
 
 export default function FuelConsumption() {
   const [searchParams] = useSearchParams();
+  const { scopedAssetIds, siteFilterActive } = useFleet();
   const linkedAssetId = searchParams.get('asset');
   const linkedSite = searchParams.get('site');
   const linkedPeriod = searchParams.get('period');
@@ -264,7 +267,10 @@ export default function FuelConsumption() {
   const [siteMenuOpen, setSiteMenuOpen] = useState(false);
   const [period, setPeriod] = useState<PeriodMode>(initialPeriod);
   const [customRange, setCustomRange] = useState(defaultCustomRange);
-  const initialUrl = buildConsumptionUrl(initialPeriod, initialSite, defaultCustomRange().from, defaultCustomRange().to);
+  const initialUrl = appendUrlScope(
+    buildConsumptionUrl(initialPeriod, initialSite, defaultCustomRange().from, defaultCustomRange().to),
+    { assetIds: siteFilterActive ? scopedAssetIds : [] },
+  );
   const [data, setData] = useState<ConsumptionData | null>(() => peekFuelConsumption(initialUrl));
   const [loading, setLoading] = useState(() => !peekFuelConsumption(initialUrl));
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(linkedAssetId);
@@ -273,7 +279,15 @@ export default function FuelConsumption() {
   const linkedRowRef = useRef<HTMLTableRowElement | null>(null);
 
   const fetchData = useCallback(async (silent = false) => {
-    const url = buildConsumptionUrl(period, selectedSite, customRange.from, customRange.to);
+    if (siteFilterActive && scopedAssetIds.length === 0) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
+    const url = appendUrlScope(
+      buildConsumptionUrl(period, selectedSite, customRange.from, customRange.to),
+      { assetIds: siteFilterActive ? scopedAssetIds : [] },
+    );
     if (!silent) {
       const cached = peekFuelConsumption(url);
       if (cached) {
@@ -291,7 +305,7 @@ export default function FuelConsumption() {
     finally {
       if (!silent) setLoading(false);
     }
-  }, [period, selectedSite, customRange.from, customRange.to]);
+  }, [period, selectedSite, customRange.from, customRange.to, scopedAssetIds.join(','), siteFilterActive]);
 
   useEffect(() => {
     void fetchData(false);

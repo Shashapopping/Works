@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import type { StatusFilter, DistanceRange } from '../context/FleetContext';
 import { useFleet } from '../context/FleetContext';
 import FleetSafetyScore from '../components/home/FleetSafetyScore';
@@ -12,8 +12,7 @@ import { EnvironmentStrip } from '../components/home/EnvironmentStrip';
 import { clientName } from '../lib/branding';
 import { FATIGUE_ENABLED } from '../config/fatigue';
 import { defaultPageCustomRange } from '../lib/pagePeriod';
-
-const FuelChartWidget = lazy(() => import('../components/home/FuelChartWidget'));
+import FuelChartWidget from '../components/home/FuelChartWidget';
 
 export default function Dashboard() {
   const { setDistanceRange } = useFleet();
@@ -58,9 +57,7 @@ export default function Dashboard() {
       <div className={`bpl-home-mid-row ${midColsClass}`}>
         <FleetViewCard statusFilter={statusFilter} />
         {FATIGUE_ENABLED && <FatigueWidget />}
-        <Suspense fallback={<div className="bpl-card" style={{ minHeight: 260 }} />}>
-          <FuelChartWidget />
-        </Suspense>
+        <FuelChartWidget />
       </div>
 
       <div className="bpl-home-bottom-row">

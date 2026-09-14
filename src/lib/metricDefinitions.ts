@@ -1,18 +1,20 @@
 /**
  * Shared metric / status definitions for (i) info tips.
  * Status rules mirror scripts/mix-test.js assignment.
- * KPI formulas mirror scripts/kpi-engine.js.
+ * Utilization formulas mirror scripts/util-engine.js.
  */
 
 export const KPI_DEFINITIONS = {
   utilization:
-    'Utilization % = operational time ÷ available (in-use) time. How much the truck was actually working while it was considered in use — typically (trip time − idle) ÷ engine runtime, or DrivingTime ÷ Duration when MiX provides both.',
+    'Utilization % = Driving time ÷ Engine-on time. How much of engine-on time was actually driving rather than standing / idle. Uses SubTrip DrivingTime and EngineSeconds when available.',
   availability:
-    'Availability % = Engine runtime hours ÷ Hours in the selected period (capped at 100%). Share of the period the asset was in use (running).',
+    'Availability % = Engine-on hours ÷ Hours in the selected period (capped at 100%). Share of the period the asset was running.',
   engineRuntime:
-    'Total engine-on / in-use time from trip telemetry in the selected period. Denominator for utilization; numerator for availability.',
-  loadedDuration:
-    'Time spent loaded, from Loaded Truck / Offload MiX events (intervals capped when offload is missing). Separate from utilization, which measures working vs idle while in use.',
+    'Total engine-on time from trip telemetry (EngineSeconds / SubTrips, else driving + standing). Denominator for utilization; numerator for availability.',
+  drivingTime:
+    'Time MiX counts as driving (SubTrip DrivingTime when present). Numerator for utilization.',
+  idleTime:
+    'Engine-on time that is not driving — standing / idle from SubTrips, else engine-on minus driving.',
   harshBraking:
     'Count of harsh braking events from MiX warning telemetry. Score = count ÷ 3.',
   overspeeding:

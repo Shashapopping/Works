@@ -40,10 +40,11 @@ function parsePeriodBounds(period, fromQ, toQ) {
   return { start: now - ms, end: now };
 }
 
-function loadFuelEntries(start, end) {
+function loadFuelEntries(start, end, assetIds = null) {
   return getFuelHistory({
     fromIso: new Date(start).toISOString(),
     toIso: new Date(end).toISOString(),
+    assetIds,
   }).filter(e => e.assetId);
 }
 
@@ -60,6 +61,8 @@ function loadVehicleLookup(cwd) {
         regNo: v.regNo,
         assetName: v.assetName,
         zone: (v.zone || '').toUpperCase(),
+        site: v.site || '',
+        transporter: v.transporter || '',
       });
     });
 
@@ -91,6 +94,39 @@ function loadDriverLookup(cwd) {
   }
 }
 
+function parseAssetIdList(raw) {
+  if (raw == null || raw === '') return null;
+  const list = (Array.isArray(raw) ? raw : String(raw).split(','))
+    .map(id => String(id || '').trim())
+    .filter(Boolean);
+  return list.length ? [...new Set(list)] : null;
+}
+
+function parseScopeKeyList(raw) {
+  if (raw == null || raw === '') return null;
+  const list = String(raw).split(',').map(t => t.trim()).filter(Boolean);
+  return list.length ? [...new Set(list)] : null;
+}
+
+function scopedAssetIdsFromVehicles(vehicles, siteScope, assetIds) {
+  const explicit = parseAssetIdList(assetIds);
+  const siteKeys = parseScopeKeyList(siteScope);
+  if (!explicit && !siteKeys) return null;
+  let ids = explicit;
+  if (siteKeys) {
+    const allowed = new Set(siteKeys.map(k => String(k).trim().toLowerCase()));
+    const siteIds = [...vehicles.entries()]
+      .filter(([, v]) => {
+        const zone = String(v.zone || 'Unknown').trim().toLowerCase();
+        const site = String(v.site || '').trim().toLowerCase();
+        const transporter = String(v.transporter || '').trim().toLowerCase();
+        return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
+      })
+      .map(([id]) => id);
+    ids = ids ? ids.filter(id => siteIds.includes(id)) : siteIds;
+  }
+  return [...new Set(ids || [])];
+}
 function nearestFuelReading(indexedRows, targetMs, preferTypes, direction) {
   if (!indexedRows?.length) return null;
   const typeSet = preferTypes instanceof Set ? preferTypes : new Set(preferTypes);
@@ -172,10 +208,12 @@ export function computeConsumption({
   from,
   to,
   siteFilter = null,
-  includeTrips = true,
+  assetIds = null,
+  siteScope = null,
+  includeTrips = false,
   _bypassCache = false,
 }) {
-  const cacheKey = `${period}|${from || ''}|${to || ''}|${siteFilter || ''}|trips=${includeTrips ? 1 : 0}`;
+  const cacheKey = `${period}|${from || ''}|${to || ''}|${siteFilter || ''}|${assetIds || ''}|${siteScope || ''}|trips=${includeTrips ? 1 : 0}`;
 
   if (!_bypassCache) {
     const cached = resultCache.get(cacheKey);
@@ -194,6 +232,8 @@ export function computeConsumption({
                 from,
                 to,
                 siteFilter,
+                assetIds,
+                siteScope,
                 includeTrips,
                 _bypassCache: true,
               });
@@ -214,15 +254,19 @@ export function computeConsumption({
   const vehicles = loadVehicleLookup(cwd);
   const drivers = loadDriverLookup(cwd);
 
+  const scopedAssetIds = scopedAssetIdsFromVehicles(vehicles, siteScope, assetIds);
+  const scopedAssetSet = scopedAssetIds ? new Set(scopedAssetIds) : null;
+
   const quarryAssetIds = [...vehicles.entries()]
     .filter(([, v]) => QUARRY_ZONES.has(v.zone))
     .filter(([, v]) => !siteFilter || v.zone === siteFilter.toUpperCase())
-    .map(([id]) => id);
+    .map(([id]) => id)
+    .filter(id => !scopedAssetSet || scopedAssetSet.has(id));
 
   const quarryAssetIdSet = new Set(quarryAssetIds);
 
   // Slight lookback so trip-edge fuel matching still works near window start
-  const fuelEntries = loadFuelEntries(start - FUEL_MATCH_MS, end);
+  const fuelEntries = loadFuelEntries(start - FUEL_MATCH_MS, end, quarryAssetIds);
   const fuelByAsset = indexFuelByAsset(fuelEntries);
 
   const bucketMinutes = periodBucketMinutes(period);
@@ -256,7 +300,7 @@ export function computeConsumption({
           ? startFuel.level - endFuel.level
           : null;
         const distanceKm = t.DistanceKilometers ?? 0;
-        const drivingHours = (t.DrivingTime ?? t.Duration ?? 0) / 3600;
+        const drivingHours = (t.DrivingTime || 0) / 3600;
         const info = vehicles.get(assetId) || {};
         const driverId = t.DriverId?.toString() || null;
         return {
@@ -284,7 +328,7 @@ export function computeConsumption({
 
   const rollupByAsset = new Map();
   if (!includeTrips) {
-    loadTripRollupsByAsset(fromIso, toIso).forEach(row => {
+    loadTripRollupsByAsset(fromIso, toIso, quarryAssetIds).forEach(row => {
       if (row.assetId != null) rollupByAsset.set(String(row.assetId), row);
     });
   }

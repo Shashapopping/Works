@@ -83,39 +83,17 @@ export default function App() {
 
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
 
-                <Route
-                  path="/consequence-management"
-                  element={<Navigate to="/settings/scoring#driver-discipline" replace />}
-                />
-
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
-
-                <Route
-                  path="/incidents/trends"
-                  element={<Navigate to="/incidents?view=trends" replace />}
-                />
-
-                <Route
-                  path="/incidents/analysis"
-                  element={<Navigate to="/incidents?view=trends" replace />}
-                />
 
                 <Route path="/incidents/response" element={<IncidentIntelligence tab="patterns" />} />
 
                 <Route path="/incidents/audit" element={<AuditPage />} />
-
-                <Route
-                  path="/trends"
-                  element={<Navigate to="/incidents?view=trends" replace />}
-                />
 
                 <Route path="/safety" element={<Safety />} />
 
                 <Route path="/quarry" element={<Quarry />} />
 
                 <Route path="/quarry/kpi" element={<OperationalKpi />} />
-
-                <Route path="/kpi" element={<Navigate to="/quarry/kpi" replace />} />
 
                 <Route path="/fuel" element={<Navigate to="/fuel/monitoring" replace />} />
 
@@ -124,13 +102,6 @@ export default function App() {
                 <Route
                   path="/fuel/consumption"
                   element={<FuelConsumption />}
-                />
-
-                <Route path="/operations/fuel" element={<Navigate to="/fuel/monitoring" replace />} />
-
-                <Route
-                  path="/operations/fuel/consumption"
-                  element={<Navigate to="/fuel/consumption" replace />}
                 />
 
                 <Route path="/trips" element={<TripsPage />} />
@@ -151,9 +122,7 @@ export default function App() {
 
                 <Route path="/assets" element={<AssetsPage />} />
 
-                <Route path="/operations/utilization" element={<UtilizationPage />} />
-
-                <Route path="/operations" element={<Navigate to="/operations/utilization" replace />} />
+                <Route path="/utilization" element={<UtilizationPage />} />
 
                 <Route path="/tankers" element={<Tankers />} />
 
@@ -168,10 +137,6 @@ export default function App() {
                 <Route path="/settings/general" element={<Settings tab="general" />} />
 
                 <Route path="/settings/scoring" element={<Settings tab="scoring" />} />
-
-                <Route path="/settings/thresholds" element={<Navigate to="/settings/scoring" replace />} />
-
-                <Route path="/settings/api" element={<Navigate to="/settings/dev" replace />} />
 
                 <Route path="/settings/dev" element={<Settings tab="dev" />} />
 

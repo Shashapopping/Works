@@ -7,7 +7,7 @@ import TablePaginationBar from '../components/TablePaginationBar';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useTableSort } from '../hooks/useTableSort';
-import { buildKpiUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
+import { buildUtilUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelTable, SkelValue } from '../components/data/DataBusy';
 
@@ -31,7 +31,12 @@ function utilBar(pct: number, color: string) {
 }
 
 export default function UtilizationPage() {
-  const { vehicles } = useFleet();
+  const { vehicles, scopedAssetIds, siteFilterActive } = useFleet();
+  const kpiScope = useMemo(
+    () => ({ assetIds: siteFilterActive ? scopedAssetIds : [] }),
+    [siteFilterActive, scopedAssetIds.join(',')],
+  );
+  const kpiScopeKey = kpiScope.assetIds.join(',');
   const [period, setPeriod] = useState<PeriodMode>('week');
   const [customRange, setCustomRange] = useState(() => {
     const to = new Date();
@@ -42,20 +47,16 @@ export default function UtilizationPage() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 250);
 
-  const url = buildKpiUrl(period, 'all', customRange.from, customRange.to);
+  const url = buildUtilUrl(period, 'all', customRange.from, customRange.to, kpiScope);
   const [data, setData] = useState<KpiData | null>(() => cachePeek<KpiData>(CACHE_KEYS.kpi(url)));
   const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.kpi(url)));
 
   const fetchData = useCallback(async () => {
-    const nextUrl = buildKpiUrl(period, 'all', customRange.from, customRange.to);
+    const nextUrl = buildUtilUrl(period, 'all', customRange.from, customRange.to, kpiScope);
     const key = CACHE_KEYS.kpi(nextUrl);
     const cached = cachePeek<KpiData>(key);
-    if (cached) {
-      setData(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
+    setData(cached);
+    setLoading(!cached);
     try {
       const next = await cachedFetchJson<KpiData>(key, CACHE_TTL.kpi, async () => {
         const res = await authFetch(nextUrl);
@@ -63,9 +64,9 @@ export default function UtilizationPage() {
         return res.json();
       }, { force: false });
       if (next) setData(next);
-    } catch { /* keep prior */ }
+    } catch { /* keep current-scope paint */ }
     finally { setLoading(false); }
-  }, [period, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, kpiScopeKey]);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
 
@@ -81,7 +82,7 @@ export default function UtilizationPage() {
     return rows;
   }, [data?.assets, debouncedSearch]);
 
-  type SortKey = 'regNo' | 'zone' | 'utilizationPct' | 'availabilityPct' | 'distanceKm' | 'engineHours';
+  type SortKey = 'regNo' | 'zone' | 'utilizationPct' | 'availabilityPct' | 'distanceKm' | 'engineHours' | 'drivingHours';
   const getSortValue = (row: KpiAssetRow, key: SortKey) => row[key];
   const { sorted, toggle, ariaSort, indicator } = useTableSort(assets, getSortValue);
   const {
@@ -96,7 +97,7 @@ export default function UtilizationPage() {
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Utilization</h1>
-        <p className="bpl-page-subtitle">Engine / drive intensity and distance across the fleet</p>
+        <p className="bpl-page-subtitle">Drive, idle and engine-on time across the full fleet</p>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 20, alignItems: 'center' }}>
@@ -156,8 +157,9 @@ export default function UtilizationPage() {
           {[
             { label: 'Fleet activity %', value: available > 0 ? `${Math.round((withTrips / available) * 100)}%` : '—', tip: 'Share of fleet with at least one trip.', color: '#0f172a' },
             { label: 'Total distance', value: summary ? `${Math.round(summary.totalDistanceKm).toLocaleString()} km` : '—', tip: 'Total km from trips in period.', color: '#2563eb' },
-            { label: 'Avg utilization', value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—', tip: 'Average loaded utilization across assets.', color: '#0d9488' },
+            { label: 'Avg utilization', value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—', tip: 'Average driving time ÷ engine-on time.', color: '#0d9488' },
             { label: 'Engine hours', value: summary ? `${fmt(summary.totalEngineHours, 0)} h` : '—', tip: 'Total engine-on hours.', color: '#7c3aed' },
+            { label: 'Driving hours', value: summary ? `${fmt(summary.totalDrivingHours, 0)} h` : '—', tip: 'Total driving time.', color: '#2563eb' },
           ].map(k => (
             <div key={k.label} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}` }}>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -179,10 +181,11 @@ export default function UtilizationPage() {
               {([
                 { key: 'regNo' as const, label: 'Asset', tip: 'Registration number' },
                 { key: 'zone' as const, label: 'Zone', tip: 'Site / zone' },
-                { key: 'utilizationPct' as const, label: 'Util %', tip: 'Loaded utilization' },
-                { key: 'availabilityPct' as const, label: 'Avail %', tip: 'Availability' },
+                { key: 'utilizationPct' as const, label: 'Util %', tip: 'Driving ÷ engine-on' },
+                { key: 'availabilityPct' as const, label: 'Avail %', tip: 'Engine-on ÷ period hours' },
                 { key: 'distanceKm' as const, label: 'Distance', tip: 'Trip distance' },
-                { key: 'engineHours' as const, label: 'Engine h', tip: 'Engine hours' },
+                { key: 'engineHours' as const, label: 'Engine h', tip: 'Engine-on hours' },
+                { key: 'drivingHours' as const, label: 'Drive h', tip: 'Driving hours' },
               ]).map(col => (
                 <ThInfo
                   key={col.key}
@@ -196,9 +199,9 @@ export default function UtilizationPage() {
           </thead>
           <tbody>
             {loading && pageRows.length === 0 ? (
-              <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
+              <tr><td colSpan={7} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
             ) : pageRows.length === 0 ? (
-              <tr><td colSpan={6} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No assets</td></tr>
+              <tr><td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No assets</td></tr>
             ) : pageRows.map(a => (
               <tr key={a.assetId || a.regNo}>
                 <td style={{ fontWeight: 600 }}>{a.regNo || a.assetName}</td>
@@ -207,6 +210,7 @@ export default function UtilizationPage() {
                 <td>{a.availabilityPct != null ? utilBar(a.availabilityPct, '#2563eb') : '—'}</td>
                 <td>{a.distanceKm != null ? `${Math.round(a.distanceKm).toLocaleString()} km` : '—'}</td>
                 <td>{a.engineHours != null ? `${a.engineHours.toFixed(1)} h` : '—'}</td>
+                <td>{a.drivingHours != null ? `${a.drivingHours.toFixed(1)} h` : '—'}</td>
               </tr>
             ))}
           </tbody>
