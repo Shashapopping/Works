@@ -8,7 +8,8 @@ import {
   permissionForPath,
   type AuthUser,
 } from '../lib/authApi';
-import { resetApiWarmState } from '../lib/apiWarm';
+import { resetApiWarmState, warmHomeApisOnce } from '../lib/apiWarm';
+import { clearHomeSnapshot } from '../lib/homeSnapshot';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -76,6 +77,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    if (user) warmHomeApisOnce();
+  }, [user]);
+
   const login = async (email: string, password: string, viaTransporterPortal?: boolean) => {
     const u = await authLogin(email, password, viaTransporterPortal);
     setUser(u);
@@ -84,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     resetApiWarmState();
+    clearHomeSnapshot();
     await authLogout();
     setUser(null);
     writeCachedUser(null);

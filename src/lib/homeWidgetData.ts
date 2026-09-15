@@ -43,6 +43,37 @@ export interface AiInsight {
   type: 'fuel' | 'safety' | 'route' | 'maintenance';
 }
 
+export const HOME_ALERT_LABELS = [
+  'Harsh Braking',
+  'Harsh Acceleration',
+  'Overspeeding',
+  'Overspeed Tiered',
+  'Harsh Cornering',
+] as const;
+
+const HOME_ALERT_LABEL_SET = new Set<string>(HOME_ALERT_LABELS);
+
+/** Stable ISO so Home alert / events cache keys do not change every millisecond. */
+export function bucketedIso(atMs = Date.now(), bucketMs = 60_000) {
+  return new Date(Math.ceil(atMs / bucketMs) * bucketMs).toISOString();
+}
+
+/** Cheap Home card feed: 12 typed incidents, not 500 mixed events. */
+export function buildHomeAlertsUrl(opts?: { assetIds?: string[]; siteScope?: string[] }) {
+  const to = bucketedIso();
+  const from = new Date(new Date(to).getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const params = new URLSearchParams({
+    from,
+    to,
+    limit: '12',
+    excludeHidden: '1',
+    types: HOME_ALERT_LABELS.join(','),
+  });
+  if (opts?.assetIds?.length) params.set('assetIds', opts.assetIds.join(','));
+  else if (opts?.siteScope?.length) params.set('siteScope', opts.siteScope.join(','));
+  return `/api/events/log?${params.toString()}`;
+}
+
 function timeAgo(ts: string) {
   const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
   if (diff < 60) return 'just now';
@@ -53,13 +84,7 @@ function timeAgo(ts: string) {
 
 export function deriveAlerts(events: LogEntry[]): AlertItem[] {
   return events
-    .filter(e => e.type !== 'panic' && (
-      e.label === 'Harsh Braking'
-      || e.label === 'Harsh Acceleration'
-      || e.label === 'Overspeeding'
-      || e.label === 'Overspeed Tiered'
-      || e.label === 'Harsh Cornering'
-    ))
+    .filter(e => e.type !== 'panic' && HOME_ALERT_LABEL_SET.has(e.label || ''))
     .slice(0, 12)
     .map(e => ({
       id: e.eventId,

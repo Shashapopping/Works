@@ -11,6 +11,7 @@ import {
   type TripItem,
   deriveAlerts,
   deriveInsights,
+  buildHomeAlertsUrl,
   normalizeVehicle,
   DEFAULT_MAINTENANCE,
   DEFAULT_FUEL_SERIES,
@@ -40,8 +41,9 @@ import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
 import { filterOverspeedEvents } from '../lib/overspeedFilter';
 import { appendUrlScope, filterDistanceAssetsByVehicles, filterTripDriversByVehicles, fleetScopeOpts, normalizeScopeKeys, scopedAssetIdList } from '../lib/siteScope';
-import { buildDriverDistanceUrl } from '../lib/pagePeriod';
 import { defaultPageCustomRange } from '../lib/pagePeriod';
+import { buildDriverDistanceUrl } from '../lib/pagePeriod';
+import { readHomeSnapshot, slimHomeVehicle, writeHomeSnapshot } from '../lib/homeSnapshot';
 import { useAuth } from './AuthContext';
 import { authFetchInit } from '../lib/authApi';
 
@@ -249,6 +251,8 @@ interface FleetContextType {
   vehiclesLoading: boolean;
   /** True until first events payload. */
   eventsLoading: boolean;
+  /** True until the Home incident-alert card has something to paint. */
+  alertsLoading: boolean;
   /** True while driver-distance for current distanceRange is in flight. */
   distanceLoading: boolean;
   /** Live HOS / fatigue records for today (shared by home card + Fatigue page). */
@@ -367,6 +371,11 @@ function writeMetadataSnapshot(metadata: Metadata) {
   }
 }
 
+function weekDistanceSummaryUrl() {
+  const base = buildDriverDistanceUrl('week');
+  return `${base}${base.includes('?') ? '&' : '?'}summary=1`;
+}
+
 const FleetContext = createContext<FleetContextType>({} as FleetContextType);
 
 export function FleetProvider({ children }: { children: React.ReactNode }) {
@@ -377,12 +386,14 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   );
   const siteLock = lockedTransporters.length > 0;
   const [metadata, setMetadata] = useState<Metadata>(() =>
-    cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? readMetadataSnapshot() ?? defaultMeta,
+    cachePeek<Metadata>(CACHE_KEYS.fleetMeta) ?? readMetadataSnapshot() ?? readHomeSnapshot()?.metadata ?? defaultMeta,
   );
   const [vehicles, setVehicles] = useState<FleetVehicle[]>(() => {
     const cached = cachePeek<Vehicle[]>(CACHE_KEYS.fleetData);
-    if (!cached?.length) return [];
-    return cached
+    const snap = !cached?.length ? readHomeSnapshot()?.vehicles : null;
+    const source = cached?.length ? cached : snap;
+    if (!source?.length) return [];
+    return source
       .filter(v => v.site !== 'XN - Decommissioned')
       .map(normalizeVehicle);
   });
@@ -390,13 +401,33 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const [events, setEvents] = useState<LogEntry[]>(() =>
     cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents) ?? [],
   );
+  const [homeAlerts, setHomeAlerts] = useState<AlertItem[] | null>(() => {
+    const cached = cachePeek<LogEntry[]>(buildHomeAlertsUrl());
+    if (Array.isArray(cached)) return deriveAlerts(filterOverspeedEvents(cached));
+    const snap = readHomeSnapshot();
+    return snap && Array.isArray(snap.alerts) ? snap.alerts : null;
+  });
+  const [alertsLoading, setAlertsLoading] = useState(() => {
+    if (cachePeek<LogEntry[]>(buildHomeAlertsUrl())) return false;
+    const snap = readHomeSnapshot();
+    return !(snap && Array.isArray(snap.alerts));
+  });
   const [driverDistance, setDriverDistance] = useState<DriverDistanceSummary | null>(() =>
-    cachePeek<DriverDistanceSummary>(buildDriverDistanceUrl('week')),
+    cachePeek<DriverDistanceSummary>(weekDistanceSummaryUrl())
+    ?? readHomeSnapshot()?.driverDistance
+    ?? cachePeek<DriverDistanceSummary>(buildDriverDistanceUrl('week')),
   );
-  const [vehiclesLoading, setVehiclesLoading] = useState(() => !cachePeek<Vehicle[]>(CACHE_KEYS.fleetData)?.length);
+  const [vehiclesLoading, setVehiclesLoading] = useState(() => {
+    if (cachePeek<Vehicle[]>(CACHE_KEYS.fleetData)?.length) return false;
+    return !(readHomeSnapshot()?.vehicles?.length);
+  });
   const [eventsLoading, setEventsLoading] = useState(() => !(cachePeek<LogEntry[]>(CACHE_KEYS.fleetEvents)?.length));
   const [distanceLoading, setDistanceLoading] = useState(() =>
-    !cachePeek<DriverDistanceSummary>(buildDriverDistanceUrl('week')),
+    !(
+      cachePeek<DriverDistanceSummary>(weekDistanceSummaryUrl())
+      || readHomeSnapshot()?.driverDistance
+      || cachePeek<DriverDistanceSummary>(buildDriverDistanceUrl('week'))
+    ),
   );
   const hosTodayUrl = buildHosUrl();
   const [hosRecords, setHosRecords] = useState<HosRecord[]>(() => peekHos(hosTodayUrl)?.records ?? []);
@@ -437,6 +468,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const driverDistanceRef = useRef<DriverDistanceSummary | null>(driverDistance);
   const safetyExposureRef = useRef<FleetSafetyExposure | null>(safetyExposure);
   const hosRecordsRef = useRef<HosRecord[]>(hosRecords);
+  const homeAlertsRef = useRef<AlertItem[] | null>(homeAlerts);
   const bootTasksStartedRef = useRef(false);
   // Tracks the incident count at which we last fired a Claude analysis per driver
   const driverAnalysisRef = useRef<Map<string, { lastThreshold: number; notifId: string }>>(new Map());
@@ -462,6 +494,24 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     hosRecordsRef.current = hosRecords;
   }, [hosRecords]);
+
+  useEffect(() => {
+    homeAlertsRef.current = homeAlerts;
+  }, [homeAlerts]);
+
+  useEffect(() => {
+    if (!vehicles.length && !metadata.lastUpdate) return;
+    const t = window.setTimeout(() => {
+      writeHomeSnapshot({
+        at: Date.now(),
+        metadata,
+        vehicles: vehicles.map(slimHomeVehicle),
+        alerts: homeAlerts ?? [],
+        driverDistance,
+      });
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [vehicles, metadata, homeAlerts, driverDistance]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -765,6 +815,32 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
   const reloadEvents = useCallback(() => { loadEvents(); }, [loadEvents]);
 
+  const loadHomeAlerts = useCallback(async () => {
+    const url = buildHomeAlertsUrl(fleetScopeOpts(selectedSites, vehiclesRef.current as any));
+    const cached = cachePeek<LogEntry[]>(url);
+    if (cached) {
+      setHomeAlerts(deriveAlerts(filterOverspeedEvents(cached)));
+      setAlertsLoading(false);
+    } else if (!homeAlertsRef.current?.length) {
+      setAlertsLoading(true);
+    }
+    try {
+      const data = await cachedFetchJson<LogEntry[]>(
+        url,
+        CACHE_TTL.fleetEvents,
+        async () => {
+          const res = await authFetch(url);
+          if (!res.ok) return null;
+          const payload = await res.json();
+          return Array.isArray(payload) ? payload : payload?.entries ?? [];
+        },
+      );
+      if (!data) return;
+      setHomeAlerts(deriveAlerts(filterOverspeedEvents(data)));
+    } catch { /* keep prior */ }
+    finally { setAlertsLoading(false); }
+  }, [selectedSites]);
+
   const loadDriverDistance = useCallback(async (force = false) => {
     const baseUrl = buildDriverDistanceUrl(distanceRange, distanceCustom);
     const url = appendUrlScope(
@@ -885,6 +961,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     loadMetadata();
     loadVehicles();
     loadEnvironment();
+    void loadHomeAlerts();
     // Paint live fleet first; defer heavy SQLite rollups so first paint stays snappy.
     const bootCancels: Array<() => void> = [];
     bootCancels.push(scheduleIdle(() => {
@@ -923,6 +1000,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     const stopEvents = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void loadEvents();
+      void loadHomeAlerts();
     });
     const stopDistance = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
@@ -946,14 +1024,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       stopExposure();
       stopFuel();
     };
-  }, [loadMetadata, loadVehicles, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, loadHos, scheduleIdle]);
+  }, [loadMetadata, loadVehicles, loadEvents, loadHomeAlerts, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, loadHos, scheduleIdle]);
 
   useEffect(() => {
+    void loadHomeAlerts();
     void loadEvents();
     void loadDriverDistance();
     void loadSafetyExposure();
     void loadFuelSummary();
-  }, [selectedSites, vehicles.length, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
+  }, [selectedSites, vehicles.length, loadHomeAlerts, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
 
   // -- Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays
@@ -1056,7 +1135,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     ),
     [safetyExposure, safetyExposurePrev, scoreConfig],
   );
-  const alerts = useMemo(() => deriveAlerts(filteredEvents), [filteredEvents]);
+  const alerts = useMemo(
+    () => homeAlerts ?? deriveAlerts(filteredEvents),
+    [homeAlerts, filteredEvents],
+  );
   const insights = useMemo(() => deriveInsights(filteredEvents, filteredVehicles), [filteredEvents, filteredVehicles]);
   const maintenance = DEFAULT_MAINTENANCE;
   const trips = DEMO_TRIPS;
@@ -1127,7 +1209,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   return (
     <FleetContext.Provider value={{
       authFetch, metadata: effectiveMetadata, vehicles: demoVehicles, events: demoEvents, driverDistance: demoDriverDistance,
-      vehiclesLoading, eventsLoading, distanceLoading,
+      vehiclesLoading, eventsLoading, alertsLoading, distanceLoading,
       hosRecords, hosLoading, hosLastTripDay,
       safetyExposure, safetyExposureLoading,
       fleetSafetyScore, fleetScoreDelta,

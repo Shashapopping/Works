@@ -12,6 +12,7 @@ import {
 } from '../../lib/consequenceScore';
 import { assessDrivers, pickHomeDriverMix, latestEventIso } from '../../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../../hooks/useAssessmentTripDrivers';
+import { SkelValue } from '../data/DataBusy';
 
 const BAND_LABEL: Record<ConsequenceCategory, string> = {
   Green: 'On track',
@@ -29,8 +30,8 @@ function timeAgo(iso: string) {
 }
 
 export default function DriverPerformanceWidget() {
-  const { events, scopedAssetIds, siteFilterActive } = useFleet();
-  const { tripDrivers } = useAssessmentTripDrivers(
+  const { events, eventsLoading, scopedAssetIds, siteFilterActive } = useFleet();
+  const { tripDrivers, loading: tripsLoading } = useAssessmentTripDrivers(
     siteFilterActive ? scopedAssetIds : [],
     !siteFilterActive || scopedAssetIds.length > 0,
   );
@@ -56,6 +57,8 @@ export default function DriverPerformanceWidget() {
     [consequenceConfig, events, tripDrivers],
   );
 
+  const waiting = rows.length === 0 && (eventsLoading || tripsLoading);
+
   return (
     <div className="bpl-card bpl-home-panel-card bpl-home-drivers-panel">
       <div className="bpl-card-header">
@@ -63,7 +66,11 @@ export default function DriverPerformanceWidget() {
         <Link to="/drivers" className="bpl-card-link">See all</Link>
       </div>
       <div className="bpl-card-body bpl-home-panel-scroll bpl-driver-list">
-        {rows.length === 0 ? (
+        {waiting ? (
+          <div style={{ fontSize: 13, color: 'var(--cd-text-muted)', padding: '12px 0' }}>
+            <SkelValue wide />
+          </div>
+        ) : rows.length === 0 ? (
           <div className="bpl-driver-empty">No driver data yet</div>
         ) : rows.map(d => {
           const color = CATEGORY_COLORS[d.consequence.category] ?? CATEGORY_COLORS.Green;

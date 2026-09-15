@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useFleet } from '../../context/FleetContext';
 import { isOverspeedLabel } from '../../lib/overspeedFilter';
+import { SkelValue } from '../data/DataBusy';
 
 const SEV_COLOR = { critical: '#CC0000', warning: '#d97706', info: 'var(--bpl-blue)' };
 
@@ -10,7 +11,7 @@ function overspeedKph(speed?: number | null) {
 }
 
 export default function AlertsWidget() {
-  const { alerts } = useFleet();
+  const { alerts, alertsLoading } = useFleet();
 
   return (
     <div className="bpl-card bpl-home-panel-card bpl-home-alerts-panel">
@@ -19,7 +20,11 @@ export default function AlertsWidget() {
         <Link to="/incidents" className="bpl-card-link">See all</Link>
       </div>
       <div className="bpl-card-body bpl-home-panel-scroll bpl-incident-list">
-        {alerts.length === 0 ? (
+        {alertsLoading && alerts.length === 0 ? (
+          <div style={{ padding: '12px 0', color: 'var(--cd-text-muted)', fontSize: 13 }}>
+            <SkelValue wide />
+          </div>
+        ) : alerts.length === 0 ? (
           <div style={{ padding: '12px 0', color: 'var(--cd-text-muted)', fontSize: 13 }}>No recent incident alerts</div>
         ) : alerts.map(a => {
           const speed = isOverspeedLabel(a.label) ? overspeedKph(a.speed) : null;

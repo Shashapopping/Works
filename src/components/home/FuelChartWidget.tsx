@@ -205,7 +205,7 @@ function lastRefillFromSeries(series: FuelSeries, period: FuelPeriod) {
 }
 
 export default function FuelChartWidget() {
-  const { vehicles } = useFleet();
+  const { vehicles, vehiclesLoading } = useFleet();
   const [period, setPeriod] = useState<FuelPeriod>('week');
   const [customRange, setCustomRange] = useState(defaultCustomRange);
 
@@ -218,6 +218,7 @@ export default function FuelChartWidget() {
       .sort(),
     [vehicles],
   );
+  const waitingForFleet = vehiclesLoading && quarryAssetIds.length === 0;
   const histUrl = quarryAssetIds.length
     ? historyUrl(period, customRange, quarryAssetIds)
     : '';
@@ -368,7 +369,9 @@ export default function FuelChartWidget() {
     const stable = buildStableFuelSeries(displaySeries.data, bucketMin);
     return analyzeFuelSignal(stable, bucketMin);
   }, [displaySeries, period, chartData.length]);
-  const signalNote = quarryAssetIds.length === 0
+  const signalNote = waitingForFleet
+    ? 'Loading quarry probes…'
+    : quarryAssetIds.length === 0
     ? 'No quarry assets in the selected sites.'
     : formatFuelSignalSummary(signalMetrics);
 
@@ -423,14 +426,16 @@ export default function FuelChartWidget() {
             <div className="bpl-fuel-total" style={{ color }}>
               {hasQuarryDisplay && currentLevel != null
                 ? `${Math.round(currentLevel).toLocaleString()} L`
-                : loading && quarryAssetIds.length > 0
+                : waitingForFleet || (loading && quarryAssetIds.length > 0)
                   ? '—'
                   : '0 L'}
             </div>
             <div className="bpl-fuel-total-scope">
               {displayReg && siteLabel
                 ? `${displayReg} · ${siteLabel} probe`
-                : quarryAssetIds.length === 0
+                : waitingForFleet
+                  ? 'Loading quarry probes'
+                  : quarryAssetIds.length === 0
                   ? 'No quarry probes in scope'
                   : 'Quarry probe'}
             </div>
@@ -441,10 +446,12 @@ export default function FuelChartWidget() {
         </div>
 
         <div className="bpl-fuel-chart-area">
-          <DataRegion busy={loading && chartData.length === 0 && !liveFallback} variant="chart" tall label="Loading fuel data">
+          <DataRegion busy={waitingForFleet || (loading && chartData.length === 0 && !liveFallback)} variant="chart" tall label="Loading fuel data">
             {chartData.length === 0 ? (
               <div className="bpl-fuel-chart-empty">
-                {quarryAssetIds.length === 0
+                {waitingForFleet
+                  ? 'Loading quarry probes…'
+                  : quarryAssetIds.length === 0
                   ? 'No quarry assets in the selected sites'
                   : 'No quarry probe readings in this period'}
               </div>
