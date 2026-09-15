@@ -61,8 +61,8 @@ const MAX_RUNS = 1200;
 const DRIVER_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const VEHICLE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const SITE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-/** SQLite retention — keep history bounded on 1GB droplets.
- *  Trips/fuel retain ~Jan–Jun window (≥7 months); events/KPI stay short (RAM). */
+/** SQLite auto-prune disabled — keep full history; offload via Cloudflare backup later. */
+const DB_PRUNE_ENABLED = false;
 const DB_RETENTION_DAYS = {
   trips: 220,
   events: 45,
@@ -2428,8 +2428,8 @@ export async function pollOnce() {
         } catch { /* next poll will pick up cache */ }
       }).catch(() => {});
 
-      // Prune off the critical path so SQLite DELETE doesn't stall this poll's response path.
-      if (Date.now() - lastDbPrune >= DB_PRUNE_INTERVAL_MS || lastDbPrune === 0) {
+      // Auto-prune off — history stays until an explicit Cloudflare backup/archive.
+      if (DB_PRUNE_ENABLED && (Date.now() - lastDbPrune >= DB_PRUNE_INTERVAL_MS || lastDbPrune === 0)) {
         lastDbPrune = Date.now();
         setImmediate(() => {
           try {
@@ -2484,7 +2484,9 @@ export function startPolling(options = {}) {
   console.log("=".repeat(70));
   console.log(`Polling interval: ${intervalMs / 1000} seconds (positions/events)`);
   console.log(`Trips cadence: every ${TRIPS_POLL_INTERVAL_MS / 60000} min (catch-up every ${TRIPS_CATCHUP_POLL_MS / 1000}s when behind) · live window ${TRIPS_LIVE_LOOKBACK_HOURS}h · page ${TRIPS_PAGE_SIZE} · up to ${TRIPS_MAX_PAGES_PER_CYCLE} pages/cycle`);
-  console.log(`SQLite retention: ${DB_RETENTION_DAYS.trips}d · prune every ${DB_PRUNE_INTERVAL_MS / 3600000}h`);
+  console.log(DB_PRUNE_ENABLED
+    ? `SQLite retention: ${DB_RETENTION_DAYS.trips}d · prune every ${DB_PRUNE_INTERVAL_MS / 3600000}h`
+    : 'SQLite retention: prune disabled (keep all history)');
   console.log(`Total runs: ${pollingMaxRuns ?? "∞"}`);
   if (pollingMaxRuns) {
     console.log(`Estimated duration: ${(pollingMaxRuns * intervalMs) / 1000}s (~${((pollingMaxRuns * intervalMs) / 60000).toFixed(1)} min)`);
