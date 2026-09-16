@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { getAllEvents } from './db.js';
 import { countMatchingEvents } from './event-aggregates.js';
+import { resolveAssetScope } from './transporter-scope.js';
 
 let vehicleLookupCache = { map: new Map(), mtimeMs: 0 };
 
@@ -94,7 +95,7 @@ function matchesSearch(entry, q) {
 }
 
 /**
- * @param {{ from?: string|null, to?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null }} query
+ * @param {{ from?: string|null, to?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null, siteScope?: string|null }} query
  */
 export function handleEventsLogQuery(query = {}) {
   const from = query.from || null;
@@ -102,7 +103,10 @@ export function handleEventsLogQuery(query = {}) {
   const types = parseTypes(query.types);
   const driver = query.driver ? String(query.driver) : null;
   const q = (query.q || query.search || '').trim();
-  const assetIds = parseAssetIds(query.assetIds, query.assetId);
+  const assetIds = resolveAssetScope(
+    parseAssetIds(query.assetIds, query.assetId),
+    query.siteScope,
+  );
   const format = String(query.format || '').toLowerCase();
   const lookup = vehicleLookup();
 

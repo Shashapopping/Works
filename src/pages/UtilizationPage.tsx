@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Info } from 'lucide-react';
 import { authFetch, useFleet } from '../context/FleetContext';
-import InfoTip, { ThInfo } from '../components/InfoTip';
 import CustomDateTimeRange, { ensureCustomRangeDefaults } from '../components/CustomDateTimeRange';
 import TablePaginationBar from '../components/TablePaginationBar';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -10,6 +9,7 @@ import { useTableSort } from '../hooks/useTableSort';
 import { buildKpiUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelTable, SkelValue } from '../components/data/DataBusy';
+import { filterDistanceAssetsByVehicles } from '../lib/siteScope';
 
 type PeriodMode = KpiPeriodMode;
 
@@ -30,8 +30,23 @@ function utilBar(pct: number, color: string) {
   );
 }
 
+function summarizeScopedAssets(assets: KpiAssetRow[]) {
+  const utilValues = assets
+    .map(a => a.utilizationPct)
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  return {
+    assetCount: assets.length,
+    totalEngineHours: assets.reduce((s, a) => s + (a.engineHours || 0), 0),
+    totalDistanceKm: assets.reduce((s, a) => s + (a.distanceKm || 0), 0),
+    avgUtilizationPct: utilValues.length
+      ? utilValues.reduce((s, v) => s + v, 0) / utilValues.length
+      : null,
+  };
+}
+
 export default function UtilizationPage() {
-  const { vehicles } = useFleet();
+  const { vehicles, selectedSites } = useFleet();
+  const siteFiltered = selectedSites.length > 0;
   const [period, setPeriod] = useState<PeriodMode>('week');
   const [customRange, setCustomRange] = useState(() => {
     const to = new Date();
@@ -69,9 +84,14 @@ export default function UtilizationPage() {
 
   useEffect(() => { void fetchData(); }, [fetchData]);
 
+  const scopedAssets = useMemo(() => {
+    const rows = data?.assets ?? [];
+    return siteFiltered ? filterDistanceAssetsByVehicles(rows, vehicles) : rows;
+  }, [data?.assets, siteFiltered, vehicles]);
+
   const assets = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
-    let rows = data?.assets ?? [];
+    let rows = scopedAssets;
     if (q) {
       rows = rows.filter(a =>
         (a.regNo || '').toLowerCase().includes(q)
@@ -79,24 +99,32 @@ export default function UtilizationPage() {
         || (a.zone || '').toLowerCase().includes(q));
     }
     return rows;
-  }, [data?.assets, debouncedSearch]);
+  }, [scopedAssets, debouncedSearch]);
 
   type SortKey = 'regNo' | 'zone' | 'utilizationPct' | 'availabilityPct' | 'distanceKm' | 'engineHours';
   const getSortValue = (row: KpiAssetRow, key: SortKey) => row[key];
   const { sorted, toggle, ariaSort, indicator } = useTableSort(assets, getSortValue);
   const {
     pageRows, page, pageCount, from: pageFrom, to: pageTo, total: pageTotal, hasPrev, hasNext, prev, next,
-  } = useClientPagination(sorted, 50, `${period}|${customRange.from}|${customRange.to}|${debouncedSearch}`);
+  } = useClientPagination(sorted, 50, `${period}|${customRange.from}|${customRange.to}|${debouncedSearch}|${selectedSites.join(',')}`);
 
-  const summary = data?.summary;
+  const summary = useMemo(() => {
+    if (!siteFiltered) return data?.summary ?? null;
+    return summarizeScopedAssets(scopedAssets);
+  }, [siteFiltered, data?.summary, scopedAssets]);
+
   const withTrips = assets.filter(a => (a.tripCount ?? 0) > 0).length;
-  const available = vehicles.length || summary?.assetCount || 0;
+  const available = siteFiltered
+    ? (vehicles.length || scopedAssets.length)
+    : (vehicles.length || summary?.assetCount || 0);
 
   return (
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Utilization</h1>
-        <p className="bpl-page-subtitle">Engine / drive intensity and distance across the fleet</p>
+        <p className="bpl-page-subtitle">
+          Engine / drive intensity and distance across {siteFiltered ? 'selected transporters' : 'the fleet'}
+        </p>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 20, alignItems: 'center' }}>
@@ -160,12 +188,23 @@ export default function UtilizationPage() {
             { label: 'Engine hours', value: summary ? `${fmt(summary.totalEngineHours, 0)} h` : '—', tip: 'Total engine-on hours.', color: '#7c3aed' },
           ].map(k => (
             <div key={k.label} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}` }}>
-              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>
                 {k.label}
-                <InfoTip text={k.tip} />
               </div>
               <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>
                 {loading && !data ? <SkelValue /> : k.value}
+              </div>
+              <div style={{
+                fontSize: 10,
+                color: 'var(--cd-text-muted)',
+                marginTop: 6,
+                display: 'inline-flex',
+                alignItems: 'flex-start',
+                gap: 5,
+                lineHeight: 1.35,
+              }}>
+                <Info size={11} strokeWidth={2.25} style={{ flexShrink: 0, marginTop: 1, opacity: 0.75 }} aria-hidden />
+                <span>{k.tip}</span>
               </div>
             </div>
           ))}
@@ -177,20 +216,41 @@ export default function UtilizationPage() {
           <thead>
             <tr>
               {([
-                { key: 'regNo' as const, label: 'Asset', tip: 'Registration number' },
-                { key: 'zone' as const, label: 'Zone', tip: 'Site / zone' },
+                { key: 'regNo' as const, label: 'Asset', tip: null },
+                { key: 'zone' as const, label: 'Zone', tip: null },
                 { key: 'utilizationPct' as const, label: 'Util %', tip: 'Loaded utilization' },
                 { key: 'availabilityPct' as const, label: 'Avail %', tip: 'Availability' },
                 { key: 'distanceKm' as const, label: 'Distance', tip: 'Trip distance' },
                 { key: 'engineHours' as const, label: 'Engine h', tip: 'Engine hours' },
-              ]).map(col => (
-                <ThInfo
+              ] as const).map(col => (
+                <th
                   key={col.key}
-                  label={`${col.label}${indicator(col.key)}`}
-                  tip={col.tip}
-                  onClick={() => toggle(col.key)}
                   aria-sort={ariaSort(col.key)}
-                />
+                  onClick={() => toggle(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                >
+                  <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap' }}>
+                      {col.label}{indicator(col.key)}
+                    </span>
+                    {col.tip && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        fontSize: 10,
+                        fontWeight: 500,
+                        color: 'var(--cd-text-muted)',
+                        textTransform: 'none',
+                        letterSpacing: 0,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <Info size={10} strokeWidth={2.25} style={{ flexShrink: 0, opacity: 0.75 }} aria-hidden />
+                        {col.tip}
+                      </span>
+                    )}
+                  </span>
+                </th>
               ))}
             </tr>
           </thead>

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import type { SafetyNotification, SafeIQAnalysis, EnvironmentContext } from '../hooks/useSafeIQ';
+import type { SafetyNotification } from '../hooks/useSafeIQ';
 import { fetchIncidentEnvironment } from '../services/environment';
-import { lookupSafetyReference, formatReferenceForPrompt } from '../data/safetyReferences';
+import { composeSafeIqAnalysis, findHosForEvent } from '../lib/safeIqAnalysis';
 import {
   type StatusFilter,
   type AlertItem,
@@ -37,9 +37,10 @@ import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, safe
 import { fetchHosCached, peekHos } from '../hooks/useHosRecords';
 import { buildHosUrl, type HosRecord } from '../lib/hos';
 import { startJitteredInterval } from '../lib/pollSchedule';
-import { SAFEIQ_ENABLED } from '../config/safeIq';
-import { filterOverspeedEvents } from '../lib/overspeedFilter';
+import { SAFEIQ_ENABLED, safeIqTrendFromCounts } from '../config/safeIq';
+import { filterOverspeedEvents, isOverspeedLabel, qualifiesAsOverspeed } from '../lib/overspeedFilter';
 import { filterDistanceAssetsByVehicles, filterTripDriversByVehicles } from '../lib/siteScope';
+import { isExcludedFleetPlacement } from '../lib/fleetExclusions';
 import { buildDriverDistanceUrl } from '../lib/pagePeriod';
 import { defaultPageCustomRange } from '../lib/pagePeriod';
 import { useAuth } from './AuthContext';
@@ -49,74 +50,6 @@ export type { StatusFilter, AlertItem, MaintenanceItem, FuelDay, AiInsight, Trip
 export type FleetVehicle = ReturnType<typeof normalizeVehicle>;
 export type DistanceRange = 'day' | 'week' | 'month' | 'custom';
 
-const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
-
-async function generateSafeIQAnalysis(
-  e: { label?: string; type: string; driverName?: string; regNo?: string; assetId: string; address?: string; eventTime: string; speed?: number | null; speedLimit?: number | null },
-  driverIncidents30Days: number,
-  driverTrend: 'improving' | 'stable' | 'declining',
-  environment: EnvironmentContext,
-  safetyReference: string | null,
-): Promise<SafeIQAnalysis | null> {
-  if (!SAFEIQ_ENABLED || !ANTHROPIC_API_KEY) return null;
-
-  const eventType = e.label || 'Unknown';
-  const driver = e.driverName || 'Unknown Driver';
-  const vehicle = e.regNo || e.assetId;
-  const location = (DEMO_BRANDING && e.address)
-    ? demoPlaceLabel(e.address)
-    : (e.address || 'Location not available');
-  const time = new Date(e.eventTime).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
-
-  const prompt = `You are SafeIQ, a safety advisor for BPL Fleet Intelligence Platform (${DEMO_BRANDING ? 'Demo Fleet' : 'HBM Nigeria'}). Your tone is calm, observational, and advisory — you present findings and let the fleet manager decide. Never command. Suggest, reason, and reference policy as context not instruction.
-
-Return a JSON object with exactly these fields:
-- severity: "RED", "YELLOW", or "GREEN"
-- severity_reason: one short sentence on why this severity rating fits
-- root_cause: 2-3 sentences — what likely happened, what may have contributed (conditions, route, pattern). Soft and factual, not accusatory.
-- industry_reference: one sentence — how this driver's pattern compares to industry norms (FRSC Nigeria / FMCSA). Frame it as context e.g. "drivers with X+ incidents in 30 days are typically considered..."
-- coaching_recommendation: 2-3 short suggestions framed around company policy — e.g. "depending on your policy, you may want to consider a brief retraining period" or "keeping a closer eye on this driver over the next few weeks could be worth it"
-- ops_flag: true or false
-- ops_flag_reason: if true, one calm sentence on what the supervisor may want to look into. Empty string if false.
-
-Event:
-- Type: ${eventType}
-- Driver: ${driver} (${driverIncidents30Days} incidents last 30 days, trend: ${driverTrend})
-- Vehicle: ${vehicle} | Location: ${location} | Time: ${time}
-- Weather: ${environment.weather} | Traffic: ${environment.traffic_description || environment.traffic_density} | Road: ${environment.road_type}
-${environment.precipitation_mm ? `- Precipitation: ${environment.precipitation_mm}mm` : ''}
-${e.speed != null ? `- Recorded speed: ${Math.round(e.speed)} km/h${e.speedLimit != null ? ` (speed limit: ${Math.round(e.speedLimit)} km/h, excess: ${Math.round(e.speed - e.speedLimit)} km/h)` : ''}` : ''}
-${safetyReference ? `\nIndustry context (use as soft reference only):\n${safetyReference}` : ''}
-
-Return only valid JSON, no markdown, nothing outside the JSON object.`;
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 700,
-        temperature: 0,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-
-    if (!res.ok) return null;
-    const data = await res.json();
-    const text = data.content?.[0]?.text ?? '';
-    const json = text.match(/\{[\s\S]*\}/)?.[0];
-    if (!json) return null;
-    return JSON.parse(json) as SafeIQAnalysis;
-  } catch {
-    return null;
-  }
-}
 
 const API_SECRET = import.meta.env.VITE_API_SECRET;
 
@@ -323,12 +256,18 @@ function loadSelectedSites(): string[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed.filter((s): s is string => typeof s === 'string' && s !== SITE_ALL);
+        return parsed.filter((s): s is string => (
+          typeof s === 'string'
+          && s !== SITE_ALL
+          && !isExcludedFleetPlacement({ site: s, zone: s })
+        ));
       }
     }
     // Migrate old single-site key
     const legacy = localStorage.getItem('bpl_selected_site');
-    if (legacy && legacy !== SITE_ALL) return [legacy];
+    if (legacy && legacy !== SITE_ALL && !isExcludedFleetPlacement({ site: legacy, zone: legacy })) {
+      return [legacy];
+    }
   } catch { /* ignore */ }
   return [];
 }
@@ -375,7 +314,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     const cached = cachePeek<Vehicle[]>(CACHE_KEYS.fleetData);
     if (!cached?.length) return [];
     return cached
-      .filter(v => v.site !== 'XN - Decommissioned')
+      .filter(v => !isExcludedFleetPlacement({ site: v.site, zone: v.zone }))
       .map(normalizeVehicle);
   });
   const vehiclesRef = useRef<FleetVehicle[]>(vehicles);
@@ -430,8 +369,6 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const safetyExposureRef = useRef<FleetSafetyExposure | null>(safetyExposure);
   const hosRecordsRef = useRef<HosRecord[]>(hosRecords);
   const bootTasksStartedRef = useRef(false);
-  // Tracks the incident count at which we last fired a Claude analysis per driver
-  const driverAnalysisRef = useRef<Map<string, { lastThreshold: number; notifId: string }>>(new Map());
 
   const scheduleIdle = useCallback((fn: () => void, timeoutMs: number) => {
     const w = window as Window & typeof globalThis;
@@ -473,14 +410,40 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
   const setSelectedSites = useCallback((sites: string[]) => {
     if (siteLock) {
-      persistSites(lockedTransporters);
+      const allowed = new Set(lockedTransporters);
+      const next = [...new Set(sites.filter(s => allowed.has(s)))];
+      // Empty / cleared → entire transporter fleet
+      persistSites(next.length ? next : lockedTransporters);
       return;
     }
     persistSites(sites);
   }, [persistSites, siteLock, lockedTransporters]);
 
   const toggleSite = useCallback((siteKey: string) => {
-    if (siteLock) return;
+    if (siteLock) {
+      if (!lockedTransporters.includes(siteKey)) return;
+      setSelectedSitesState(prev => {
+        const full = lockedTransporters;
+        const showingAll = prev.length === 0
+          || (prev.length === full.length && full.every(k => prev.includes(k)));
+        let next: string[];
+        if (showingAll) {
+          // Narrow from whole fleet to this one site
+          next = [siteKey];
+        } else if (prev.includes(siteKey)) {
+          next = prev.filter(s => s !== siteKey);
+          if (next.length === 0) next = [...full];
+        } else {
+          next = [...prev, siteKey];
+        }
+        try {
+          localStorage.setItem(SELECTED_SITES_KEY, JSON.stringify(next));
+          localStorage.removeItem('bpl_selected_site');
+        } catch { /* ignore */ }
+        return next;
+      });
+      return;
+    }
     setSelectedSitesState(prev => {
       const next = prev.includes(siteKey)
         ? prev.filter(s => s !== siteKey)
@@ -491,11 +454,23 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       } catch { /* ignore */ }
       return next;
     });
-  }, []);
+  }, [siteLock, lockedTransporters]);
 
   useEffect(() => {
-    if (lockedTransporters.length) persistSites(lockedTransporters);
-  }, [lockedTransporters, persistSites]);
+    if (!lockedTransporters.length) return;
+    setSelectedSitesState(prev => {
+      const allowed = new Set(lockedTransporters);
+      const kept = prev.filter(s => allowed.has(s));
+      const next = kept.length ? kept : [...lockedTransporters];
+      const same = next.length === prev.length && next.every((s, i) => s === prev[i]);
+      if (same) return prev;
+      try {
+        localStorage.setItem(SELECTED_SITES_KEY, JSON.stringify(next));
+        localStorage.removeItem('bpl_selected_site');
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, [lockedTransporters]);
 
   const updateScoreConfig = useCallback((config: FleetScoreConfig) => {
     setScoreConfig(saveFleetScoreConfig(config));
@@ -561,7 +536,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
           })()
         : raw;
       const data = source
-        .filter(v => v.site !== 'XN - Decommissioned')
+        .filter(v => !isExcludedFleetPlacement({ site: v.site, zone: v.zone }))
         .map(normalizeVehicle);
       vehiclesRef.current = data;
       setVehicles(data);
@@ -588,95 +563,93 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       if (!data) return;
       setEvents(filterOverspeedEvents(data));
 
-      // SafeIQ shelved — no thresholds, Claude calls, or environment lookups
+      // SafeIQ cards — local templates from the loaded event window (no model)
       if (!SAFEIQ_ENABLED) {
         setNotifications([]);
         return;
       }
 
-        // Surface new safety events as notifications
-        const SAFEIQ_LABELS = ['Harsh Braking', 'Harsh Acceleration', 'Overspeeding', 'Overspeed Tiered', 'Road Speed Overspeeding'];
-        const SAFEIQ_OVERSPEED_MIN_EXCESS_KMH = 5;
-        const isOverspeedLabel = (label?: string) =>
-          label === 'Overspeeding' || label === 'Overspeed Tiered' || label === 'Road Speed Overspeeding';
-        /** SafeIQ only reports overspeed when clearly ≥5 km/h over the posted limit and absolute speed ≥60 kph. */
-        const meetsSafeIqOverspeedThreshold = (e: LogEntry) => {
-          if (!isOverspeedLabel(e.label)) return true;
-          if (e.speed == null || e.speed < 60) return false;
-          if (e.speedLimit == null) return false;
-          return e.speed - e.speedLimit >= SAFEIQ_OVERSPEED_MIN_EXCESS_KMH;
-        };
-        const newOnes = data.filter(e => {
-          if (!e.eventId || seenEventIds.current.has(e.eventId)) return false;
-          const isRelevant = SAFEIQ_LABELS.includes(e.label || '')
-            && isKnownDriver(e.driverName);
-          if (!isRelevant) return false;
-          if (!meetsSafeIqOverspeedThreshold(e)) return false;
-          const age = Date.now() - new Date(e.eventTime || e.timestamp).getTime();
-          return age < 10 * 60 * 1000; // only events in last 10 min
+        const SAFEIQ_LABELS = new Set([
+          'Harsh Braking',
+          'Harsh Acceleration',
+          'Harsh Cornering',
+          'Overspeeding',
+          'Overspeed Tiered',
+          'Overspeeding — Excessive Speed',
+          'Road Speed Overspeeding',
+        ]);
+        const CARD_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+        const TREND_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
+        const toIso = new Date().toISOString();
+        const fromIso = new Date(Date.now() - TREND_LOOKBACK_MS).toISOString();
+        const typesParam = encodeURIComponent([...SAFEIQ_LABELS].join(','));
+        const safetyData = await cachedFetchJson<LogEntry[]>(
+          'safeiq-events-14d',
+          CACHE_TTL.fleetEvents,
+          async () => {
+            const res = await authFetch(`/api/events/log?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&limit=400&types=${typesParam}`);
+            if (!res.ok) return null;
+            const payload = await res.json();
+            return Array.isArray(payload) ? payload : payload?.entries ?? [];
+          },
+        );
+        const pool = Array.isArray(safetyData) ? safetyData : data;
+
+        const now = Date.now();
+        const qualifying = pool.filter(e => {
+          if (!e.eventId || !SAFEIQ_LABELS.has(e.label || '') || !isKnownDriver(e.driverName)) return false;
+          if (!qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: true })) return false;
+          const t = new Date(e.eventTime || e.timestamp).getTime();
+          return Number.isFinite(t) && now - t < TREND_LOOKBACK_MS;
         });
 
-        if (newOnes.length > 0) {
-          newOnes.forEach(e => seenEventIds.current.add(e.eventId));
+        const latestByDriver = new Map<string, LogEntry>();
+        for (const e of qualifying) {
+          const key = e.driverName!;
+          const prev = latestByDriver.get(key);
+          const t = new Date(e.eventTime || e.timestamp).getTime();
+          const pt = prev ? new Date(prev.eventTime || prev.timestamp).getTime() : 0;
+          if (!prev || t > pt) latestByDriver.set(key, e);
+        }
 
-          // Compute driver stats from the full event set
-          const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-          const getDriverStats = (driverName: string | undefined) => {
-            if (!isKnownDriver(driverName)) return { incidents: 0, trend: 'stable' as const };
-            const driverEvents = data.filter(ev =>
-              ev.driverName === driverName &&
-              new Date(ev.eventTime || ev.timestamp).getTime() >= thirtyDaysAgo
-            );
-            const prevEvents = data.filter(ev => {
-              const t = new Date(ev.eventTime || ev.timestamp).getTime();
-              return ev.driverName === driverName && t >= thirtyDaysAgo - 30 * 24 * 60 * 60 * 1000 && t < thirtyDaysAgo;
-            });
-            const trend = driverEvents.length < prevEvents.length ? 'improving'
-              : driverEvents.length > prevEvents.length ? 'declining' : 'stable';
-            return { incidents: driverEvents.length, trend: trend as 'improving' | 'stable' | 'declining' };
-          };
+        const ranked = [...latestByDriver.values()]
+          .filter(e => now - new Date(e.eventTime || e.timestamp).getTime() < CARD_LOOKBACK_MS)
+          .sort((a, b) => new Date(b.eventTime || b.timestamp).getTime() - new Date(a.eventTime || a.timestamp).getTime())
+          .slice(0, 10);
 
-          // Threshold logic: fire Claude at 3 incidents, then double each time (3 → 6 → 12 → 24...)
-          const nextThreshold = (last: number) => last === 0 ? 3 : last * 2;
+        const toAnalyse = ranked.filter(e => !seenEventIds.current.has(e.eventId));
+        toAnalyse.forEach(e => seenEventIds.current.add(e.eventId));
 
-          const toAnalyse: LogEntry[] = [];
+        const getDriverStats = (driverName: string | undefined) => {
+          if (!isKnownDriver(driverName)) return { incidents: 0, trend: 'stable' as const };
+          const recent = qualifying.filter(ev =>
+            ev.driverName === driverName &&
+            now - new Date(ev.eventTime || ev.timestamp).getTime() < CARD_LOOKBACK_MS
+          ).length;
+          const prior = qualifying.filter(ev => {
+            const age = now - new Date(ev.eventTime || ev.timestamp).getTime();
+            return ev.driverName === driverName && age >= CARD_LOOKBACK_MS && age < TREND_LOOKBACK_MS;
+          }).length;
+          return { incidents: recent, trend: safeIqTrendFromCounts(recent, prior) };
+        };
 
-          newOnes.forEach(e => {
-            const driverKey = e.driverName || e.assetId;
-            const stats = getDriverStats(e.driverName);
-            const driverState = driverAnalysisRef.current.get(driverKey);
-            const threshold = nextThreshold(driverState?.lastThreshold ?? 0);
-
-            if (stats.incidents >= threshold) {
-              // Threshold crossed — queue for Claude analysis
-              toAnalyse.push(e);
-              driverAnalysisRef.current.set(driverKey, {
-                lastThreshold: stats.incidents,
-                notifId: e.eventId,
-              });
-            } else if (driverState?.notifId) {
-              // Below threshold but driver already has a notification — silently update count
-              setNotifications(prev =>
-                prev.map(n => n.id === driverState.notifId
-                  ? { ...n, eventCount: stats.incidents, driver: { ...n.driver, incidents_last_30_days: stats.incidents } }
-                  : n
-                )
-              );
-            }
-            // else: below threshold, no existing notification — event appears in feed only
-          });
-
-          if (toAnalyse.length > 0) {
+        if (toAnalyse.length > 0) {
             const newNotifs: SafetyNotification[] = toAnalyse.map(e => {
               const stats = getDriverStats(e.driverName);
               const scoreBaseline = Math.max(35, Math.min(100, 100 - stats.incidents * 3));
               const vehicleRecord = vehiclesRef.current.find(v => v.id === e.assetId?.toString() || v.regNo === e.regNo);
+              const tankerAsset = /tanker/i.test(`${vehicleRecord?.site ?? ''} ${vehicleRecord?.zone ?? ''}`);
+              const fallbackEnv = {
+                weather: 'Unavailable',
+                traffic_density: 'moderate' as const,
+                road_type: 'highway' as const,
+              };
+              const isSpeeding = isOverspeedLabel(e.label);
               return {
                 id: e.eventId,
-                type: e.label === 'Overspeeding' || e.label === 'Overspeed Tiered' ? 'speeding' :
+                type: isSpeeding ? 'speeding' :
                   e.label === 'Harsh Acceleration' ? 'harsh_acceleration' : 'harsh_braking',
                 magnitude: (() => {
-                  const isSpeeding = e.label === 'Overspeeding' || e.label === 'Overspeed Tiered';
                   if (isSpeeding && e.speed != null) {
                     const base = `${Math.round(e.speed)} km/h`;
                     return e.speedLimit != null
@@ -697,22 +670,39 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
                 },
                 vehicle: {
                   id: e.regNo || e.assetId,
-                  type: 'truck',
+                  type: tankerAsset ? 'tanker' : 'truck',
                   last_maintenance: '',
                   make: vehicleRecord?.make || '',
                   model: vehicleRecord?.model || '',
                 },
-                environment: {
-                  weather: 'Loading…',
-                  traffic_density: 'moderate',
-                  road_type: 'highway',
-                },
-                analysis: null,
-                analysisLoading: true,
+                environment: fallbackEnv,
+                analysis: composeSafeIqAnalysis({
+                  event: {
+                    ...e,
+                    address: (DEMO_BRANDING && e.address) ? demoPlaceLabel(e.address) : e.address,
+                  },
+                  driverIncidents30Days: stats.incidents,
+                  driverTrend: stats.trend,
+                  environment: fallbackEnv,
+                  vehicle: {
+                    id: e.regNo || e.assetId,
+                    type: tankerAsset ? 'tanker' : 'truck',
+                    last_maintenance: '',
+                    make: vehicleRecord?.make || '',
+                    model: vehicleRecord?.model || '',
+                    site: vehicleRecord?.site,
+                    zone: vehicleRecord?.zone,
+                  },
+                  hos: findHosForEvent(hosRecordsRef.current, e),
+                }),
+                analysisLoading: false,
               };
             });
 
-            setNotifications(prev => [...newNotifs, ...prev].slice(0, 10));
+            setNotifications(prev => {
+              const names = new Set(newNotifs.map(n => n.driver.name));
+              return [...newNotifs, ...prev.filter(n => !names.has(n.driver.name))].slice(0, 10);
+            });
 
             toAnalyse.forEach(async e => {
               const stats = getDriverStats(e.driverName);
@@ -733,15 +723,32 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
                 prev.map(n => n.id === e.eventId ? { ...n, environment } : n)
               );
 
-              const ref = lookupSafetyReference(e.label, e.type);
-              const safetyReference = ref ? formatReferenceForPrompt(ref) : null;
-              const analysis = await generateSafeIQAnalysis(e, stats.incidents, stats.trend, environment, safetyReference);
+              const eventForAnalysis = {
+                ...e,
+                address: (DEMO_BRANDING && e.address) ? demoPlaceLabel(e.address) : e.address,
+              };
+              const tankerAsset = /tanker/i.test(`${vehicleRecord?.site ?? ''} ${vehicleRecord?.zone ?? ''}`);
+              const analysis = composeSafeIqAnalysis({
+                event: eventForAnalysis,
+                driverIncidents30Days: stats.incidents,
+                driverTrend: stats.trend,
+                environment,
+                vehicle: {
+                  id: e.regNo || e.assetId,
+                  type: tankerAsset ? 'tanker' : 'truck',
+                  last_maintenance: '',
+                  make: vehicleRecord?.make || '',
+                  model: vehicleRecord?.model || '',
+                  site: vehicleRecord?.site,
+                  zone: vehicleRecord?.zone,
+                },
+                hos: findHosForEvent(hosRecordsRef.current, e),
+              });
               setNotifications(prev =>
                 prev.map(n => n.id === e.eventId ? { ...n, analysis, analysisLoading: false } : n)
               );
             });
           }
-        }
     } catch {}
     finally { setEventsLoading(false); }
   }, []);

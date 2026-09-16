@@ -84,7 +84,7 @@ export default function App() {
 
                 <Route
                   path="/consequence-management"
-                  element={<Navigate to="/settings/scoring#driver-discipline" replace />}
+                  element={<Navigate to={{ pathname: '/settings/scoring', hash: 'consequence-bands' }} replace />}
                 />
 
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
@@ -164,7 +164,7 @@ export default function App() {
 
                 <Route path="/settings/general" element={<Settings tab="general" />} />
 
-                <Route path="/settings/scoring" element={<Settings tab="scoring" />} />
+                <Route path="/settings/scoring" element={<Settings tab="thresholds" />} />
 
                 <Route path="/settings/thresholds" element={<Navigate to="/settings/scoring" replace />} />
 

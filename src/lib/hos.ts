@@ -105,6 +105,21 @@ export function fmtHosMinutes(min: number | null | undefined): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
+/** Over-limit minutes that mint HOS score points (4h + daily rest + weekly rest). */
+export function hosHeldMinutesFromRecord(record?: HosRecord | null): number {
+  if (!record) return 0;
+  const dailyRestWindow = record.dailyRestWindowMinutes || 1440;
+  const dailyRestElapsed = record.dailyRestElapsedMinutes
+    ?? record.minutesSinceDailyRest
+    ?? (7 * 24 * 60);
+  const weeklyRestWindow = record.weeklyRestWindowMinutes || (7 * 24 * 60);
+  const weeklyRestElapsed = record.weeklyRestElapsedMinutes
+    ?? (record.daysSinceWeeklyRest == null ? weeklyRestWindow : record.daysSinceWeeklyRest * 24 * 60);
+  return Math.max(0, record.violationDriveMinutes ?? 0)
+    + Math.max(0, dailyRestElapsed - dailyRestWindow)
+    + Math.max(0, weeklyRestElapsed - weeklyRestWindow);
+}
+
 export function hosRuleLabels(rules: HosRuleId[] | undefined): string[] {
   if (!rules?.length) return [];
   return rules.map(r => {

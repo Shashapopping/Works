@@ -10,6 +10,10 @@ import { handleEventsLogQuery } from './scripts/events-log-api.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
 import { authViteMiddleware } from './scripts/auth-http.js'
 import { startReportAutomateScheduler } from './scripts/report-automate.js'
+import {
+  applySignedInTransporterScope,
+  assetIdsQueryValue,
+} from './scripts/transporter-scope.js'
 import * as dotenv from 'dotenv'
 import fs from 'fs'
 import path from 'path'
@@ -162,6 +166,11 @@ export default defineConfig({
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
+            const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+              req,
+              params.get('assetIds') || params.get('assetId'),
+              params.get('siteScope'),
+            ))
             const body = handleEventsLogQuery({
               from: params.get('from'),
               to: params.get('to'),
@@ -170,6 +179,9 @@ export default defineConfig({
               offset: params.get('offset'),
               format: params.get('format'),
               driver: params.get('driver'),
+              q: params.get('q') || params.get('search'),
+              assetIds,
+              siteScope: null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(body))
@@ -355,12 +367,17 @@ export default defineConfig({
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
+            const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+              req,
+              params.get('assetIds'),
+              params.get('siteScope'),
+            ))
             const data = getFleetSafetyExposure({
               range: params.get('range') || '30d',
               from: params.get('from') || null,
               to: params.get('to') || null,
-              assetIds: params.get('assetIds') || null,
-              siteScope: params.get('siteScope') || null,
+              assetIds,
+              siteScope: null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))
@@ -373,12 +390,17 @@ export default defineConfig({
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
+            const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+              req,
+              params.get('assetIds'),
+              params.get('siteScope'),
+            ))
             const data = getSafetySummary({
               range: params.get('range') || '30d',
               from: params.get('from') || null,
               to: params.get('to') || null,
-              assetIds: params.get('assetIds') || null,
-              siteScope: params.get('siteScope') || null,
+              assetIds,
+              siteScope: null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(data))
@@ -395,11 +417,16 @@ export default defineConfig({
             const types = typesRaw
               ? typesRaw.split(',').map(t => t.trim()).filter(Boolean)
               : null
+            const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+              req,
+              params.get('assetIds'),
+              params.get('siteScope'),
+            ))
             const data = getEventTrends({
               from: params.get('from') || null,
               to: params.get('to') || null,
-              assetIds: params.get('assetIds') || null,
-              siteScope: params.get('siteScope') || null,
+              assetIds,
+              siteScope: null,
               types,
             })
             res.setHeader('Content-Type', 'application/json')
@@ -413,12 +440,17 @@ export default defineConfig({
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
+            const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+              req,
+              params.get('assetIds'),
+              params.get('siteScope'),
+            ))
             const data = getRiskDrivers({
               range: params.get('range') || '30d',
               from: params.get('from') || null,
               to: params.get('to') || null,
-              assetIds: params.get('assetIds') || null,
-              siteScope: params.get('siteScope') || null,
+              assetIds,
+              siteScope: null,
               groupBy: params.get('groupBy') || 'driver',
             })
             res.setHeader('Content-Type', 'application/json')

@@ -1,7 +1,7 @@
 import { useState, useMemo, useDeferredValue, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Award, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
-import { authFetch } from '../../context/FleetContext';
+import { useFleet, authFetch } from '../../context/FleetContext';
 import { useAuth } from '../../context/AuthContext';
 import { displayDriverName } from '../../lib/driverUtils';
 import MockNamesBadge from '../../components/MockNamesBadge';
@@ -26,6 +26,7 @@ import { brandLabel } from '../../lib/branding';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import { fetchTaggingUsers, issueWrittenWarning, type TaggingUser } from '../../lib/coachingWarningsApi';
 import { authCachedJson, cachePeek, CACHE_TTL } from '../../lib/apiCache';
+import { filterRiskDriversByVehicles, filterTripDriversByVehicles } from '../../lib/siteScope';
 
 /** Matches COACHING_WINDOW_DAYS — SQL rollups, not the boot event feed. */
 const COACHING_RISK_URL = `/api/risk/drivers?range=${COACHING_WINDOW_DAYS}d`;
@@ -497,6 +498,7 @@ function QueueList({
 
 export function InterventionQueuePage({ mode }: { mode: InterventionMode }) {
   const { tripDrivers, loading: tripLoading } = useAssessmentTripDrivers();
+  const { vehicles, selectedSites } = useFleet();
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState(searchParams.get('q') || '');
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -513,6 +515,17 @@ export function InterventionQueuePage({ mode }: { mode: InterventionMode }) {
   );
   const [riskLoading, setRiskLoading] = useState(() => !cachePeek(COACHING_RISK_URL));
   const seedBusy = riskLoading || tripLoading;
+  const siteFiltered = selectedSites.length > 0;
+
+  const scopedTrips = useMemo(
+    () => (siteFiltered ? filterTripDriversByVehicles(tripDrivers, vehicles) : tripDrivers),
+    [tripDrivers, siteFiltered, vehicles],
+  );
+
+  const scopedRiskRows = useMemo(
+    () => (siteFiltered ? filterRiskDriversByVehicles(riskRows, scopedTrips, vehicles) : riskRows),
+    [riskRows, scopedTrips, vehicles, siteFiltered],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -554,8 +567,8 @@ export function InterventionQueuePage({ mode }: { mode: InterventionMode }) {
   }, [searchParams, setSearchParams]);
 
   const assessed = useMemo(
-    () => assessDriversFromRisk(riskRows, tripDrivers).map(asSnap),
-    [riskRows, tripDrivers],
+    () => assessDriversFromRisk(scopedRiskRows, scopedTrips).map(asSnap),
+    [scopedRiskRows, scopedTrips],
   );
 
   const coaching = useMemo(() => {

@@ -158,11 +158,14 @@ function ThresholdSettings() {
   useEffect(() => { setForm(scoreConfig); }, [scoreConfig]);
 
   useEffect(() => {
-    if (location.hash !== '#consequence-bands' && location.pathname !== '/consequence-management') return;
+    const hash = location.hash.replace(/^#/, '');
+    if (hash !== 'consequence-bands' && hash !== 'driver-discipline' && location.pathname !== '/consequence-management') {
+      return;
+    }
     const el = document.getElementById('consequence-bands');
     if (!el) return;
     requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  }, [location.hash]);
+  }, [location.hash, location.pathname]);
 
   const setWeight = (key: keyof FleetScoreConfig['weights'], value: number) => {
     setForm(p => ({ ...p, weights: { ...p.weights, [key]: value } }));
@@ -1488,7 +1491,7 @@ export default function Settings({ tab }: { tab: Tab }) {
 
   const tabs: { id: Tab; path: string; label: string }[] = [
     { id: 'general', path: '/settings/general', label: 'General' },
-    { id: 'thresholds', path: '/settings/thresholds', label: 'Safety & Consequence' },
+    { id: 'thresholds', path: '/settings/scoring', label: 'Safety & Consequence' },
     { id: 'roles', path: '/settings/roles', label: 'Roles' },
     ...(hasPermission('user-management') ? [{ id: 'users' as const, path: '/settings/users', label: 'Users' }] : []),
     { id: 'dev', path: '/settings/dev', label: 'Dev' },

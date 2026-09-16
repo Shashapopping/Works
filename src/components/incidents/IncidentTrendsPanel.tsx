@@ -49,12 +49,14 @@ function trendsUrl(
   customFrom: string,
   customTo: string,
   activeFilter: EventFilterKey,
+  siteScope?: string[] | null,
 ) {
   const b = pagePeriodIsoBounds(range, customFrom, customTo);
   const params = new URLSearchParams();
   if (b.from) params.set('from', b.from);
   if (b.to) params.set('to', b.to);
   if (activeFilter !== 'All') params.set('types', activeFilter);
+  if (siteScope?.length) params.set('siteScope', siteScope.join(','));
   return `/api/events/trends?${params}`;
 }
 
@@ -148,20 +150,22 @@ export default function IncidentTrendsPanel({
   customFrom,
   customTo,
   activeFilter = 'All',
+  siteScope = null,
 }: {
   dateRange: PageDateRange;
   customFrom: string;
   customTo: string;
   activeFilter?: EventFilterKey;
+  siteScope?: string[] | null;
 }) {
-  const url = trendsUrl(dateRange, customFrom, customTo, activeFilter);
+  const url = trendsUrl(dateRange, customFrom, customTo, activeFilter, siteScope);
   const [buckets, setBuckets] = useState<TrendBucket[]>(() => cachePeek<TrendsPayload>(url)?.buckets ?? []);
   const [loading, setLoading] = useState(() => !cachePeek(url));
   const [showTotal, setShowTotal] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    const nextUrl = trendsUrl(dateRange, customFrom, customTo, activeFilter);
+    const nextUrl = trendsUrl(dateRange, customFrom, customTo, activeFilter, siteScope);
     const cached = cachePeek<TrendsPayload>(nextUrl);
     if (cached?.buckets) {
       setBuckets(cached.buckets);
@@ -180,7 +184,7 @@ export default function IncidentTrendsPanel({
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [dateRange, customFrom, customTo, activeFilter]);
+  }, [dateRange, customFrom, customTo, activeFilter, siteScope]);
 
   const trendData = useMemo(
     () => bucketsToTrendDays(buckets, dateRange, customFrom, customTo),

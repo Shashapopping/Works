@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { MapPin, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { CEMENT_SITE_TREE, allMatchKeys, nodeCount, nodeMatchesQuery, selectedSiteScopeLabel, type SiteTreeNode } from '../lib/cementSiteTree';
+import { isDecommissionedSite, isNonOperationalPlacement } from '../lib/fleetExclusions';
 import { brandLabel } from '../lib/branding';
 
 type SiteOption = { key: string; label: string; count: number };
@@ -13,8 +14,30 @@ interface Props {
   siteNameOptions: SiteOption[];
   variant?: 'header' | 'field';
   label?: string;
-  locked?: boolean;
-  lockedLabel?: string;
+  /** When set, dropdown is limited to these site/transporter keys (transporter accounts). */
+  allowedSiteKeys?: string[];
+  /** Display name for the “all sites in scope” row (e.g. fleet name). */
+  scopeLabel?: string;
+}
+
+function countForKeys(
+  keys: string[],
+  siteOptions: SiteOption[],
+  siteNameOptions: SiteOption[],
+): number {
+  if (keys.length === 0) return siteOptions.reduce((s, o) => s + o.count, 0);
+  const selected = new Set(keys);
+  const zoneHits = siteOptions.filter(o => selected.has(o.key));
+  const siteHits = siteNameOptions.filter(o => selected.has(o.key));
+  // Site-name selections (transporter leaves) must use site counts — zone-only
+  // path was returning 0 and blanked the badge.
+  if (siteHits.length && !zoneHits.length) {
+    return siteHits.reduce((s, o) => s + o.count, 0);
+  }
+  if (zoneHits.length && !siteHits.length) {
+    return zoneHits.reduce((s, o) => s + o.count, 0);
+  }
+  return zoneHits.reduce((s, o) => s + o.count, 0) + siteHits.reduce((s, o) => s + o.count, 0);
 }
 
 export default function SiteScopeDropdown({
@@ -25,13 +48,14 @@ export default function SiteScopeDropdown({
   siteNameOptions,
   variant = 'header',
   label,
-  locked = false,
-  lockedLabel,
+  allowedSiteKeys,
+  scopeLabel,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const ref = useRef<HTMLDivElement>(null);
+  const scoped = !!allowedSiteKeys?.length;
 
   useEffect(() => {
     if (!open) return;
@@ -47,9 +71,30 @@ export default function SiteScopeDropdown({
     };
   }, [open]);
 
-  const totalCount = useMemo(() => siteOptions.reduce((s, o) => s + o.count, 0), [siteOptions]);
   const selectedSet = useMemo(() => new Set(selectedSites), [selectedSites]);
-  const isFiltered = selectedSites.length > 0;
+
+  const scopedOptions = useMemo(() => {
+    if (!scoped || !allowedSiteKeys) return [];
+    const counts = new Map(siteNameOptions.map(o => [o.key, o.count]));
+    // Case-insensitive match so "Joza Non operational" still finds assets
+    const byLower = new Map(siteNameOptions.map(o => [o.key.toLowerCase(), o]));
+    return allowedSiteKeys.map(key => {
+      const exact = counts.get(key);
+      if (exact != null) return { key, label: key, count: exact };
+      const fuzzy = byLower.get(key.toLowerCase());
+      return { key, label: key, count: fuzzy?.count ?? 0 };
+    }).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+  }, [scoped, allowedSiteKeys, siteNameOptions]);
+
+  const showingAllScoped = useMemo(() => {
+    if (!scoped || !allowedSiteKeys?.length) return false;
+    if (selectedSites.length === 0) return true;
+    if (selectedSites.length !== allowedSiteKeys.length) return false;
+    const set = new Set(selectedSites);
+    return allowedSiteKeys.every(k => set.has(k));
+  }, [scoped, allowedSiteKeys, selectedSites]);
+
+  const isFiltered = scoped ? !showingAllScoped : selectedSites.length > 0;
 
   const treeKeys = useMemo(
     () => new Set(allMatchKeys(CEMENT_SITE_TREE, siteOptions, siteNameOptions)),
@@ -57,20 +102,25 @@ export default function SiteScopeDropdown({
   );
   const flatOptions = useMemo(
     () => siteOptions
-      .filter(o => !treeKeys.has(o.key) && !/XN\s*-\s*Decommissioned/i.test(o.key))
+      .filter(o => (
+        !treeKeys.has(o.key)
+        && !isDecommissionedSite(o.key)
+        && !isNonOperationalPlacement(o.key)
+      ))
       .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
     [siteOptions, treeKeys],
   );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return flatOptions;
-    return flatOptions.filter(o => o.label.toLowerCase().includes(q));
-  }, [flatOptions, query]);
+    const source = scoped ? scopedOptions : flatOptions;
+    if (!q) return source;
+    return source.filter(o => o.label.toLowerCase().includes(q));
+  }, [flatOptions, scopedOptions, scoped, query]);
 
   const treeVisible = useMemo(
-    () => query.trim() === '' || nodeMatchesQuery(CEMENT_SITE_TREE, query.trim()),
-    [query],
+    () => !scoped && (query.trim() === '' || nodeMatchesQuery(CEMENT_SITE_TREE, query.trim())),
+    [query, scoped],
   );
 
   const toggleExpand = (key: string) => setExpanded(prev => {
@@ -92,56 +142,38 @@ export default function SiteScopeDropdown({
     }
   };
 
+  const totalCount = useMemo(() => {
+    if (scoped) return scopedOptions.reduce((s, o) => s + o.count, 0);
+    return siteOptions.reduce((s, o) => s + o.count, 0);
+  }, [scoped, scopedOptions, siteOptions]);
+
   const activeCount = useMemo(() => {
     if (!isFiltered) return totalCount;
-    return siteOptions
-      .filter(o => selectedSet.has(o.key))
-      .reduce((s, o) => s + o.count, 0);
-  }, [isFiltered, siteOptions, selectedSet, totalCount]);
+    if (scoped) {
+      return scopedOptions
+        .filter(o => selectedSet.has(o.key))
+        .reduce((s, o) => s + o.count, 0);
+    }
+    return countForKeys(selectedSites, siteOptions, siteNameOptions);
+  }, [isFiltered, totalCount, scoped, scopedOptions, selectedSet, selectedSites, siteOptions, siteNameOptions]);
 
-  const orgLabel = brandLabel(CEMENT_SITE_TREE.label);
-  const activeLabel = useMemo(
-    () => selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions, orgLabel) ?? orgLabel,
-    [selectedSites, siteOptions, siteNameOptions, orgLabel],
-  );
-  const allChecked = !isFiltered;
+  const orgLabel = brandLabel(scopeLabel || CEMENT_SITE_TREE.label);
+  const activeLabel = useMemo(() => {
+    if (scoped) {
+      if (showingAllScoped) return orgLabel;
+      if (selectedSites.length === 1) return brandLabel(selectedSites[0]);
+      return 'Multiple sites';
+    }
+    return selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions, orgLabel) ?? orgLabel;
+  }, [scoped, showingAllScoped, orgLabel, selectedSites, siteOptions, siteNameOptions]);
+
+  const allChecked = scoped ? showingAllScoped : !isFiltered;
   const field = variant === 'field';
 
-  if (locked) {
-    const displayLabel = lockedLabel || activeLabel;
-    return (
-      <div
-        title="Site scope is fixed for your transporter account"
-        style={{
-          display: 'flex', alignItems: 'center', gap: 7,
-          height: field ? 38 : 32,
-          padding: field ? '0 12px' : '0 10px',
-          borderRadius: field ? 10 : 8,
-          background: field ? 'var(--cd-surface-2)' : 'rgba(0,120,212,0.12)',
-          border: field ? '1px solid var(--cd-border)' : '0.5px solid rgba(0,120,212,0.35)',
-          color: field ? 'var(--cd-text-muted)' : 'rgba(255,255,255,0.75)',
-          maxWidth: field ? undefined : 260,
-          cursor: 'default',
-        }}
-      >
-        <MapPin size={14} style={{ flexShrink: 0, opacity: 0.85 }} />
-        <span style={{
-          flex: 1, minWidth: 0, textAlign: 'left',
-          fontSize: field ? 13 : 12.5, fontWeight: 600, whiteSpace: 'nowrap',
-          overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {brandLabel(displayLabel)}
-        </span>
-        <span style={{
-          fontSize: 10, fontWeight: 700, borderRadius: 99, padding: '1px 6px', flexShrink: 0,
-          background: field ? 'var(--cd-surface)' : 'rgba(255,255,255,0.1)',
-          color: field ? 'var(--cd-text-muted)' : 'rgba(255,255,255,0.55)',
-        }}>
-          {activeCount}
-        </span>
-      </div>
-    );
-  }
+  const selectAll = () => {
+    if (scoped && allowedSiteKeys) setSelectedSites([...allowedSiteKeys]);
+    else setSelectedSites([]);
+  };
 
   return (
     <div style={{ position: 'relative', width: field ? '100%' : undefined }} ref={ref}>
@@ -149,7 +181,7 @@ export default function SiteScopeDropdown({
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        title={`Filter by site — default is ${orgLabel}`}
+        title={scoped ? `Filter within ${orgLabel}` : `Filter by site — default is ${orgLabel}`}
         style={{
           display: 'flex', alignItems: 'center', gap: 7,
           height: field ? 38 : 32,
@@ -157,9 +189,15 @@ export default function SiteScopeDropdown({
           padding: field ? '0 12px' : '0 10px',
           borderRadius: field ? 10 : 8,
           cursor: 'pointer',
-          background: field ? 'var(--cd-surface)' : isFiltered ? 'rgba(0,120,212,0.18)' : 'rgba(255,255,255,0.06)',
-          border: field ? '1px solid var(--cd-border)' : `0.5px solid ${isFiltered ? 'rgba(0,120,212,0.5)' : 'rgba(255,255,255,0.1)'}`,
-          color: field ? 'var(--cd-text)' : isFiltered ? '#4aa3e8' : 'rgba(255,255,255,0.7)',
+          background: field
+            ? 'var(--cd-surface)'
+            : isFiltered || scoped
+              ? 'rgba(0,120,212,0.18)'
+              : 'rgba(255,255,255,0.06)',
+          border: field
+            ? '1px solid var(--cd-border)'
+            : `0.5px solid ${isFiltered || scoped ? 'rgba(0,120,212,0.5)' : 'rgba(255,255,255,0.1)'}`,
+          color: field ? 'var(--cd-text)' : isFiltered || scoped ? '#4aa3e8' : 'rgba(255,255,255,0.7)',
           maxWidth: field ? undefined : 260,
         }}
       >
@@ -215,20 +253,20 @@ export default function SiteScopeDropdown({
               {isFiltered && (
                 <button
                   type="button"
-                  onClick={() => setSelectedSites([])}
+                  onClick={selectAll}
                   style={{
                     fontSize: 11, fontWeight: 600, color: '#4aa3e8',
                     background: 'none', border: 'none', cursor: 'pointer', padding: 0,
                   }}
                 >
-                  Clear
+                  {scoped ? 'All sites' : 'Clear'}
                 </button>
               )}
             </div>
           </div>
 
           <div style={{ maxHeight: 340, overflowY: 'auto', padding: 6 }}>
-            <SiteCheckRow label={orgLabel} count={totalCount} checked={allChecked} onClick={() => setSelectedSites([])} />
+            <SiteCheckRow label={orgLabel} count={totalCount} checked={allChecked} onClick={selectAll} />
             <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
 
             {treeVisible && (CEMENT_SITE_TREE.children || []).map(child => (
@@ -254,7 +292,13 @@ export default function SiteScopeDropdown({
                 No sites match "{query}"
               </div>
             ) : filtered.map(o => (
-              <SiteCheckRow key={o.key} label={o.label} count={o.count} checked={selectedSet.has(o.key)} onClick={() => toggleSite(o.key)} />
+              <SiteCheckRow
+                key={o.key}
+                label={o.label}
+                count={o.count}
+                checked={!allChecked && selectedSet.has(o.key)}
+                onClick={() => toggleSite(o.key)}
+              />
             ))}
           </div>
 
@@ -263,7 +307,9 @@ export default function SiteScopeDropdown({
               padding: '8px 12px', borderTop: '1px solid rgba(255,255,255,0.08)',
               fontSize: 11, color: 'rgba(255,255,255,0.4)',
             }}>
-              Tick multiple sites — reports use the combined fleet
+              {scoped
+                ? 'Select sites within your transporter fleet'
+                : 'Tick multiple sites — reports use the combined fleet'}
             </div>
           )}
         </div>

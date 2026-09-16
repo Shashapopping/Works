@@ -472,6 +472,14 @@ const nonOpsChildren: SiteTreeNode[] = [
   s('wuro-yolde', 'WURO YOLDE', /WURO\s*YOLDE/i),
 ];
 
+/** Excluded from live fleet / CEMENT_SITE_TREE — same policy as XN - Decommissioned. Kept to restore easily. */
+export const NON_OPERATIONAL_SITE_NODE: SiteTreeNode = z(
+  'non-operational',
+  'Non Operational in HBM Operations',
+  /Non\s*Operational\s*in\s*HBM/i,
+  nonOpsChildren,
+);
+
 const readyMixChildren: SiteTreeNode[] = [
   s('bevlex-abuja', 'BEVLEX ABUJA PLANT', /BEVLEX\s*ABUJA/i),
   s('bevlex-pump', 'BEVLEX READYMIX PUMP', /BEVLEX\s*READYMIX\s*PUMP/i),
@@ -528,7 +536,7 @@ const hbmOrgChildren: SiteTreeNode[] = [
   z('new-ipi-install', 'NEW IPI INSTALL', /^NEW\s*IPI\s*INSTALL$/i, [
     s('asset-for-use', 'Asset for use', /Asset\s*for\s*use/i),
   ]),
-  z('non-operational', 'Non Operational in HBM Operations', /Non\s*Operational\s*in\s*HBM/i, nonOpsChildren),
+  // Non Operational in HBM Operations is excluded from the live fleet (same as XN - Decommissioned).
   z('ready-mix', 'READY MIX', /^READY\s*MIX$/i, readyMixChildren),
   z('readymix-spothire', 'ReadyMix SpotHire', /^ReadyMix\s*SpotHire$/i, [
     s('readymix-spothire-leaf', 'READYMIX SPOTHIRE', /^READYMIX\s*SPOTHIRE$/i),

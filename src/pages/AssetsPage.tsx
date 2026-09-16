@@ -126,45 +126,40 @@ export default function AssetsPage() {
     return () => { cancelled = true; };
   }, [dateRange, customRange.from, customRange.to]);
 
-  const vehicleById = useMemo(() => {
-    const m = new Map<string, typeof vehicles[number]>();
-    vehicles.forEach(v => { if (v.id) m.set(String(v.id), v); });
+  const riskByAssetId = useMemo(() => {
+    const m = new Map<string, AssetRiskRow>();
+    for (const r of rows) {
+      const id = r.assetId != null ? String(r.assetId) : '';
+      if (id && id !== 'unknown') m.set(id, r);
+    }
     return m;
-  }, [vehicles]);
+  }, [rows]);
 
   const usingFleetFallback = loading && rows.length === 0 && vehicles.length > 0;
 
   const merged = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
-    const sourceRows = rows.length > 0
-      ? rows
-      : vehicles.map(v => ({
-          assetId: String(v.id),
-          regNo: v.regNo,
-          assetName: v.assetName,
-          total: 0,
-        }));
-    return sourceRows
-      .map(r => {
-        const v = vehicleById.get(String(r.assetId));
-        const reg = r.regNo || v?.regNo || '—';
-        const name = r.assetName || v?.assetName || '—';
-        const site = v?.site || v?.zone || '—';
-        const address = v?.position?.address;
+    // Fleet vehicles are already site-scoped (transporter lock / site selector).
+    // Risk API is fleet-wide and has no plate/name — never list risk rows alone
+    // or out-of-scope assets show blank reg/name.
+    return vehicles
+      .map(v => {
+        const id = String(v.id);
+        const r = riskByAssetId.get(id);
         return {
-          id: String(r.assetId),
-          reg,
-          name,
-          site,
-          address: address && address !== 'N/A' ? address : null,
-          transporter: v?.transporter,
-          status: v?.status ?? '—',
-          total: r.total ?? 0,
-          harshBraking: r.harshBraking ?? 0,
-          harshAcceleration: r.harshAcceleration ?? 0,
-          overspeeding: r.overspeeding ?? 0,
-          overspeedTiered: r.overspeedTiered ?? 0,
-          harshCornering: r.harshCornering ?? 0,
+          id,
+          reg: (v.regNo || r?.regNo || '').trim() || '—',
+          name: (v.assetName || r?.assetName || '').trim() || '—',
+          site: v.site || v.zone || '—',
+          address: v.position?.address && v.position.address !== 'N/A' ? v.position.address : null,
+          transporter: v.transporter,
+          status: v.status ?? '—',
+          total: r?.total ?? 0,
+          harshBraking: r?.harshBraking ?? 0,
+          harshAcceleration: r?.harshAcceleration ?? 0,
+          overspeeding: r?.overspeeding ?? 0,
+          overspeedTiered: r?.overspeedTiered ?? 0,
+          harshCornering: r?.harshCornering ?? 0,
         };
       })
       .filter(a => usingFleetFallback || showQuiet || a.total > 0)
@@ -172,10 +167,11 @@ export default function AssetsPage() {
         if (!q) return true;
         return a.reg.toLowerCase().includes(q)
           || a.name.toLowerCase().includes(q)
-          || a.site.toLowerCase().includes(q);
+          || a.site.toLowerCase().includes(q)
+          || (a.transporter || '').toLowerCase().includes(q);
       })
-      .sort((a, b) => b.total - a.total);
-  }, [rows, vehicles, deferredSearch, vehicleById, showQuiet, usingFleetFallback]);
+      .sort((a, b) => b.total - a.total || a.reg.localeCompare(b.reg));
+  }, [vehicles, riskByAssetId, deferredSearch, showQuiet, usingFleetFallback]);
 
   const {
     pageRows,

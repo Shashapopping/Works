@@ -13,9 +13,12 @@ import { computeConsumption } from './scripts/consumption-engine.js'
 import { computeKpi } from './scripts/kpi-engine.js'
 import { importWeekSeed } from './scripts/import-seed.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
-import { getRequestUser } from './scripts/auth-jwt.js'
 import { authExpressMiddleware } from './scripts/auth-http.js'
 import { startReportAutomateScheduler } from './scripts/report-automate.js'
+import {
+  applySignedInTransporterScope,
+  assetIdsQueryValue,
+} from './scripts/transporter-scope.js'
 
 dotenv.config()
 
@@ -57,43 +60,6 @@ function isAuthorized(req) {
 
 function unauthorized(res) {
   res.status(401).end('Unauthorized')
-}
-
-function parseAssetIdList(value) {
-  if (value == null || value === '') return null
-  return String(value)
-    .split(',')
-    .map(id => id.trim())
-    .filter(Boolean)
-}
-
-function scopedTransporterAssetIds(req) {
-  const user = getRequestUser(req)
-  const transporters = Array.isArray(user?.transporters)
-    ? user.transporters.map(t => String(t || '').trim()).filter(Boolean)
-    : []
-  if (transporters.length === 0) return null
-
-  const allowed = new Set(transporters)
-  const dataPath = path.join(process.cwd(), 'public', 'data.json')
-  const vehicles = JSON.parse(fs.readFileSync(dataPath, 'utf8'))
-  return vehicles
-    .filter(v =>
-      allowed.has(String(v.site || '').trim()) ||
-      allowed.has(String(v.transporter || '').trim()) ||
-      allowed.has(String(v.zone || '').trim())
-    )
-    .map(v => v.id != null ? String(v.id) : '')
-    .filter(Boolean)
-}
-
-function applySignedInTransporterScope(req, assetIds) {
-  const scopedIds = scopedTransporterAssetIds(req)
-  if (!scopedIds) return assetIds
-  const scoped = new Set(scopedIds)
-  const requested = parseAssetIdList(assetIds)
-  if (!requested) return scopedIds
-  return requested.filter(id => scoped.has(id))
 }
 
 // Block direct access to sensitive JSON files
@@ -186,6 +152,11 @@ app.get('/api/drivers', (req, res) => {
 app.get('/api/events/log', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
+    const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+      req,
+      req.query.assetIds?.toString() || req.query.assetId?.toString() || null,
+      req.query.siteScope?.toString() || null,
+    ))
     res.json(handleEventsLogQuery({
       from: req.query.from,
       to: req.query.to,
@@ -194,6 +165,9 @@ app.get('/api/events/log', (req, res) => {
       offset: req.query.offset,
       format: req.query.format,
       driver: req.query.driver,
+      q: req.query.q || req.query.search,
+      assetIds,
+      siteScope: null,
     }))
   } catch (err) {
     console.error('events/log failed:', err?.message || err)
@@ -269,12 +243,17 @@ app.get('/api/hos', (req, res) => {
 app.get('/api/safety-exposure', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
+    const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+      req,
+      req.query.assetIds?.toString() || null,
+      req.query.siteScope?.toString() || null,
+    ))
     res.json(getFleetSafetyExposure({
       range: req.query.range?.toString() || '30d',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
-      assetIds: req.query.assetIds?.toString() || null,
-      siteScope: req.query.siteScope?.toString() || null,
+      assetIds,
+      siteScope: null,
     }))
   } catch (err) {
     console.error('safety exposure failed', err)
@@ -285,12 +264,17 @@ app.get('/api/safety-exposure', (req, res) => {
 app.get('/api/safety/summary', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
+    const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+      req,
+      req.query.assetIds?.toString() || null,
+      req.query.siteScope?.toString() || null,
+    ))
     res.json(getSafetySummary({
       range: req.query.range?.toString() || '30d',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
-      assetIds: req.query.assetIds?.toString() || null,
-      siteScope: req.query.siteScope?.toString() || null,
+      assetIds,
+      siteScope: null,
     }))
   } catch (err) {
     console.error('safety summary failed', err)
@@ -304,11 +288,16 @@ app.get('/api/events/trends', (req, res) => {
     const types = req.query.types
       ? String(req.query.types).split(',').map(t => t.trim()).filter(Boolean)
       : null
+    const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+      req,
+      req.query.assetIds?.toString() || null,
+      req.query.siteScope?.toString() || null,
+    ))
     res.json(getEventTrends({
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
-      assetIds: req.query.assetIds?.toString() || null,
-      siteScope: req.query.siteScope?.toString() || null,
+      assetIds,
+      siteScope: null,
       types,
     }))
   } catch (err) {
@@ -320,13 +309,17 @@ app.get('/api/events/trends', (req, res) => {
 app.get('/api/risk/drivers', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    const assetIds = applySignedInTransporterScope(req, req.query.assetIds?.toString() || null)
+    const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
+      req,
+      req.query.assetIds?.toString() || null,
+      req.query.siteScope?.toString() || null,
+    ))
     res.json(getRiskDrivers({
       range: req.query.range?.toString() || '30d',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
       assetIds,
-      siteScope: req.query.siteScope?.toString() || null,
+      siteScope: null,
       groupBy: req.query.groupBy?.toString() || 'driver',
     }))
   } catch (err) {
