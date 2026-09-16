@@ -1,7 +1,9 @@
 import { useFleet } from '../../context/FleetContext';
+import { useAuth } from '../../context/AuthContext';
 import SiteScopeDropdown from '../SiteScopeDropdown';
 
 export default function SiteSelector() {
+  const { user } = useAuth();
   const {
     selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
     siteLock, lockedTransporters,
@@ -13,8 +15,8 @@ export default function SiteSelector() {
       toggleSite={toggleSite}
       siteOptions={siteOptions}
       siteNameOptions={siteNameOptions}
-      locked={siteLock}
-      lockedLabel={lockedTransporters.length ? lockedTransporters.join(', ') : undefined}
+      allowedSiteKeys={siteLock ? lockedTransporters : undefined}
+      scopeLabel={user?.fleetName || undefined}
     />
   );
 }

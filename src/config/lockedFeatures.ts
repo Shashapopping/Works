@@ -7,7 +7,6 @@ export type LockedFeatureId = 'dispatch' | 'reports' | 'aria' | 'maintenance' | 
 /** Feature IDs that are not part of the current package */
 export const LOCKED_FEATURES: ReadonlySet<LockedFeatureId> = new Set([
   'dispatch',
-  'aria',
   'fuel-consumption',
   'vision',
 ]);
@@ -21,5 +20,4 @@ export function isFeatureLocked(featureId?: string): boolean {
 export const UPCOMING_FEATURES = [
   { path: '/trips', label: 'Journey Management', featureId: 'dispatch' as LockedFeatureId },
   { path: '/trips/dispatch', label: 'Dispatch', featureId: 'dispatch' as LockedFeatureId },
-  { path: '/aria', label: 'AI Insights', featureId: 'aria' as LockedFeatureId },
 ] as const;

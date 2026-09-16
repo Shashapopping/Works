@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Info } from 'lucide-react';
 import { authFetch, useFleet } from '../context/FleetContext';
-import InfoTip, { ThInfo } from '../components/InfoTip';
 import CustomDateTimeRange, { ensureCustomRangeDefaults } from '../components/CustomDateTimeRange';
 import TablePaginationBar from '../components/TablePaginationBar';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useTableSort } from '../hooks/useTableSort';
-import { buildUtilUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
+import { buildKpiUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelTable, SkelValue } from '../components/data/DataBusy';
+import { filterDistanceAssetsByVehicles } from '../lib/siteScope';
 
 type PeriodMode = KpiPeriodMode;
 
@@ -30,13 +30,23 @@ function utilBar(pct: number, color: string) {
   );
 }
 
+function summarizeScopedAssets(assets: KpiAssetRow[]) {
+  const utilValues = assets
+    .map(a => a.utilizationPct)
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  return {
+    assetCount: assets.length,
+    totalEngineHours: assets.reduce((s, a) => s + (a.engineHours || 0), 0),
+    totalDistanceKm: assets.reduce((s, a) => s + (a.distanceKm || 0), 0),
+    avgUtilizationPct: utilValues.length
+      ? utilValues.reduce((s, v) => s + v, 0) / utilValues.length
+      : null,
+  };
+}
+
 export default function UtilizationPage() {
-  const { vehicles, scopedAssetIds, siteFilterActive } = useFleet();
-  const kpiScope = useMemo(
-    () => ({ assetIds: siteFilterActive ? scopedAssetIds : [] }),
-    [siteFilterActive, scopedAssetIds.join(',')],
-  );
-  const kpiScopeKey = kpiScope.assetIds.join(',');
+  const { vehicles, selectedSites } = useFleet();
+  const siteFiltered = selectedSites.length > 0;
   const [period, setPeriod] = useState<PeriodMode>('week');
   const [customRange, setCustomRange] = useState(() => {
     const to = new Date();
@@ -47,16 +57,20 @@ export default function UtilizationPage() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 250);
 
-  const url = buildUtilUrl(period, 'all', customRange.from, customRange.to, kpiScope);
+  const url = buildKpiUrl(period, 'all', customRange.from, customRange.to);
   const [data, setData] = useState<KpiData | null>(() => cachePeek<KpiData>(CACHE_KEYS.kpi(url)));
   const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.kpi(url)));
 
   const fetchData = useCallback(async () => {
-    const nextUrl = buildUtilUrl(period, 'all', customRange.from, customRange.to, kpiScope);
+    const nextUrl = buildKpiUrl(period, 'all', customRange.from, customRange.to);
     const key = CACHE_KEYS.kpi(nextUrl);
     const cached = cachePeek<KpiData>(key);
-    setData(cached);
-    setLoading(!cached);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     try {
       const next = await cachedFetchJson<KpiData>(key, CACHE_TTL.kpi, async () => {
         const res = await authFetch(nextUrl);
@@ -64,15 +78,20 @@ export default function UtilizationPage() {
         return res.json();
       }, { force: false });
       if (next) setData(next);
-    } catch { /* keep current-scope paint */ }
+    } catch { /* keep prior */ }
     finally { setLoading(false); }
-  }, [period, customRange.from, customRange.to, kpiScopeKey]);
+  }, [period, customRange.from, customRange.to]);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
 
+  const scopedAssets = useMemo(() => {
+    const rows = data?.assets ?? [];
+    return siteFiltered ? filterDistanceAssetsByVehicles(rows, vehicles) : rows;
+  }, [data?.assets, siteFiltered, vehicles]);
+
   const assets = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
-    let rows = data?.assets ?? [];
+    let rows = scopedAssets;
     if (q) {
       rows = rows.filter(a =>
         (a.regNo || '').toLowerCase().includes(q)
@@ -80,24 +99,32 @@ export default function UtilizationPage() {
         || (a.zone || '').toLowerCase().includes(q));
     }
     return rows;
-  }, [data?.assets, debouncedSearch]);
+  }, [scopedAssets, debouncedSearch]);
 
-  type SortKey = 'regNo' | 'zone' | 'utilizationPct' | 'availabilityPct' | 'distanceKm' | 'engineHours' | 'drivingHours';
+  type SortKey = 'regNo' | 'zone' | 'utilizationPct' | 'availabilityPct' | 'distanceKm' | 'engineHours';
   const getSortValue = (row: KpiAssetRow, key: SortKey) => row[key];
   const { sorted, toggle, ariaSort, indicator } = useTableSort(assets, getSortValue);
   const {
     pageRows, page, pageCount, from: pageFrom, to: pageTo, total: pageTotal, hasPrev, hasNext, prev, next,
-  } = useClientPagination(sorted, 50, `${period}|${customRange.from}|${customRange.to}|${debouncedSearch}`);
+  } = useClientPagination(sorted, 50, `${period}|${customRange.from}|${customRange.to}|${debouncedSearch}|${selectedSites.join(',')}`);
 
-  const summary = data?.summary;
+  const summary = useMemo(() => {
+    if (!siteFiltered) return data?.summary ?? null;
+    return summarizeScopedAssets(scopedAssets);
+  }, [siteFiltered, data?.summary, scopedAssets]);
+
   const withTrips = assets.filter(a => (a.tripCount ?? 0) > 0).length;
-  const available = vehicles.length || summary?.assetCount || 0;
+  const available = siteFiltered
+    ? (vehicles.length || scopedAssets.length)
+    : (vehicles.length || summary?.assetCount || 0);
 
   return (
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Utilization</h1>
-        <p className="bpl-page-subtitle">Drive, idle and engine-on time across the full fleet</p>
+        <p className="bpl-page-subtitle">
+          Engine / drive intensity and distance across {siteFiltered ? 'selected transporters' : 'the fleet'}
+        </p>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 20, alignItems: 'center' }}>
@@ -157,17 +184,27 @@ export default function UtilizationPage() {
           {[
             { label: 'Fleet activity %', value: available > 0 ? `${Math.round((withTrips / available) * 100)}%` : '—', tip: 'Share of fleet with at least one trip.', color: '#0f172a' },
             { label: 'Total distance', value: summary ? `${Math.round(summary.totalDistanceKm).toLocaleString()} km` : '—', tip: 'Total km from trips in period.', color: '#2563eb' },
-            { label: 'Avg utilization', value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—', tip: 'Average driving time ÷ engine-on time.', color: '#0d9488' },
+            { label: 'Avg utilization', value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—', tip: 'Average loaded utilization across assets.', color: '#0d9488' },
             { label: 'Engine hours', value: summary ? `${fmt(summary.totalEngineHours, 0)} h` : '—', tip: 'Total engine-on hours.', color: '#7c3aed' },
-            { label: 'Driving hours', value: summary ? `${fmt(summary.totalDrivingHours, 0)} h` : '—', tip: 'Total driving time.', color: '#2563eb' },
           ].map(k => (
             <div key={k.label} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}` }}>
-              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>
                 {k.label}
-                <InfoTip text={k.tip} />
               </div>
               <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>
                 {loading && !data ? <SkelValue /> : k.value}
+              </div>
+              <div style={{
+                fontSize: 10,
+                color: 'var(--cd-text-muted)',
+                marginTop: 6,
+                display: 'inline-flex',
+                alignItems: 'flex-start',
+                gap: 5,
+                lineHeight: 1.35,
+              }}>
+                <Info size={11} strokeWidth={2.25} style={{ flexShrink: 0, marginTop: 1, opacity: 0.75 }} aria-hidden />
+                <span>{k.tip}</span>
               </div>
             </div>
           ))}
@@ -179,29 +216,49 @@ export default function UtilizationPage() {
           <thead>
             <tr>
               {([
-                { key: 'regNo' as const, label: 'Asset', tip: 'Registration number' },
-                { key: 'zone' as const, label: 'Zone', tip: 'Site / zone' },
-                { key: 'utilizationPct' as const, label: 'Util %', tip: 'Driving ÷ engine-on' },
-                { key: 'availabilityPct' as const, label: 'Avail %', tip: 'Engine-on ÷ period hours' },
+                { key: 'regNo' as const, label: 'Asset', tip: null },
+                { key: 'zone' as const, label: 'Zone', tip: null },
+                { key: 'utilizationPct' as const, label: 'Util %', tip: 'Loaded utilization' },
+                { key: 'availabilityPct' as const, label: 'Avail %', tip: 'Availability' },
                 { key: 'distanceKm' as const, label: 'Distance', tip: 'Trip distance' },
-                { key: 'engineHours' as const, label: 'Engine h', tip: 'Engine-on hours' },
-                { key: 'drivingHours' as const, label: 'Drive h', tip: 'Driving hours' },
-              ]).map(col => (
-                <ThInfo
+                { key: 'engineHours' as const, label: 'Engine h', tip: 'Engine hours' },
+              ] as const).map(col => (
+                <th
                   key={col.key}
-                  label={`${col.label}${indicator(col.key)}`}
-                  tip={col.tip}
-                  onClick={() => toggle(col.key)}
                   aria-sort={ariaSort(col.key)}
-                />
+                  onClick={() => toggle(col.key)}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                >
+                  <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap' }}>
+                      {col.label}{indicator(col.key)}
+                    </span>
+                    {col.tip && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        fontSize: 10,
+                        fontWeight: 500,
+                        color: 'var(--cd-text-muted)',
+                        textTransform: 'none',
+                        letterSpacing: 0,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        <Info size={10} strokeWidth={2.25} style={{ flexShrink: 0, opacity: 0.75 }} aria-hidden />
+                        {col.tip}
+                      </span>
+                    )}
+                  </span>
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {loading && pageRows.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
+              <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
             ) : pageRows.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No assets</td></tr>
+              <tr><td colSpan={6} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No assets</td></tr>
             ) : pageRows.map(a => (
               <tr key={a.assetId || a.regNo}>
                 <td style={{ fontWeight: 600 }}>{a.regNo || a.assetName}</td>
@@ -210,7 +267,6 @@ export default function UtilizationPage() {
                 <td>{a.availabilityPct != null ? utilBar(a.availabilityPct, '#2563eb') : '—'}</td>
                 <td>{a.distanceKm != null ? `${Math.round(a.distanceKm).toLocaleString()} km` : '—'}</td>
                 <td>{a.engineHours != null ? `${a.engineHours.toFixed(1)} h` : '—'}</td>
-                <td>{a.drivingHours != null ? `${a.drivingHours.toFixed(1)} h` : '—'}</td>
               </tr>
             ))}
           </tbody>

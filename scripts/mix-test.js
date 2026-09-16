@@ -32,6 +32,7 @@ import { querySafetyEventAggregates, queryRiskAggregates, queryEventTrendBuckets
 import { memoApiResponse, apiCacheKey } from "./api-response-cache.js";
 import { fuelEventTypeFromId } from "./fuel-constants.js";
 import { queueConnectivityTriggersForPoll } from "./connectivity-triggers.js";
+import { isExcludedFleetPlacement } from "./fleet-exclusions.js";
 
 const IDENTITY_URL = "https://identity.za.mixtelematics.com/core/connect/token";
 const API_BASE = "https://integrate.za.mixtelematics.com/api";
@@ -337,6 +338,7 @@ function loadDriverLookup() {
         driverLookup.set(d.DriverId?.toString(), {
           name: d.Name || 'N/A',
           phone: d.MobileNumber || 'N/A',
+          siteId: d.SiteId != null ? String(d.SiteId) : null,
         });
       });
       console.log(`👥 Driver lookup loaded — ${driverLookup.size} drivers`);
@@ -451,7 +453,11 @@ async function fetchAndCacheDrivers(token) {
     fs.writeFileSync(driversPath, JSON.stringify(drivers, null, 2));
     driverLookup.clear();
     drivers.forEach(d => {
-      driverLookup.set(d.DriverId?.toString(), { name: d.Name || 'N/A', phone: d.MobileNumber || 'N/A' });
+      driverLookup.set(d.DriverId?.toString(), {
+        name: d.Name || 'N/A',
+        phone: d.MobileNumber || 'N/A',
+        siteId: d.SiteId != null ? String(d.SiteId) : null,
+      });
     });
     lastDriverFetch = Date.now();
     console.log(`👥 Drivers cached — ${drivers.length} drivers saved to drivers.json`);
@@ -1095,9 +1101,12 @@ function mergeData(positions) {
 
   return Array.from(vehicleLookup.values()).filter(vehicle => {
     const siteInfo = siteLookup.get(vehicle.SiteId?.toString());
-    // Keep MiX Fleet aligned: drop XN site group and UserState=Decommissioned assets
-    if ((siteInfo?.name || '') === 'XN - Decommissioned') return false;
-    if (String(vehicle.UserState || '') === 'Decommissioned') return false;
+    // Keep MiX Fleet aligned: drop decommissioned + Non Operational in HBM Operations
+    if (isExcludedFleetPlacement({
+      site: siteInfo?.name || vehicle.SiteName,
+      zone: siteInfo?.zoneName,
+      userState: vehicle.UserState,
+    })) return false;
     return true;
   }).map(vehicle => {
     const assetId = vehicle.AssetId?.toString();
@@ -2040,13 +2049,20 @@ function computeHosRecords(dayStr) {
     const lastTrip = (dayTrips.length ? dayTrips : cycleTrips.length ? cycleTrips : weekTrips)[
       (dayTrips.length ? dayTrips : cycleTrips.length ? cycleTrips : weekTrips).length - 1
     ];
+    const driverInfo = driverLookup.get(String(key));
     const resolvedName = (lastTrip.driverName && lastTrip.driverName !== 'N/A')
       ? lastTrip.driverName
-      : (driverLookup.get(String(key))?.name || lastTrip.driverName || 'N/A');
+      : (driverInfo?.name || lastTrip.driverName || 'N/A');
     const vehicle = lastTrip.assetId ? vehicleLookup.get(String(lastTrip.assetId)) : null;
-    const siteId = vehicle?.SiteId?.toString?.() || null;
+    // Prefer the driver's roster SiteId (MiX driver card), not the last trip vehicle.
+    // Duplicate / non-op driver IDs must stay on their own site even when logged into an ops truck.
+    const siteId = driverInfo?.siteId
+      || vehicle?.SiteId?.toString?.()
+      || null;
     const siteInfo = siteId ? siteLookup.get(siteId) : null;
-    const site = siteInfo?.name || (lastTrip.assetId && liveZoneByAsset.get(lastTrip.assetId)) || 'HBM';
+    const site = siteInfo?.name
+      || (lastTrip.assetId && liveZoneByAsset.get(lastTrip.assetId))
+      || 'HBM';
 
     records.push({
       id: String(key),

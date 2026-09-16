@@ -2,8 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Brain, X, Send, ChevronDown } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useFleet } from '../context/FleetContext';
-import { displayDriverName, isKnownDriver } from '../lib/driverUtils';
-import { SAFEIQ_ENABLED } from '../config/safeIq';
+import { answerAriaLocal, buildAriaRemoteContext, type AriaSnapshot } from '../lib/ariaAssistant';
 
 const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
 
@@ -133,118 +132,27 @@ export default function ARIAChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const location = useLocation();
-  const { fleetSafetyScore, fleetScoreDelta, redAlertCount, vaultRecords, metadata, events, notifications } = useFleet();
+  const { fleetSafetyScore, fleetScoreDelta, redAlertCount, vaultRecords, metadata, events, notifications, insights } = useFleet();
 
   const currentPage = PAGE_LABELS[location.pathname] || location.pathname;
   const watTime = new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos', hour12: false });
-  const openInvestigations = vaultRecords.filter(r => r.status !== 'resolved').length;
+
+  const snapshot = (): AriaSnapshot => ({
+    page: currentPage,
+    watTime,
+    score: fleetSafetyScore,
+    scoreDelta: fleetScoreDelta,
+    metadata,
+    redAlertCount,
+    events,
+    notifications,
+    vaultRecords,
+    insights,
+  });
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
-
-  const buildContext = () => {
-    const now = Date.now();
-    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
-    const sevenDaysAgo  = now - 7  * 24 * 60 * 60 * 1000;
-
-    // Driver incident summary — last 30 days
-    const driverMap: Record<string, { incidents: number; types: Record<string, number>; lastSeen: string }> = {};
-    events.forEach(e => {
-      const name = e.driverName;
-      if (!isKnownDriver(name)) return;
-      if (new Date(e.eventTime || e.timestamp).getTime() < thirtyDaysAgo) return;
-      if (!driverMap[name]) driverMap[name] = { incidents: 0, types: {}, lastSeen: '' };
-      driverMap[name].incidents++;
-      const label = e.label || (e.type === 'panic' ? 'Panic Alert' : 'Event');
-      driverMap[name].types[label] = (driverMap[name].types[label] || 0) + 1;
-      const t = e.eventTime || e.timestamp;
-      if (!driverMap[name].lastSeen || t > driverMap[name].lastSeen) driverMap[name].lastSeen = t;
-    });
-    const topDrivers = Object.entries(driverMap)
-      .sort(([, a], [, b]) => b.incidents - a.incidents)
-      .slice(0, 5)
-      .map(([name, d]) => {
-        const breakdown = Object.entries(d.types).map(([t, c]) => `${t}×${c}`).join(', ');
-        const last = new Date(d.lastSeen).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
-        return `  ${name}: ${d.incidents} incidents (${breakdown}) | last: ${last}`;
-      }).join('\n');
-
-    // Event type breakdown — last 7 days
-    const weekEvents = events.filter(e => new Date(e.eventTime || e.timestamp).getTime() >= sevenDaysAgo);
-    const typeMap: Record<string, number> = {};
-    weekEvents.forEach(e => {
-      const label = e.label || (e.type === 'panic' ? 'Panic Alert' : 'Unknown');
-      typeMap[label] = (typeMap[label] || 0) + 1;
-    });
-    const weekBreakdown = Object.entries(typeMap)
-      .sort(([, a], [, b]) => b - a)
-      .map(([label, count]) => `  ${label}: ${count}`)
-      .join('\n');
-
-    // SafeIQ red alerts with analysis (shelved when SAFEIQ_ENABLED is false)
-    const redAlerts = SAFEIQ_ENABLED
-      ? notifications
-          .filter(n => n.analysis?.severity === 'RED' && isKnownDriver(n.driver.name))
-          .slice(0, 5)
-          .map(n => {
-            const t = new Date(n.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
-            const cause = n.analysis?.root_cause?.slice(0, 150) ?? 'Pending analysis';
-            const coaching = n.analysis?.coaching_recommendation?.slice(0, 120) ?? '';
-            return `  [RED] ${n.driver.name} | ${n.vehicle.id} | ${n.magnitude} | ${t}\n    Root cause: ${cause}\n    Coaching: ${coaching}`;
-          }).join('\n')
-      : '(SafeIQ shelved)';
-
-    // Yellow alerts
-    const yellowAlerts = SAFEIQ_ENABLED
-      ? notifications
-          .filter(n => n.analysis?.severity === 'YELLOW' && isKnownDriver(n.driver.name))
-          .slice(0, 5)
-          .map(n => `  [YELLOW] ${n.driver.name} | ${n.vehicle.id} | ${n.magnitude} | ${new Date(n.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })}`)
-          .join('\n')
-      : '(SafeIQ shelved)';
-
-    // Open vault investigations
-    const openVault = vaultRecords
-      .filter(r => r.status !== 'resolved')
-      .slice(0, 8)
-      .map(r => `  [${r.severity}] ${r.driverName} | ${r.vehicleId} | ${r.type} | Status: ${r.status} | ${r.description?.slice(0, 100)}`)
-      .join('\n');
-
-    // Recent 10 raw events
-    const recentEvents = events.slice(0, 10).map(e => {
-      const t = e.eventTime ? new Date(e.eventTime).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' }) : 'unknown';
-      const driver = displayDriverName(e.driverName, '—');
-      return `  ${t} | ${e.label || 'Panic'} | ${driver !== '—' ? driver : '—'} | ${e.regNo || e.assetId} | ${e.address || 'No location'}`;
-    }).join('\n');
-
-    return `BPL ANALYST FLEET INTELLIGENCE CONTEXT — ${watTime} (Lagos, WAT)
-Current page: ${currentPage} | User: Fleet Safety Officer
-
-=== FLEET STATUS ===
-Total vehicles: ${metadata.totalVehicles} | Safety score: ${fleetSafetyScore}/100 (${fleetScoreDelta >= 0 ? '+' : ''}${fleetScoreDelta} vs prior 30 days)
-Moving: ${metadata.moving} | Idle: ${metadata.idle} | Excessive Idle: ${metadata.excessiveIdle}
-Stationary: ${metadata.stationary} | Parked: ${metadata.parked} | Temp Inactive: ${metadata.offline} | Inactive: ${metadata.inactive}
-Active red alerts: ${redAlertCount} | Open vault investigations: ${openInvestigations}
-
-=== TOP DRIVERS BY INCIDENTS — LAST 30 DAYS ===
-${topDrivers || '  No driver incident data'}
-
-=== SAFETY EVENT BREAKDOWN — LAST 7 DAYS (${weekEvents.length} total) ===
-${weekBreakdown || '  No events this week'}
-
-=== RED ALERTS (SafeIQ) ===
-${redAlerts || '  None'}
-
-=== YELLOW ALERTS (SafeIQ) ===
-${yellowAlerts || '  None'}
-
-=== OPEN VAULT INVESTIGATIONS ===
-${openVault || '  No open investigations'}
-
-=== RECENT EVENTS (last 30) ===
-${recentEvents || '  No recent events'}`;
-  };
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || loading) return;
@@ -255,7 +163,15 @@ ${recentEvents || '  No recent events'}`;
     setLoading(true);
     setStreamingContent('');
 
-    const history = messages.map(m => ({ role: m.role, content: m.content }));
+    const snap = snapshot();
+    const local = answerAriaLocal(text, snap);
+    if (local) {
+      setMessages(prev => [...prev, { role: 'assistant', content: local }]);
+      setLoading(false);
+      return;
+    }
+
+    const history = messages.slice(-4).map(m => ({ role: m.role, content: m.content }));
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -273,7 +189,7 @@ ${recentEvents || '  No recent events'}`;
           stream: true,
           messages: [
             ...history,
-            { role: 'user', content: `${buildContext()}\n\n---\n\nUser question: ${text.trim()}` },
+            { role: 'user', content: buildAriaRemoteContext(text.trim(), snap) },
           ],
         }),
       });

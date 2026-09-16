@@ -14,6 +14,7 @@ import type { UserNotification } from '../../lib/coachingWarningsApi';
 import EnvironmentBadge from '../EnvironmentBadge';
 import { isKnownDriver, displayDriverName } from '../../lib/driverUtils';
 import { SAFEIQ_ENABLED } from '../../config/safeIq';
+import ARIAChat from '../ARIAChat';
 
 function getPageTitle(pathname: string): { title: string; sub: string } {
   const map: Record<string, { title: string; sub: string }> = {
@@ -27,6 +28,8 @@ function getPageTitle(pathname: string): { title: string; sub: string } {
     '/drivers/training': { title: 'Training', sub: '— mandatory retraining' },
     '/drivers/fatigue': { title: 'Fatigue Management', sub: '— hours-of-service limits' },
     '/drivers/vision': { title: 'Vision', sub: '— distraction & DMS' },
+    '/safety': { title: 'Safety', sub: '— fleet safety score and risk' },
+    '/consequence-management': { title: 'Consequence/Fatigue Management', sub: '— driver discipline and fatigue bands' },
     '/incidents': { title: 'Incident Intelligence', sub: '— event explorer' },
     '/incidents/response': { title: 'Incident Intelligence', sub: '— response tracking' },
     '/incidents/audit': { title: 'Incident Intelligence', sub: '— audit trail' },
@@ -258,7 +261,7 @@ export default function AppShell() {
   const notifRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, hasPermission } = useAuth();
   const {
     notifications, dismissNotification, clearAllNotifications, selectedNotification,
     openNotification, closeNotification,
@@ -319,9 +322,9 @@ export default function AppShell() {
               </button>
             )}
             <span style={{ fontSize: 15, fontWeight: 500, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
-              {!!user?.transporters?.length && (
+              {user?.fleetName && (
                 <>
-                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.transporters.join(', ')}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.85)' }}>{user.fleetName}</span>
                   <span style={{ color: 'rgba(255,255,255,0.25)', fontWeight: 400 }}>·</span>
                 </>
               )}
@@ -429,7 +432,11 @@ export default function AppShell() {
 
       {SAFEIQ_ENABLED && (
         <SafetyToast
-          notifications={notifications.filter(n => !toastDismissed.has(n.id))}
+          notifications={notifications.filter(n => {
+            if (toastDismissed.has(n.id)) return false;
+            const t = new Date(n.timestamp).getTime();
+            return Number.isFinite(t) && Date.now() - t < 10 * 60 * 1000;
+          })}
           onDismiss={id => setToastDismissed(prev => new Set([...prev, id]))}
           onClearAll={() => setToastDismissed(new Set(notifications.map(n => n.id)))}
           onOpen={openNotification}
@@ -438,6 +445,7 @@ export default function AppShell() {
       {SAFEIQ_ENABLED && selectedNotification && (
         <SafetyIncidentModal notification={selectedNotification} onClose={closeNotification} />
       )}
+      {SAFEIQ_ENABLED && hasPermission('aria') && <ARIAChat />}
       <LogoutConfirmModal
         open={logoutConfirmOpen}
         onCancel={() => setLogoutConfirmOpen(false)}

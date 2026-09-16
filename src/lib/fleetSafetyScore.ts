@@ -36,7 +36,7 @@ export interface FleetScoreConfig {
   aimRatePer100Km?: number;
   /** Minutes a HOS breach must be held to mint one slice (default 10). */
   hosSliceMinutes: number;
-  /** Points added per HOS slice (default 1.5, same band as overspeeding). */
+  /** Points added per HOS slice (default 1 — one point every 10 minutes held). */
   hosPointsPer10Min: number;
   /** @deprecated Linear slope; unused — score uses SCORE_DROP_PER_IVMS_UNIT. */
   scoreDropPerHarmUnit?: number;
@@ -78,7 +78,7 @@ export const DEFAULT_FLEET_SCORE_CONFIG: FleetScoreConfig = {
   },
   aimRatePer100Km: 1,
   hosSliceMinutes: 10,
-  hosPointsPer10Min: 1.5,
+  hosPointsPer10Min: 1,
   scoreFloor: 0,
   bandGood: 80,
   bandAttention: 60,
@@ -207,7 +207,7 @@ export function hosPointsFromHeldMinutes(
   heldMinutes: number,
   config: FleetScoreConfig = loadFleetScoreConfig(),
 ): number {
-  return hosSlicesFromMinutes(heldMinutes, config) * (config.hosPointsPer10Min ?? 1.5);
+  return hosSlicesFromMinutes(heldMinutes, config) * (config.hosPointsPer10Min ?? 1);
 }
 
 /** Weighted IVMS points per 100 km. */
