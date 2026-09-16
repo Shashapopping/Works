@@ -82,6 +82,11 @@ export default function App() {
 
                 <Route path="/drivers/*" element={<Navigate to="/drivers" replace />} />
 
+                <Route
+                  path="/consequence-management"
+                  element={<Navigate to={{ pathname: '/settings/scoring', hash: 'consequence-bands' }} replace />}
+                />
+
                 <Route path="/incidents" element={<IncidentIntelligence tab="events" />} />
 
                 <Route path="/incidents/response" element={<IncidentIntelligence tab="patterns" />} />
@@ -133,7 +138,11 @@ export default function App() {
 
                 <Route path="/settings/general" element={<Settings tab="general" />} />
 
-                <Route path="/settings/scoring" element={<Settings tab="scoring" />} />
+                <Route path="/settings/scoring" element={<Settings tab="thresholds" />} />
+
+                <Route path="/settings/thresholds" element={<Navigate to="/settings/scoring" replace />} />
+
+                <Route path="/settings/api" element={<Navigate to="/settings/dev" replace />} />
 
                 <Route path="/settings/dev" element={<Settings tab="dev" />} />
 

@@ -98,7 +98,7 @@ export const SIDEBAR_NAV: NavGroup[] = [
       { path: '/trips/dispatch', label: 'Dispatch', icon: Navigation, locked: true },
     ],
   },
-  { path: '/aria', icon: Brain, label: 'AI Insights', locked: true },
+  { path: '/aria', icon: Brain, label: 'AI Insights' },
 ];
 
 /** Warm page APIs on hover (Chevron-style). */

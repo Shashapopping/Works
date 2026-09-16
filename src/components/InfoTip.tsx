@@ -106,7 +106,7 @@ export default function InfoTip({
   );
 }
 
-/** Table header cell with an info tip. */
+/** Table header cell with an info tip infused into the label. */
 export function ThInfo({
   label,
   tip,
@@ -123,12 +123,13 @@ export function ThInfo({
   return (
     <th
       aria-sort={ariaSort}
+      title={tip}
       onClick={onClick}
       style={onClick ? { cursor: 'pointer', userSelect: 'none' } : undefined}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
         {label}
-        <InfoTip text={tip} align={align} />
+        <InfoTip text={tip} label={label} align={align} style={{ marginLeft: 0 }} />
       </span>
     </th>
   );

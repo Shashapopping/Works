@@ -18,22 +18,72 @@ import {
   scoreBandColor,
   scoreBandLabel,
   ratePer100Km,
-  computeFleetScore,
   totalSafetyPointsFromCensus,
   SCORE_DROP_PER_IVMS_UNIT,
   FLEET_SCORE_SCALE,
   eventWeight,
   hosSlicesFromMinutes,
+  computeFleetScore,
   type FleetScoreConfig,
   type FleetSafetyExposure,
 } from '../lib/fleetSafetyScore';
 import { SkelValue } from '../components/data/DataBusy';
-import { appendUrlScope } from '../lib/siteScope';
 import { authCachedJson, cachePeek, CACHE_TTL, peekSafetySummary } from '../lib/apiCache';
 import PagePeriodBar from '../components/PagePeriodBar';
 import { type PageDateRange, defaultPageCustomRange, pagePeriodIsoBounds } from '../lib/pagePeriod';
+
 const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, config);
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
+
+/** Build /api/safety/summary or /api/risk/drivers URL for the page period, optionally scoped to assets. */
+function safetyApiUrl(
+  path: '/api/safety/summary' | '/api/risk/drivers',
+  dateRange: PageDateRange,
+  customRange: { from: string; to: string },
+  assetIds: string[],
+  previous = false,
+): string {
+  const params = new URLSearchParams();
+  const b = pagePeriodIsoBounds(dateRange, customRange.from, customRange.to);
+
+  if (previous) {
+    if (dateRange === '30days') {
+      params.set('range', 'prev30d');
+    } else if (b.from && b.to) {
+      const fromMs = new Date(b.from).getTime();
+      const toMs = new Date(b.to).getTime();
+      const dur = Math.max(toMs - fromMs, 1);
+      params.set('from', new Date(fromMs - dur).toISOString());
+      params.set('to', new Date(fromMs).toISOString());
+    } else if (dateRange === 'today') {
+      const end = new Date();
+      end.setHours(0, 0, 0, 0);
+      const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+      params.set('from', start.toISOString());
+      params.set('to', end.toISOString());
+    } else if (dateRange === '7days') {
+      const end = new Date();
+      const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const prevStart = new Date(start.getTime() - 7 * 24 * 60 * 60 * 1000);
+      params.set('from', prevStart.toISOString());
+      params.set('to', start.toISOString());
+    } else {
+      params.set('range', 'prev30d');
+    }
+  } else if (b.from && b.to) {
+    params.set('from', b.from);
+    params.set('to', b.to);
+  } else if (dateRange === 'today') {
+    params.set('range', 'today');
+  } else if (dateRange === '7days') {
+    params.set('range', '7d');
+  } else {
+    params.set('range', '30d');
+  }
+
+  if (assetIds.length) params.set('assetIds', assetIds.join(','));
+  return `${path}?${params}`;
+}
 
 // ─── ScoreGauge (standalone, large) ─────────────────────────────────────────
 function ScoreGauge({
@@ -174,6 +224,9 @@ function ScoreGauge({
             </div>
           ))}
         </div>
+        <div style={{ fontSize: 10, color: '#0078D4', marginTop: 10, fontWeight: 600 }}>
+          Click for a 10-second explainer
+        </div>
       </div>
     </button>
   );
@@ -208,25 +261,12 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
           <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>Last 30 days · weighted deduction total: <strong style={{ color: 'var(--cd-text)' }}>{totalDeduction.toFixed(0)}</strong></div>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 220, paddingTop: 8 }}>
+      <div style={{ flex: 1, minHeight: 220, paddingTop: 16 }}>
         <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} barSize={28} margin={{ top: 8, right: 8, bottom: 28, left: 0 }}>
+        <BarChart data={data} barSize={28} margin={{ top: 0, right: 0, bottom: 0, left: -20 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--cd-border)" vertical={false} />
-          <XAxis
-            dataKey="name"
-            interval={0}
-            tick={{ fontSize: 9, fill: 'var(--cd-text-muted)' }}
-            axisLine={false}
-            tickLine={false}
-            tickMargin={8}
-          />
-          <YAxis
-            width={32}
-            tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }}
-            axisLine={false}
-            tickLine={false}
-            allowDecimals={false}
-          />
+          <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10, fill: 'var(--cd-text-muted)' }} axisLine={false} tickLine={false} />
           <Tooltip
             contentStyle={{ background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderRadius: 6, fontSize: 12 }}
             formatter={(value: number, name: string, props: any) => [`${value} incidents (−${(value * props.payload.weight).toFixed(0)} pts)`, 'Count']}
@@ -241,121 +281,101 @@ function IncidentBreakdown({ byLabel }: { byLabel?: Record<string, number> }) {
   );
 }
 
+type RiskDriverApiRow = {
+  driverName?: string;
+  harshBraking?: number;
+  harshAcceleration?: number;
+  overspeeding?: number;
+  overspeedTiered?: number;
+  harshCornering?: number;
+  total?: number;
+};
+
+function mapRiskDrivers(
+  drivers: RiskDriverApiRow[],
+  scoreConfig: FleetScoreConfig,
+) {
+  return drivers
+    .filter(d => isKnownDriver(d.driverName))
+    .map(d => {
+      const types: Record<string, number> = {};
+      if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
+      if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
+      if ((d.overspeeding || 0) + (d.overspeedTiered || 0)) {
+        types.Overspeeding = (d.overspeeding || 0) + (d.overspeedTiered || 0);
+      }
+      if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
+      let riskScore = 0;
+      for (const [label, count] of Object.entries(types)) {
+        riskScore += eventWeight(label, scoreConfig) * count;
+      }
+      return {
+        name: d.driverName || 'N/A',
+        incidents: d.total ?? 0,
+        riskScore,
+        types,
+        lastEvent: '',
+      };
+    })
+    .sort((a, b) => b.riskScore - a.riskScore)
+    .slice(0, 10);
+}
+
 // ─── WorstPerformers ─────────────────────────────────────────────────────────
 function WorstPerformers({
-  assetIds = [],
-  scoped,
+  assetIds,
+  siteFiltered,
+  dateRange,
+  customRange,
 }: {
-  assetIds?: string[];
-  scoped: boolean;
+  assetIds: string[];
+  siteFiltered: boolean;
+  dateRange: PageDateRange;
+  customRange: { from: string; to: string };
 }) {
-  const { scoreConfig } = useFleet();
-  const assetScopeKey = assetIds.join(',');
-  const url = useMemo(() => {
-    const params = new URLSearchParams({ range: '30d' });
-    return appendUrlScope(`/api/risk/drivers?${params.toString()}`, {
-      assetIds: scoped ? assetIds : [],
-    });
-  }, [assetScopeKey, scoped]);
+  const { scoreConfig, vehiclesLoading } = useFleet();
+  // Transporter/site lock: wait for scoped vehicle IDs before calling the API
+  // so we never paint fleet-wide drivers under a locked org.
+  const awaitingScope = siteFiltered && assetIds.length === 0 && vehiclesLoading;
+  const url = (siteFiltered && assetIds.length === 0)
+    ? ''
+    : safetyApiUrl('/api/risk/drivers', dateRange, customRange, siteFiltered ? assetIds : []);
+
   const [rows, setRows] = useState<{
     name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string;
   }[]>(() => {
-    const cached = cachePeek<{ drivers?: Array<{
-      driverName?: string;
-      harshBraking?: number;
-      harshAcceleration?: number;
-      overspeeding?: number;
-      overspeedTiered?: number;
-      harshCornering?: number;
-      total?: number;
-    }> }>(url);
-    if (!cached?.drivers) return [];
-    return cached.drivers
-      .filter(d => isKnownDriver(d.driverName))
-      .map(d => {
-        const types: Record<string, number> = {};
-        if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
-        if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
-        if ((d.overspeeding || 0) + (d.overspeedTiered || 0)) {
-          types.Overspeeding = (d.overspeeding || 0) + (d.overspeedTiered || 0);
-        }
-        if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
-        let riskScore = 0;
-        for (const [label, count] of Object.entries(types)) {
-          riskScore += eventWeight(label, scoreConfig) * count;
-        }
-        return {
-          name: d.driverName || 'N/A',
-          incidents: d.total ?? 0,
-          riskScore,
-          types,
-          lastEvent: '',
-        };
-      })
-      .sort((a, b) => b.riskScore - a.riskScore)
-      .slice(0, 10);
+    if (!url) return [];
+    const cached = cachePeek<{ drivers?: RiskDriverApiRow[] }>(url);
+    return cached?.drivers ? mapRiskDrivers(cached.drivers, scoreConfig) : [];
   });
-  const [loading, setLoading] = useState(() => Boolean(url) && !cachePeek(url));
+  const [loading, setLoading] = useState(() => !!url && !cachePeek(url));
 
   useEffect(() => {
+    let cancelled = false;
     if (!url) {
-      setLoading(false);
+      setRows([]);
+      // Keep skeleton only while vehicles for this org are still loading.
+      setLoading(awaitingScope);
       return;
     }
-    let cancelled = false;
-    const cached = cachePeek(url);
-    if (cached) {
+    const cached = cachePeek<{ drivers?: RiskDriverApiRow[] }>(url);
+    if (cached?.drivers) {
+      setRows(mapRiskDrivers(cached.drivers, scoreConfig));
       setLoading(false);
     } else {
-      setRows([]);
       setLoading(true);
     }
-    authCachedJson<{
-      drivers?: Array<{
-        driverName?: string;
-        harshBraking?: number;
-        harshAcceleration?: number;
-        overspeeding?: number;
-        overspeedTiered?: number;
-        harshCornering?: number;
-        total?: number;
-      }>;
-    }>(url, authFetch, { ttlMs: CACHE_TTL.riskDrivers })
+    authCachedJson<{ drivers?: RiskDriverApiRow[] }>(url, authFetch, { ttlMs: CACHE_TTL.riskDrivers })
       .then(data => {
         if (cancelled || !data?.drivers) return;
-        setRows(
-          data.drivers
-            .filter(d => isKnownDriver(d.driverName))
-            .map(d => {
-              const types: Record<string, number> = {};
-              if (d.harshBraking) types['Harsh Braking'] = d.harshBraking;
-              if (d.harshAcceleration) types['Harsh Acceleration'] = d.harshAcceleration;
-              if ((d.overspeeding || 0) + (d.overspeedTiered || 0)) {
-                types.Overspeeding = (d.overspeeding || 0) + (d.overspeedTiered || 0);
-              }
-              if (d.harshCornering) types['Harsh Cornering'] = d.harshCornering;
-              let riskScore = 0;
-              for (const [label, count] of Object.entries(types)) {
-                riskScore += eventWeight(label, scoreConfig) * count;
-              }
-              return {
-                name: d.driverName || 'N/A',
-                incidents: d.total ?? 0,
-                riskScore,
-                types,
-                lastEvent: '',
-              };
-            })
-            .sort((a, b) => b.riskScore - a.riskScore)
-            .slice(0, 10),
-        );
+        setRows(mapRiskDrivers(data.drivers, scoreConfig));
       })
       .catch(() => {})
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [url, scoreConfig]);
+  }, [url, awaitingScope, scoreConfig]);
 
   const driverMap = rows;
 
@@ -693,81 +713,122 @@ function KpiStrip({ vehicleCount, exposure, busy }: { vehicleCount: number; expo
 export default function Safety() {
   const {
     vehicles,
+    vehiclesLoading,
     scoreConfig,
-    safetyScore,
-    safetyDelta,
+    safetyScore: fleetSafetyScore,
+    safetyDelta: fleetSafetyDelta,
     safetyExposure,
     safetyExposureLoading,
-    scopedAssetIds,
-    siteFilterActive,
+    selectedSites,
   } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
   const [dateRange, setDateRange] = useState<PageDateRange>('30days');
   const [customRange, setCustomRange] = useState(defaultPageCustomRange);
-  const [periodExposure, setPeriodExposure] = useState<FleetSafetyExposure | null>(null);
-  const [periodLoading, setPeriodLoading] = useState(false);
 
-  const siteFiltered = siteFilterActive;
-  const useContextExposure = dateRange === '30days';
-  const assetScopeKey = scopedAssetIds.join(',');
+  const siteFiltered = selectedSites.length > 0;
+  const assetIds = useMemo(
+    () => vehicles.map(v => v.id).filter(Boolean).map(String),
+    [vehicles],
+  );
+  // Locked transporter / site filter: never hit unscoped rollups. Wait for
+  // vehicle IDs so we don't briefly show the full-fleet census.
+  const awaitingScope = siteFiltered && assetIds.length === 0 && vehiclesLoading;
+  const emptyScope = siteFiltered && assetIds.length === 0 && !vehiclesLoading;
+  const useContextExposure = dateRange === '30days' && !siteFiltered;
 
   const periodUrl = useMemo(() => {
     if (useContextExposure) return '';
-    const b = pagePeriodIsoBounds(dateRange, customRange.from, customRange.to);
-    const params = new URLSearchParams();
-    if (b.from && b.to) {
-      params.set('from', b.from);
-      params.set('to', b.to);
-    } else if (dateRange === 'today') params.set('range', 'today');
-    else if (dateRange === '7days') params.set('range', '7d');
-    else params.set('range', '30d');
-    return appendUrlScope(`/api/safety/summary?${params}`, {
-      assetIds: siteFiltered ? scopedAssetIds : [],
-    });
-  }, [dateRange, customRange.from, customRange.to, siteFiltered, assetScopeKey, useContextExposure]);
+    if (awaitingScope || emptyScope) return '';
+    return safetyApiUrl('/api/safety/summary', dateRange, customRange, siteFiltered ? assetIds : []);
+  }, [dateRange, customRange, siteFiltered, assetIds, useContextExposure, awaitingScope, emptyScope]);
+
+  const prevUrl = useMemo(() => {
+    if (useContextExposure) return '';
+    if (awaitingScope || emptyScope) return '';
+    return safetyApiUrl('/api/safety/summary', dateRange, customRange, siteFiltered ? assetIds : [], true);
+  }, [dateRange, customRange, siteFiltered, assetIds, useContextExposure, awaitingScope, emptyScope]);
+
+  const [periodExposure, setPeriodExposure] = useState<FleetSafetyExposure | null>(() =>
+    periodUrl ? cachePeek<FleetSafetyExposure>(periodUrl) : peekSafetySummary<FleetSafetyExposure>('30d'),
+  );
+  const [prevExposure, setPrevExposure] = useState<FleetSafetyExposure | null>(() =>
+    prevUrl ? cachePeek<FleetSafetyExposure>(prevUrl) : peekSafetySummary<FleetSafetyExposure>('prev30d'),
+  );
+  const [periodLoading, setPeriodLoading] = useState(() => {
+    if (useContextExposure) return false;
+    if (awaitingScope) return true;
+    if (emptyScope) return false;
+    return !!periodUrl && !cachePeek(periodUrl);
+  });
 
   useEffect(() => {
     if (useContextExposure) {
       setPeriodLoading(false);
       return;
     }
-    if (!periodUrl) {
+    if (awaitingScope) {
+      setPeriodLoading(true);
+      return;
+    }
+    if (emptyScope || !periodUrl) {
       setPeriodExposure(null);
+      setPrevExposure(null);
       setPeriodLoading(false);
       return;
     }
     let cancelled = false;
     const cached = cachePeek<FleetSafetyExposure>(periodUrl);
-    setPeriodExposure(cached);
-    setPeriodLoading(!cached);
-    authCachedJson<FleetSafetyExposure>(periodUrl, authFetch, {
-      ttlMs: CACHE_TTL.safetySummary,
-    })
-      .then(data => {
-        if (cancelled || !data) return;
-        setPeriodExposure(data);
+    const cachedPrev = prevUrl ? cachePeek<FleetSafetyExposure>(prevUrl) : null;
+    if (cached) {
+      setPeriodExposure(cached);
+      if (cachedPrev) setPrevExposure(cachedPrev);
+      setPeriodLoading(false);
+    } else {
+      setPeriodLoading(true);
+    }
+    Promise.all([
+      authCachedJson<FleetSafetyExposure>(periodUrl, authFetch, { ttlMs: CACHE_TTL.safetySummary }),
+      prevUrl
+        ? authCachedJson<FleetSafetyExposure>(prevUrl, authFetch, { ttlMs: CACHE_TTL.safetySummary })
+        : Promise.resolve(null),
+    ])
+      .then(([cur, prev]) => {
+        if (cancelled) return;
+        if (cur) setPeriodExposure(cur);
+        if (prev) setPrevExposure(prev);
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setPeriodLoading(false); });
     return () => { cancelled = true; };
-  }, [periodUrl, useContextExposure]);
+  }, [periodUrl, prevUrl, useContextExposure, awaitingScope, emptyScope]);
 
   const pageExposure = useContextExposure
     ? safetyExposure
-    : (periodExposure ?? safetyExposure);
+    : periodExposure;
+  const pagePrevExposure = useContextExposure ? null : prevExposure;
+
+  const { score: pageScore, delta: pageDelta } = useMemo(() => {
+    if (useContextExposure) {
+      return { score: fleetSafetyScore, delta: fleetSafetyDelta };
+    }
+    if (!pageExposure) return { score: 0, delta: 0 };
+    return computeFleetScore(pageExposure, pagePrevExposure, scoreConfig);
+  }, [
+    useContextExposure,
+    fleetSafetyScore,
+    fleetSafetyDelta,
+    pageExposure,
+    pagePrevExposure,
+    scoreConfig,
+  ]);
+
   const totalIncidents = pageExposure?.incidentTotal ?? 0;
   const distanceKm = pageExposure?.distanceKm ?? 0;
   const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
-  const pageScoreResult = useMemo(() => {
-    if (useContextExposure && safetyExposure) return { score: safetyScore, delta: safetyDelta };
-    return computeFleetScore(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0, byLabel: {} }, null, scoreConfig);
-  }, [useContextExposure, safetyExposure, safetyScore, safetyDelta, pageExposure, scoreConfig]);
   const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.ivms, distanceKm);
-  const altLoading = useContextExposure
-    ? safetyExposureLoading
-    : (periodLoading || safetyExposureLoading);
-  const pageBusy = !pageExposure && altLoading;
+  const pageBusy = awaitingScope
+    || (!pageExposure && (useContextExposure ? safetyExposureLoading : periodLoading));
   const scoreBusy = pageBusy;
 
   return (
@@ -791,10 +852,10 @@ export default function Safety() {
       <KpiStrip vehicleCount={vehicles.length} exposure={pageExposure} busy={pageBusy} />
 
       {/* Score + Breakdown + Radar */}
-      <div style={{ display: 'grid', gridTemplateColumns: '40fr 35fr 25fr', gap: 14, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '45fr 35fr 20fr', gap: 14, marginBottom: 20 }}>
         <ScoreGauge
-          score={pageScoreResult.score}
-          delta={pageScoreResult.delta}
+          score={pageScore}
+          delta={pageDelta}
           totalIncidents={totalIncidents}
           weightedRate={weightedRate}
           hosHeldMinutes={hosHeldMinutes}
@@ -809,16 +870,21 @@ export default function Safety() {
 
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
-        <WorstPerformers assetIds={scopedAssetIds} scoped={siteFiltered} />
+        <WorstPerformers
+          assetIds={assetIds}
+          siteFiltered={siteFiltered}
+          dateRange={dateRange}
+          customRange={customRange}
+        />
       </div>
 
       {/* Priority actions */}
-      <PriorityActions byLabel={pageExposure?.byLabel} score={pageScoreResult.score} vehicleCount={vehicles.length} />
+      <PriorityActions byLabel={pageExposure?.byLabel} score={pageScore} vehicleCount={vehicles.length} />
 
       {explainerOpen && (
         <ConsequenceExplainerModal
-          fleetScore={pageScoreResult.score}
-          fleetDelta={pageScoreResult.delta}
+          fleetScore={pageScore}
+          fleetDelta={pageDelta}
           totalIncidents={totalIncidents}
           vehicleCount={vehicles.length}
           actualWeightedRate={weightedRate}

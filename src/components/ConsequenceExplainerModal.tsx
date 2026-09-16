@@ -435,7 +435,7 @@ export default function ConsequenceExplainerModal({
             Response Tracking <ArrowRight size={13} />
           </Link>
           <Link
-            to="/settings/scoring#driver-discipline"
+            to={{ pathname: '/settings/scoring', hash: 'consequence-bands' }}
             onClick={onClose}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 36,

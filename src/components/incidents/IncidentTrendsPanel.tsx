@@ -9,7 +9,6 @@ import {
   type EventFilterKey,
 } from '../../lib/eventFilters';
 import { pagePeriodIsoBounds, type PageDateRange } from '../../lib/pagePeriod';
-import { appendUrlScope, normalizeScopeKeys } from '../../lib/siteScope';
 import { SkelChart } from '../data/DataBusy';
 
 type TrendDay = {
@@ -50,14 +49,15 @@ function trendsUrl(
   customFrom: string,
   customTo: string,
   activeFilter: EventFilterKey,
-  scope: { assetIds?: string[]; siteScope?: string[] } = {},
+  siteScope?: string[] | null,
 ) {
   const b = pagePeriodIsoBounds(range, customFrom, customTo);
   const params = new URLSearchParams();
   if (b.from) params.set('from', b.from);
   if (b.to) params.set('to', b.to);
   if (activeFilter !== 'All') params.set('types', activeFilter);
-  return appendUrlScope(`/api/events/trends?${params}`, scope);
+  if (siteScope?.length) params.set('siteScope', siteScope.join(','));
+  return `/api/events/trends?${params}`;
 }
 
 function lagosDayKey(d: Date): string {
@@ -150,35 +150,30 @@ export default function IncidentTrendsPanel({
   customFrom,
   customTo,
   activeFilter = 'All',
-  siteScope = [],
-  assetIds = [],
+  siteScope = null,
 }: {
   dateRange: PageDateRange;
   customFrom: string;
   customTo: string;
   activeFilter?: EventFilterKey;
-  siteScope?: string[];
-  assetIds?: string[];
+  siteScope?: string[] | null;
 }) {
-  const scope = useMemo(
-    () => ({
-      assetIds: normalizeScopeKeys(assetIds),
-      siteScope: normalizeScopeKeys(siteScope),
-    }),
-    [assetIds.join(','), siteScope.join(',')],
-  );
-  const scopeKey = `${scope.assetIds.join(',')}|${scope.siteScope.join(',')}`;
-  const url = trendsUrl(dateRange, customFrom, customTo, activeFilter, scope);
+  const url = trendsUrl(dateRange, customFrom, customTo, activeFilter, siteScope);
   const [buckets, setBuckets] = useState<TrendBucket[]>(() => cachePeek<TrendsPayload>(url)?.buckets ?? []);
   const [loading, setLoading] = useState(() => !cachePeek(url));
   const [showTotal, setShowTotal] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    const nextUrl = trendsUrl(dateRange, customFrom, customTo, activeFilter, scope);
+    const nextUrl = trendsUrl(dateRange, customFrom, customTo, activeFilter, siteScope);
     const cached = cachePeek<TrendsPayload>(nextUrl);
-    setBuckets(cached?.buckets ?? []);
-    setLoading(!cached);
+    if (cached?.buckets) {
+      setBuckets(cached.buckets);
+      setLoading(false);
+    } else {
+      setBuckets([]);
+      setLoading(true);
+    }
     authCachedJson<TrendsPayload>(nextUrl, authFetch, {
       ttlMs: CACHE_TTL.safetySummary,
     })
@@ -189,7 +184,7 @@ export default function IncidentTrendsPanel({
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [dateRange, customFrom, customTo, activeFilter, scopeKey]);
+  }, [dateRange, customFrom, customTo, activeFilter, siteScope]);
 
   const trendData = useMemo(
     () => bucketsToTrendDays(buckets, dateRange, customFrom, customTo),

@@ -248,7 +248,7 @@ export default function SafetyIncidentModal({ notification: n, onClose }: Props)
                 </div>
 
                 <div style={{ fontSize: '11px', color: 'var(--cd-text-muted)', marginBottom: '4px' }}>
-                  <span style={{ fontWeight: '600' }}>Incidents (30 days):</span> {n.driver.incidents_last_30_days}
+                  <span style={{ fontWeight: '600' }}>Incidents (7 days):</span> {n.driver.incidents_last_30_days}
                 </div>
                 <div style={{ fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <span style={{ color: 'var(--cd-text-muted)', fontWeight: '600' }}>Trend:</span>

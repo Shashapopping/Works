@@ -1,4 +1,5 @@
 import type { FleetVehicle, LogEntry, TripDriver } from '../context/FleetContext';
+import { assessmentDriverKey } from './driverAssessment';
 
 export function makeScopedVehicleRegSet(vehicles: FleetVehicle[]) {
   return new Set(
@@ -77,6 +78,34 @@ export function filterTripDriversByVehicles(tripDrivers: TripDriver[], vehicles:
   return tripDrivers.filter(driver =>
     (driver.vehicles || []).some(reg => allowedRegs.has((reg || '').trim().toLowerCase())),
   );
+}
+
+/** Keep risk rollup rows for drivers tied to the scoped fleet (trips and/or asset id). */
+export function filterRiskDriversByVehicles<T extends {
+  driverId?: string | null;
+  driverName?: string;
+  assetId?: string | null;
+}>(riskRows: T[], tripDrivers: TripDriver[], vehicles: FleetVehicle[]): T[] {
+  if (!vehicles.length) return [];
+  const allowedIds = makeScopedVehicleIdSet(vehicles);
+  const allowedRegs = makeScopedVehicleRegSet(vehicles);
+  const driverKeys = new Set<string>();
+  for (const t of tripDrivers) {
+    const key = assessmentDriverKey(t.driverId, t.driverName);
+    if (key) driverKeys.add(key);
+    const nameKey = (t.driverName || '').trim();
+    if (nameKey) driverKeys.add(nameKey);
+  }
+  return riskRows.filter(row => {
+    const assetId = row.assetId != null ? String(row.assetId).trim() : '';
+    if (assetId && allowedIds.has(assetId)) return true;
+    const key = assessmentDriverKey(row.driverId, row.driverName);
+    if (key && driverKeys.has(key)) return true;
+    const nameKey = (row.driverName || '').trim();
+    if (nameKey && driverKeys.has(nameKey)) return true;
+    if (assetId && allowedRegs.has(assetId.toLowerCase())) return true;
+    return false;
+  });
 }
 
 export function filterDistanceAssetsByVehicles<T extends { regNo?: string | null; assetId?: string | null }>(

@@ -79,8 +79,8 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     name: 'Transporter',
     desc: 'Scoped to one or more transporter organizations — no fleet segment pages',
     permissions: [
-      'dashboard', 'fleet', 'assets', 'drivers', 'incidents', 'reports',
-      'trips', 'fuel-monitoring', 'fuel-consumption', 'maintenance',
+      'dashboard', 'fleet', 'assets', 'drivers', 'incidents', 'safety', 'reports',
+      'trips', 'fuel-monitoring', 'fuel-consumption', 'maintenance', 'utilization',
     ],
   },
 ];
