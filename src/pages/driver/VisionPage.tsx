@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Camera, Smartphone, Search, EyeOff } from 'lucide-react';
-import { authFetch } from '../../context/FleetContext';
+import { authFetch, useFleet } from '../../context/FleetContext';
 import { isActiveDriver, displayDriverName } from '../../lib/driverUtils';
 import MockNamesBadge from '../../components/MockNamesBadge';
-import { type KpiPeriodMode, type FatigueDriverRow, buildKpiUrl, defaultKpiCustomRange } from '../../lib/operationalKpi';
+import { type KpiPeriodMode, type FatigueDriverRow, buildUtilUrl, defaultKpiCustomRange } from '../../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../../lib/apiCache';
 import { useClientPagination } from '../../hooks/useClientPagination';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
@@ -27,24 +27,30 @@ function fmtTime(iso: string | null) {
 }
 
 export default function VisionPage() {
+  const { scopedAssetIds, siteFilterActive } = useFleet();
+  const kpiScope = useMemo(
+    () => ({ assetIds: siteFilterActive ? scopedAssetIds : [] }),
+    [siteFilterActive, scopedAssetIds.join(',')],
+  );
+  const kpiScopeKey = kpiScope.assetIds.join(',');
   const [period, setPeriod] = useState<KpiPeriodMode>('week');
   const [customRange, setCustomRange] = useState(defaultKpiCustomRange);
-  const initialUrl = buildKpiUrl('week', 'all');
+  const initialUrl = buildUtilUrl('week', 'all', undefined, undefined, kpiScope);
   const [drivers, setDrivers] = useState<FatigueDriverRow[]>(
-    () => scrubKpiDrivers(cachePeek<{ fatigue: { drivers: FatigueDriverRow[] } }>(CACHE_KEYS.kpi(initialUrl))?.fatigue.drivers ?? []),
+    () => scrubKpiDrivers(cachePeek<{ fatigue?: { drivers: FatigueDriverRow[] } }>(CACHE_KEYS.kpi(initialUrl))?.fatigue?.drivers ?? []),
   );
   const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.kpi(initialUrl)));
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 200);
 
   const fetchData = useCallback(async () => {
-    const url = buildKpiUrl(period, 'all', customRange.from, customRange.to);
+    const url = buildUtilUrl(period, 'all', customRange.from, customRange.to, kpiScope);
     const cacheKey = CACHE_KEYS.kpi(url);
-    const cached = cachePeek<{ fatigue: { drivers: FatigueDriverRow[] } }>(cacheKey);
-    if (cached) { setDrivers(scrubKpiDrivers(cached.fatigue.drivers)); setLoading(false); }
-    else setLoading(true);
+    const cached = cachePeek<{ fatigue?: { drivers: FatigueDriverRow[] } }>(cacheKey);
+    setDrivers(scrubKpiDrivers(cached?.fatigue?.drivers ?? []));
+    setLoading(!cached);
     try {
-      const next = await cachedFetchJson<{ fatigue: { drivers: FatigueDriverRow[] } }>(
+      const next = await cachedFetchJson<{ fatigue?: { drivers: FatigueDriverRow[] } }>(
         cacheKey, CACHE_TTL.kpi,
         async () => {
           const res = await authFetch(url);
@@ -52,10 +58,10 @@ export default function VisionPage() {
           return res.json();
         },
       );
-      if (next) setDrivers(scrubKpiDrivers(next.fatigue.drivers));
-    } catch { /* keep prior */ }
+      if (next) setDrivers(scrubKpiDrivers(next.fatigue?.drivers ?? []));
+    } catch { /* keep current-scope paint */ }
     finally { setLoading(false); }
-  }, [period, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, kpiScopeKey]);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
 
@@ -177,7 +183,7 @@ export default function VisionPage() {
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)' }}>{k.label}</div>
               <k.icon size={14} style={{ color: k.color, opacity: 0.75, flexShrink: 0, marginTop: 1 }} />
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{loading ? <SkelValue wide /> : k.value}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>{loading && drivers.length === 0 ? <SkelValue wide /> : k.value}</div>
             <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginTop: 2 }}>{k.hint}</div>
           </div>
         ))}

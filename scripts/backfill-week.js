@@ -11,7 +11,11 @@ dotenv.config();
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
-import { KPI_EVENT_IDS, serializeKpiLogEntry } from './kpi-constants.js';
+import {
+  extractMixEventSpeedKph,
+  isOverspeedLabel,
+  qualifiesAsOverspeed,
+} from './overspeed-filter.js';
 import {
   FUEL_PROBE_KNOWN_IDS,
   FUEL_PROBE_LOG_IDS,
@@ -22,11 +26,6 @@ import {
   safeParseJsonBigInt,
   getSinceTokenDaysAgo,
 } from './fuel-constants.js';
-import {
-  extractMixEventSpeedKph,
-  isOverspeedLabel,
-  qualifiesAsOverspeed,
-} from './overspeed-filter.js';
 
 const IDENTITY_URL = 'https://identity.za.mixtelematics.com/core/connect/token';
 const API_BASE = 'https://integrate.za.mixtelematics.com/api';
@@ -39,6 +38,8 @@ const WARNING_EVENT_TYPES = {
   '6454149451280645233': 'Harsh Acceleration',
   '-3890646499157906515': 'Overspeeding',
   '-4596269900191457380': 'Overspeed Tiered',
+  '-2864371101042705250': 'Road Speed Overspeeding',
+  '-8136342741862439235': 'Overspeeding — Excessive Speed',
   '4291175374538259638': 'Harsh Cornering',
 };
 
@@ -129,7 +130,7 @@ async function fetchEventsPage(token, sinceToken) {
 }
 
 async function fetchTripsPage(token, sinceToken) {
-  const url = `${API_BASE}/trips/groups/createdsince/organisation/${ORG_ID}/sincetoken/${sinceToken}/quantity/1000`;
+  const url = `${API_BASE}/trips/groups/createdsince/organisation/${ORG_ID}/sincetoken/${sinceToken}/quantity/1000?includeSubTrips=true`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
@@ -205,30 +206,6 @@ async function backfillEvents(token, drivers) {
             speed,
             speedLimit: e.SpeedLimit ?? e.ZoneSpeedLimit ?? e.SpeedLimitKilometresPerHour ?? null,
           }));
-        }
-      }
-
-      if (KPI_EVENT_IDS.has(typeId)) {
-        const key = eventId || `${typeId}:${e.AssetId}:${e.EventDateTime}`;
-        if (!kpiById.has(key)) {
-          const line = serializeKpiLogEntry(e, driverInfo(drivers, e.DriverId));
-          if (line) {
-            try {
-              const row = JSON.parse(line);
-              if (row.category === 'overspeed') {
-                const speed = row.speed ?? extractMixEventSpeedKph(e, null, { allowLiveFallback: false });
-                row.speed = speed;
-                if (!qualifiesAsOverspeed(row.label || row.category, speed, { requireSpeed: true })) {
-                  continue;
-                }
-                kpiById.set(key, JSON.stringify(row));
-              } else {
-                kpiById.set(key, line);
-              }
-            } catch {
-              kpiById.set(key, line);
-            }
-          }
         }
       }
 

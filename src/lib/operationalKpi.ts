@@ -1,6 +1,5 @@
 /**
- * Operational KPI helpers — utilization, availability, harsh braking,
- * overspeeding and fatigue management served by /api/kpi.
+ * Utilization helpers — drive / idle / engine-on from trips, served by /api/utilization.
  */
 
 export type KpiPeriodMode = 'day' | 'week' | 'month' | 'custom';
@@ -14,23 +13,12 @@ export interface KpiAssetRow {
   zone: string;
   assetClass: 'dumpTruck' | 'excavator' | 'other';
   engineHours: number;
+  drivingHours: number;
+  idleHours: number;
   tripCount: number;
   distanceKm: number;
-  loadedHours: number;
-  loadCount: number;
   utilizationPct: number | null;
   availabilityPct: number | null;
-  harshBrakingCount: number;
-  harshBrakingScore: number;
-  harshBrakingSharePct: number | null;
-  overspeedCount: number;
-  overspeedHours: number;
-  overspeedScore: number;
-  overspeedRatio: number | null;
-  yawningCount: number;
-  eyeClosingCount: number;
-  distractionCount: number;
-  phoneDistractionCount: number;
 }
 
 export interface FatigueDriverRow {
@@ -45,17 +33,6 @@ export interface FatigueDriverRow {
   vehicles: string[];
 }
 
-export interface FatigueEventRow {
-  eventId: string | null;
-  category: string;
-  label: string;
-  assetId: string | null;
-  regNo: string;
-  driverName: string;
-  eventTime: string;
-  speed: number | null;
-}
-
 export interface KpiData {
   generatedAt: string;
   period: { start: string; end: string };
@@ -64,35 +41,35 @@ export interface KpiData {
   summary: {
     assetCount: number;
     totalEngineHours: number;
-    totalLoadedHours: number;
+    totalDrivingHours: number;
+    totalIdleHours: number;
     totalDistanceKm: number;
     avgUtilizationPct: number | null;
     avgAvailabilityPct: number | null;
-    harshBrakingTotal: number;
-    overspeedTotal: number;
-    overspeedHoursTotal: number;
-    fatigueEventTotal: number;
-    yawningTotal: number;
   };
   assets: KpiAssetRow[];
-  fatigue: {
-    drivers: FatigueDriverRow[];
-    events: FatigueEventRow[];
-  };
 }
 
-export function buildKpiUrl(
+export function buildUtilUrl(
   mode: KpiPeriodMode,
   scope: KpiScope,
   customFrom?: string,
   customTo?: string,
+  options: { assetIds?: string[]; siteScope?: string[] } = {},
 ): string {
-  const scopeQ = `&scope=${scope}`;
-  if (mode === 'custom' && customFrom && customTo) {
-    return `/api/kpi?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}${scopeQ}`;
-  }
-  return `/api/kpi?period=${mode}${scopeQ}`;
+  const params = new URLSearchParams();
+  if (mode === 'custom' && customFrom && customTo) { params.set('from', customFrom); params.set('to', customTo); }
+  else { params.set('period', mode); }
+  params.set('scope', scope);
+  const assetIds = [...new Set((options.assetIds || []).map(id => id.trim()).filter(Boolean))].sort();
+  const siteScope = [...new Set((options.siteScope || []).map(site => site.trim()).filter(Boolean))].sort();
+  if (assetIds.length) params.set('assetIds', assetIds.join(','));
+  else if (siteScope.length) params.set('siteScope', siteScope.join(','));
+  return `/api/utilization?${params.toString()}`;
 }
+
+/** @deprecated Use buildUtilUrl */
+export const buildKpiUrl = buildUtilUrl;
 
 export const ASSET_CLASS_LABELS: Record<KpiAssetRow['assetClass'], string> = {
   dumpTruck: 'Dump Truck',

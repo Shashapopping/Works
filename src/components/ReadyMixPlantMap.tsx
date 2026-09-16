@@ -91,15 +91,16 @@ export default function ReadyMixPlantMap({
     if (!containerRef.current || mapRef.current) return;
     const map = L.map(containerRef.current, {
       zoomControl: false,
-      attributionControl: false,
+      attributionControl: true,
       scrollWheelZoom: true,
       touchZoom: true,
       dragging: true,
       doubleClickZoom: true,
       boxZoom: true,
     }).setView([6.55, 3.4], 10);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 18,
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: 'OpenStreetMap contributors',
+      maxZoom: 19,
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     layerRef.current = L.layerGroup().addTo(map);

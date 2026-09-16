@@ -54,7 +54,7 @@ export const SIDEBAR_NAV: NavGroup[] = [
       { path: '/incidents/audit', label: 'Audit', icon: ClipboardList },
     ],
   },
-  { path: '/operations/utilization', icon: Gauge, label: 'Utilization' },
+  { path: '/utilization', icon: Gauge, label: 'Utilization' },
   { path: '/tankers', icon: Truck, label: 'Bulk Tankers', accent: '#f59e0b' },
   {
     path: '/quarry',
@@ -181,7 +181,7 @@ export const ROUTE_WARM_URLS: Record<string, readonly string[]> = {
     '/api/roles',
     '/api/users',
   ],
-  '/operations/utilization': ['/api/kpi?period=week&scope=all'],
+  '/utilization': ['/api/utilization?period=week&scope=all'],
   '/safety': [
     '/api/safety/summary?range=30d',
     '/api/safety/summary?range=prev30d',
@@ -189,8 +189,8 @@ export const ROUTE_WARM_URLS: Record<string, readonly string[]> = {
   ],
   '/fuel/monitoring': ['/api/fuel/consumption?period=week&trips=0'],
   '/fuel/consumption': ['/api/fuel/consumption?period=week&trips=0'],
-  '/reports': ['/api/kpi?period=week&scope=all'],
-  '/quarry/kpi': ['/api/kpi?period=week&scope=quarry'],
+  '/reports': ['/api/utilization?period=week&scope=all'],
+  '/quarry/kpi': ['/api/utilization?period=week&scope=quarry'],
 };
 
 export function getParentPath(pathname: string): string | null {

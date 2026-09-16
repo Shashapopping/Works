@@ -6,11 +6,11 @@ import * as dotenv from 'dotenv'
 import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers, getEventTrends } from './scripts/mix-test.js'
 import { getAcknowledged, addAcknowledged, clearAcknowledged } from './scripts/db.js'
 import { handleEventsLogQuery } from './scripts/events-log-api.js'
-import { getFuelHistoryResponse } from './scripts/fuel-history-api.js'
+import { getFuelHistoryResponse, getFuelSeriesResponse } from './scripts/fuel-history-api.js'
 import { getFleetDataResponse } from './scripts/fleet-data-api.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
-import { computeKpi } from './scripts/kpi-engine.js'
+import { computeUtilization } from './scripts/util-engine.js'
 import { importWeekSeed } from './scripts/import-seed.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
 import { authExpressMiddleware } from './scripts/auth-http.js'
@@ -165,9 +165,14 @@ app.get('/api/events/log', (req, res) => {
       offset: req.query.offset,
       format: req.query.format,
       driver: req.query.driver,
-      q: req.query.q || req.query.search,
+      driverName: req.query.driverName,
+      q: req.query.q,
+      search: req.query.search,
       assetIds,
       siteScope: null,
+      range: req.query.range,
+      sites: req.query.sites,
+      excludeHidden: req.query.excludeHidden,
     }))
   } catch (err) {
     console.error('events/log failed:', err?.message || err)
@@ -210,7 +215,7 @@ app.get('/api/trips/session', (req, res) => {
 app.get('/api/driver-distance', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   const tripsParam = req.query.trips?.toString()
-  const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
+  const includeTrips = tripsParam === '1' || tripsParam === 'true'
   const summaryParam = req.query.summary?.toString()
   const summaryOnly = summaryParam === '1' || summaryParam === 'true' || summaryParam === 'totals'
   const summary = getDriverDistanceSummary({
@@ -220,6 +225,8 @@ app.get('/api/driver-distance', (req, res) => {
     to: req.query.to?.toString() || null,
     includeTrips,
     summaryOnly,
+    assetIds: req.query.assetIds?.toString() || null,
+    siteScope: req.query.siteScope?.toString() || req.query.sites?.toString() || null,
   })
   const includeJourneys = req.query.includeJourneys === '1' || req.query.includeJourneys === 'true'
   const slim = includeJourneys
@@ -345,12 +352,32 @@ app.get('/api/fuel/history', (req, res) => {
       period: req.query.period?.toString() || 'day',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
+      assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || req.query.sites?.toString() || null,
     }))
   } catch (err) {
     if (err?.statusCode === 400) return res.status(400).json({ error: err.message })
     res.status(500).end('Internal Server Error')
   }
 })
+
+// Fuel history — returns time-series per vehicle for day/week/month or custom from/to
+app.get('/api/fuel/series', (req, res) => {
+  if (!isAuthorized(req)) return unauthorized(res)
+  try {
+    res.json(getFuelSeriesResponse({
+      period: req.query.period?.toString() || 'day',
+      from: req.query.from?.toString() || null,
+      to: req.query.to?.toString() || null,
+      assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || req.query.sites?.toString() || null,
+    }))
+  } catch (err) {
+    if (err?.statusCode === 400) return res.status(400).json({ error: err.message })
+    res.status(500).end('Internal Server Error')
+  }
+})
+
 
 // Fuel consumption — asset/site metrics from fuel-history.log + trips.log
 app.get('/api/fuel/consumption', (req, res) => {
@@ -361,8 +388,16 @@ app.get('/api/fuel/consumption', (req, res) => {
     const to = req.query.to
     const site = req.query.site || null
     const tripsParam = req.query.trips?.toString()
-    const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
-    const data = computeConsumption({ period, from, to, siteFilter: site, includeTrips })
+    const includeTrips = tripsParam === '1' || tripsParam === 'true'
+    const data = computeConsumption({
+      period,
+      from,
+      to,
+      siteFilter: site,
+      assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || req.query.sites?.toString() || null,
+      includeTrips,
+    })
     const summaryParam = req.query.summary?.toString()
     const summaryOnly = summaryParam === '1' || summaryParam === 'true'
     res.json(summaryOnly ? {
@@ -379,15 +414,17 @@ app.get('/api/fuel/consumption', (req, res) => {
   }
 })
 
-// Operational KPIs — utilization, availability, harsh braking, overspeeding, fatigue
-app.get('/api/kpi', (req, res) => {
+// Utilization — drive / idle / engine-on from trips
+app.get('/api/utilization', (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    const data = computeKpi({
+    const data = computeUtilization({
       period: req.query.period || 'week',
       from: req.query.from,
       to: req.query.to,
-      scope: req.query.scope || 'quarry',
+      scope: req.query.scope || 'all',
+      assetIds: req.query.assetIds?.toString() || null,
+      siteScope: req.query.siteScope?.toString() || req.query.sites?.toString() || null,
     })
     const summaryParam = req.query.summary?.toString()
     const summaryOnly = summaryParam === '1' || summaryParam === 'true'

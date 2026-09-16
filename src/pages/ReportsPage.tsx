@@ -15,6 +15,7 @@ import { SkelTable, DataRegion } from '../components/data/DataBusy';
 import SiteScopeDropdown from '../components/SiteScopeDropdown';
 import { useAuth } from '../context/AuthContext';
 import { authFetch, useFleet } from '../context/FleetContext';
+import { appendUrlScope } from '../lib/siteScope';
 import {
   buildTabularReportBlob,
   exportTabularReport,
@@ -388,7 +389,17 @@ function MultiSelectDropdown({
 
 export default function ReportsPage() {
   const { user } = useAuth();
-  const { events: fleetEvents, vehicles, siteOptions, siteNameOptions } = useFleet();
+  const {
+    events: fleetEvents,
+    vehicles,
+    siteOptions,
+    siteNameOptions,
+    selectedSites,
+    setSelectedSites,
+    toggleSite,
+    scopedAssetIds,
+    siteFilterActive,
+  } = useFleet();
   const vehiclesRef = useRef(vehicles);
   const fleetEventsRef = useRef(fleetEvents);
   vehiclesRef.current = vehicles;
@@ -436,7 +447,6 @@ export default function ReportsPage() {
   const [selectedEventTypes, setSelectedEventTypes] = useState<Set<string>>(
     () => new Set(EVENT_TYPES),
   );
-  const [selectedSites, setSelectedSites] = useState<string[]>([]);
   const [dateRange, setDateRange] = useState<DateRange>('7days');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -464,6 +474,14 @@ export default function ReportsPage() {
     let cancelled = false;
 
     const load = async (silent = false) => {
+      if (siteFilterActive && scopedAssetIds.length === 0) {
+        if (!silent) {
+          setEntries([]);
+          setEventCensusTotal(0);
+          setLoading(false);
+        }
+        return;
+      }
       const { from, to } = getDateBounds(dateRange, fromDate, toDate);
       const params = new URLSearchParams();
       if (from) params.set('from', from);
@@ -472,11 +490,11 @@ export default function ReportsPage() {
       params.set('limit', String(EVENT_PREVIEW_LIMIT));
       if (selectedEventTypes.size > 0 && selectedEventTypes.size < EVENT_TYPES.length) {
         const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
-        if (ivmsTypes.length > 0) {
-          params.set('types', ivmsTypes.join(','));
-        }
+        if (ivmsTypes.length > 0) params.set('types', ivmsTypes.join(','));
       }
-      const url = `/api/events/log?${params}`;
+      const url = appendUrlScope(`/api/events/log?${params}`, {
+        assetIds: siteFilterActive ? scopedAssetIds : [],
+      });
       const applyData = (data: any) => {
         const veh = vehiclesRef.current;
         const rows = eventRowsFromPayload(data);
@@ -489,6 +507,8 @@ export default function ReportsPage() {
           applyData(cached);
           setLoading(false);
         } else {
+          setEntries([]);
+          setEventCensusTotal(0);
           setLoading(true);
         }
       }
@@ -521,14 +541,7 @@ export default function ReportsPage() {
       cancelled = true;
       stop();
     };
-  }, [dateRange, fromDate, toDate, selectedEventTypes]);
-
-  const toggleSite = (site: string) => {
-    setSelectedSites(prev => {
-      if (prev.includes(site)) return prev.filter(s => s !== site);
-      return [...prev, site];
-    });
-  };
+  }, [dateRange, fromDate, toDate, selectedEventTypes, selectedSites, scopedAssetIds.join(','), siteFilterActive]);
 
   const selectedSiteLabel = useMemo(
     () => selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions, 'All sites') ?? 'All sites',
@@ -536,18 +549,16 @@ export default function ReportsPage() {
   );
 
   const scopedVehicleRefs = useMemo(() => {
-    if (selectedSites.length === 0) return null;
-    const allowed = new Set(selectedSites);
+    if (!siteFilterActive) return null;
     const ids = new Set<string>();
     const regs = new Set<string>();
-    vehicles
-      .filter(v => allowed.has(reportSiteKeyFor(v.zone)) || allowed.has((v.site || '').trim()))
-      .forEach(v => {
-        if (v.id) ids.add(v.id.toString());
-        if (v.regNo) regs.add(v.regNo.trim().toLowerCase());
-      });
+    // vehicles from context are already header-filtered when siteFilterActive.
+    vehicles.forEach(v => {
+      if (v.id) ids.add(v.id.toString());
+      if (v.regNo) regs.add(v.regNo.trim().toLowerCase());
+    });
     return { ids, regs };
-  }, [selectedSites, vehicles]);
+  }, [siteFilterActive, vehicles]);
 
   const eventMatchesSelectedSite = (event: LogEntry) => {
     if (!scopedVehicleRefs) return true;
@@ -603,10 +614,12 @@ export default function ReportsPage() {
     );
 
   const vehicleMatchesSelectedSite = (vehicle: (typeof vehicles)[number]) => {
-    if (selectedSites.length === 0) return true;
-    const zoneKey = reportSiteKeyFor(vehicle.zone);
-    const siteKey = (vehicle.site || '').trim();
-    return selectedSites.includes(zoneKey) || (siteKey.length > 0 && selectedSites.includes(siteKey));
+    if (!siteFilterActive) return true;
+    const allowed = new Set(selectedSites.map(s => s.trim().toLowerCase()).filter(Boolean));
+    const zone = ((vehicle.zone || '').trim() || 'Unknown').toLowerCase();
+    const site = (vehicle.site || '').trim().toLowerCase();
+    const transporter = (vehicle.transporter || '').trim().toLowerCase();
+    return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
   };
 
   const repeatOffenderIds = useMemo(() => {

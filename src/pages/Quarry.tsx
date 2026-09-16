@@ -37,15 +37,23 @@ function fmtRatio(n: number | null | undefined) {
 }
 
 export default function Quarry() {
-  const { vehicles } = useFleet();
+  const { vehicles, selectedSites, scopedAssetIds, siteFilterActive } = useFleet();
   const {
     period, setPeriod, customRange, setCustomRange,
     assets: periodAssets, loading: historyLoading, label: periodLabel,
-  } = useSegmentPeriod('today');
+  } = useSegmentPeriod('today', {
+    assetIds: siteFilterActive ? scopedAssetIds : [],
+    enabled: !siteFilterActive || scopedAssetIds.length > 0,
+  });
   const fuelReq = useMemo(() => segmentPeriodToFuel(period, customRange), [period, customRange]);
-  const { data: fuelData, loading: fuelLoading } = useFuelConsumption(fuelReq.mode, fuelReq.custom);
-
   const fleet = useMemo(() => segmentVehicles(vehicles, 'quarry') as QuarryVehicle[], [vehicles]);
+  const { data: fuelData, loading: fuelLoading } = useFuelConsumption(
+    fuelReq.mode,
+    fuelReq.custom,
+    'ALL',
+    siteFilterActive ? scopedAssetIds : [],
+    !siteFilterActive || scopedAssetIds.length > 0,
+  );
   const haulAssets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
   const distanceKm = Math.round(haulAssets.reduce((s, a) => s + a.totalDistanceKm, 0));
   const activeHaulers = haulAssets.filter(a => a.totalDistanceKm > 0).length;

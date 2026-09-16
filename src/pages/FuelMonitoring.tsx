@@ -25,6 +25,11 @@ const STATUS_COLOR: Record<string, string> = {
 
 type QuarryVehicle = Vehicle & { zone?: string; fuelLevel?: { level: number } };
 
+function appendAssetScope(url: string, assetIds: string[]) {
+  if (!assetIds.length) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}assetIds=${encodeURIComponent(assetIds.join(','))}`;
+}
 function vehiclesForSite(vehicles: QuarryVehicle[], site: QuarrySiteKey) {
   return vehicles.filter(v => (v.zone || '').toUpperCase() === site);
 }
@@ -45,23 +50,29 @@ function KPICard({ label, value, sub, color, icon: Icon }: {
 }
 
 export default function FuelMonitoring() {
-  const { vehicles } = useFleet();
+  const { vehicles, selectedSites } = useFleet();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const linkedSite = searchParams.get('site')?.toUpperCase();
   const linkedAsset = searchParams.get('asset');
+  const quarryFromGlobal = selectedSites
+    .map(s => s.trim().toUpperCase())
+    .find((s): s is QuarrySiteKey => QUARRY_SITE_KEYS.includes(s as QuarrySiteKey));
   const initialSite = QUARRY_SITE_KEYS.includes(linkedSite as QuarrySiteKey)
     ? (linkedSite as QuarrySiteKey)
-    : 'QUARRY EWEKORO';
+    : (quarryFromGlobal || 'QUARRY EWEKORO');
   const [selectedSite, setSelectedSite] = useState<QuarrySiteKey>(initialSite);
   const [siteMenuOpen, setSiteMenuOpen] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(linkedAsset);
   const eventsPeriod: 'day' = 'day';
-  const eventsUrl = `/api/fuel/consumption?period=${eventsPeriod}&trips=0`;
-  const [fuelEvents, setFuelEvents] = useState<ConsumptionData | null>(
-    () => peekFuelConsumption(eventsUrl),
-  );
-  const [eventsLoading, setEventsLoading] = useState(() => !peekFuelConsumption(eventsUrl));
+  const [fuelEvents, setFuelEvents] = useState<ConsumptionData | null>(null);
+  const [eventsLoading, setEventsLoading] = useState(false);
+
+  useEffect(() => {
+    if (quarryFromGlobal && quarryFromGlobal !== selectedSite) {
+      setSelectedSite(quarryFromGlobal);
+    }
+  }, [quarryFromGlobal]);
 
   const quarryVehicles = useMemo(
     () => (vehicles as QuarryVehicle[]).filter(v => QUARRY_SITE_KEYS.includes((v.zone || '').toUpperCase() as QuarrySiteKey)),
@@ -74,6 +85,10 @@ export default function FuelMonitoring() {
   );
 
   const selectedVehicle = siteVehicles.find(v => v.id === selectedVehicleId) ?? null;
+  const siteAssetIds = useMemo(
+    () => siteVehicles.map(v => String(v.id)).filter(Boolean).sort(),
+    [siteVehicles],
+  );
   const siteColor = fuelZoneColor(selectedSite);
 
   useEffect(() => {
@@ -104,14 +119,18 @@ export default function FuelMonitoring() {
   const siteOnline = siteVehicles.filter(v => v.status !== 'Offline' && v.status !== 'Inactive').length;
 
   useEffect(() => {
+    if (siteAssetIds.length === 0) {
+      setFuelEvents(null);
+      setEventsLoading(false);
+      return;
+    }
     let cancelled = false;
-    const url = `/api/fuel/consumption?period=${eventsPeriod}&trips=0`;
+    const url = appendAssetScope(`/api/fuel/consumption?period=${eventsPeriod}&trips=0`, siteAssetIds);
     const cached = peekFuelConsumption(url);
     if (cached) {
       setFuelEvents(cached);
       setEventsLoading(false);
     } else {
-      setFuelEvents(null);
       setEventsLoading(true);
     }
 
@@ -134,7 +153,7 @@ export default function FuelMonitoring() {
       void load(true);
     }, eventsPeriod === 'day' ? 60_000 : 5 * 60_000);
     return () => { cancelled = true; stop(); };
-  }, [eventsPeriod]);
+  }, [eventsPeriod, siteAssetIds.join(',')]);
 
   const fuelEventsByAsset = useMemo(
     () => new Map((fuelEvents?.assets ?? []).map(a => [a.assetId, a])),
@@ -342,6 +361,7 @@ export default function FuelMonitoring() {
             selectedRegNo={selectedVehicle?.regNo ?? null}
             selectedAssetId={selectedVehicle?.id ?? null}
             zone={selectedSite}
+            assetIds={siteAssetIds}
           />
         </div>
       </div>

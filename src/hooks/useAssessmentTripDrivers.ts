@@ -7,18 +7,35 @@ import {
   periodDistanceSpec,
   type DriverPeriod,
 } from '../lib/driverAssessment';
+import { appendUrlScope, normalizeScopeKeys } from '../lib/siteScope';
+
+function scopedQuery(assetIds: string[] = [], siteScope: string[] = []) {
+  return appendUrlScope('', {
+    siteScope: normalizeScopeKeys(siteScope),
+    assetIds: normalizeScopeKeys(assetIds),
+  }).replace(/^\?/, '&');
+}
+
+/** Mirror appendUrlScope: assetIds first so cache keys match request URLs. */
+function scopedCacheSuffix(assetIds: string[] = [], siteScope: string[] = []) {
+  const scoped = normalizeScopeKeys(assetIds);
+  if (scoped.length) return ':assets:' + scoped.join(',');
+  const sites = normalizeScopeKeys(siteScope);
+  return sites.length ? ':sites:' + sites.join(',') : '';
+}
 
 /** v3: drop MiX Unknown from trips=0 vehicles[] (v2 payload crashed Drivers). */
 const ASSESSMENT_TRIPS_CACHE = `${CACHE_KEYS.driverAssessment}:v3`;
 
-async function loadAssessmentTrips(): Promise<TripDriver[] | null> {
+async function loadAssessmentTrips(assetIds: string[] = [], siteScope: string[] = []): Promise<TripDriver[] | null> {
   return cachedFetchJson<TripDriver[]>(
-    ASSESSMENT_TRIPS_CACHE,
+    ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope),
     CACHE_TTL.driverAssessment,
     async () => {
+      const q = scopedQuery(assetIds, siteScope);
       const [cur, last] = await Promise.all([
-        authCachedJson<any>('/api/driver-distance?range=30d&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
-        authCachedJson<any>('/api/driver-distance?range=prev30d&trips=0', authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
+        authCachedJson<any>('/api/driver-distance?range=30d&trips=0' + q, authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
+        authCachedJson<any>('/api/driver-distance?range=prev30d&trips=0' + q, authFetch, { ttlMs: CACHE_TTL.driverAssessment }),
       ]);
       const batches: TripDriver[][] = [];
       for (const data of [cur, last]) {
@@ -32,15 +49,21 @@ async function loadAssessmentTrips(): Promise<TripDriver[] | null> {
 
 async function loadPeriodTrips(
   period: DriverPeriod,
-  custom: { from: string; to: string },
+  custom: { from: string; to: string } | undefined,
   force = false,
+  assetIds: string[] = [],
+  siteScope: string[] = [],
 ): Promise<TripDriver[] | null> {
   const spec = periodDistanceSpec(period, custom);
   return cachedFetchJson<TripDriver[]>(
-    `driver:period:v3:${spec.url}`,
+    `driver:period:v3:${spec.url}${scopedCacheSuffix(assetIds, siteScope)}`,
     CACHE_TTL.driverAssessment,
     async () => {
-      const data = await authCachedJson<any>(spec.url, authFetch, {
+      const scopedUrl = appendUrlScope(spec.url, {
+        siteScope: normalizeScopeKeys(siteScope),
+        assetIds: normalizeScopeKeys(assetIds),
+      });
+      const data = await authCachedJson<any>(scopedUrl, authFetch, {
         ttlMs: CACHE_TTL.driverAssessment,
       });
       return mergeAssessmentTripDrivers([(Array.isArray(data?.drivers) ? data.drivers : []) as TripDriver[]]);
@@ -49,66 +72,84 @@ async function loadPeriodTrips(
   );
 }
 
-export function useAssessmentTripDrivers() {
+export function useAssessmentTripDrivers(
+  assetIds: string[] = [],
+  enabled = true,
+  siteScope: string[] = [],
+) {
+  const cacheKey = ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope);
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
-    () => cachePeek<TripDriver[]>(ASSESSMENT_TRIPS_CACHE) ?? [],
+    () => (enabled ? cachePeek<TripDriver[]>(cacheKey) : null) ?? [],
   );
-  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(ASSESSMENT_TRIPS_CACHE)?.length);
+  const [loading, setLoading] = useState(() => enabled && !cachePeek<TripDriver[]>(cacheKey)?.length);
 
   useEffect(() => {
-    let cancelled = false;
-    const cached = cachePeek<TripDriver[]>(ASSESSMENT_TRIPS_CACHE);
-    if (cached?.length) {
-      setTripDrivers(cached);
+    if (!enabled) {
+      setTripDrivers([]);
       setLoading(false);
-    } else {
-      setLoading(true);
+      return;
     }
+    let cancelled = false;
+    const key = ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope);
+    const cached = cachePeek<TripDriver[]>(key);
+    setTripDrivers(cached ?? []);
+    setLoading(!cached);
     (async () => {
       try {
-        const next = await loadAssessmentTrips();
+        const next = await loadAssessmentTrips(assetIds, siteScope);
         if (!cancelled && next) setTripDrivers(next);
-      } catch { /* keep prior */ }
+      } catch { /* keep prior for this scope only */ }
       finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [assetIds.join(','), siteScope.join(','), enabled]);
 
-  return { tripDrivers, loading: loading && tripDrivers.length === 0 };
+  return { tripDrivers, loading: enabled && loading };
 }
 
-export function usePeriodTripDrivers(period: DriverPeriod, custom?: { from: string; to: string }) {
+export function usePeriodTripDrivers(
+  period: DriverPeriod,
+  custom?: { from: string; to: string },
+  assetIds: string[] = [],
+  enabled = true,
+  siteScope: string[] = [],
+) {
   const spec = periodDistanceSpec(period, custom);
-  const cacheKey = spec.kind === 'assessment' ? ASSESSMENT_TRIPS_CACHE : `driver:period:v3:${spec.url}`;
+  const cacheKey = spec.kind === 'assessment'
+    ? ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope)
+    : `driver:period:v3:${spec.url}${scopedCacheSuffix(assetIds, siteScope)}`;
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
-    () => cachePeek<TripDriver[]>(cacheKey) ?? [],
+    () => (enabled ? cachePeek<TripDriver[]>(cacheKey) : null) ?? [],
   );
-  const [loading, setLoading] = useState(() => !cachePeek<TripDriver[]>(cacheKey));
+  const [loading, setLoading] = useState(() => enabled && !cachePeek<TripDriver[]>(cacheKey));
 
   useEffect(() => {
+    if (!enabled) {
+      setTripDrivers([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     const nextSpec = periodDistanceSpec(period, custom);
-    const key = nextSpec.kind === 'assessment' ? ASSESSMENT_TRIPS_CACHE : `driver:period:v3:${nextSpec.url}`;
+    const key = nextSpec.kind === 'assessment'
+      ? ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope)
+      : `driver:period:v3:${nextSpec.url}${scopedCacheSuffix(assetIds, siteScope)}`;
     const cached = cachePeek<TripDriver[]>(key);
-    if (cached) {
-      setTripDrivers(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
+    setTripDrivers(cached ?? []);
+    setLoading(!cached);
     (async () => {
       try {
-        const next = await loadPeriodTrips(period, custom, false);
+        const next = await loadPeriodTrips(period, custom, false, assetIds, siteScope);
         if (!cancelled && next) setTripDrivers(next);
-      } catch { /* keep prior */ }
+      } catch { /* keep prior for this scope only */ }
       finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [period, custom?.from, custom?.to]);
+  }, [period, custom?.from, custom?.to, assetIds.join(','), siteScope.join(','), enabled]);
 
-  return { tripDrivers, loading: loading && tripDrivers.length === 0 };
+  return { tripDrivers, loading: enabled && loading };
 }

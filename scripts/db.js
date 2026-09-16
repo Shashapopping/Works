@@ -7,6 +7,7 @@ import path from 'path';
 import { qualifiesAsOverspeed, isOverspeedLabel, OVERSPEED_MIN_KPH } from './overspeed-filter.js';
 
 let db;
+let upsertTripStmt = null;
 
 export function getDb() {
   if (!db) {
@@ -28,6 +29,7 @@ export function getDb() {
 
 export function closeDb() {
   if (db) {
+    upsertTripStmt = null;
     db.close();
     db = null;
   }
@@ -96,23 +98,6 @@ function initSchema() {
       driver_id TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS kpi_events (
-      event_id TEXT PRIMARY KEY,
-      timestamp TEXT,
-      asset_id TEXT,
-      driver_id TEXT,
-      driver_name TEXT,
-      event_type_id TEXT,
-      category TEXT,
-      label TEXT,
-      event_time TEXT,
-      end_time TEXT,
-      value REAL,
-      speed REAL,
-      latitude REAL,
-      longitude REAL
-    );
-
     CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
     CREATE INDEX IF NOT EXISTS idx_events_event_time ON events(event_time);
     CREATE INDEX IF NOT EXISTS idx_events_asset_id ON events(asset_id);
@@ -131,13 +116,10 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_trips_start_open ON trips(trip_start) WHERE trip_end IS NULL;
     CREATE INDEX IF NOT EXISTS idx_trips_asset_start_open ON trips(asset_id, trip_start) WHERE trip_end IS NULL;
     CREATE INDEX IF NOT EXISTS idx_trips_driver ON trips(driver_id);
+    CREATE INDEX IF NOT EXISTS idx_trips_driver_end ON trips(driver_id, trip_end);
+    CREATE INDEX IF NOT EXISTS idx_trips_driver_start ON trips(driver_id, trip_start);
     CREATE INDEX IF NOT EXISTS idx_fuel_asset_ts ON fuel_history(asset_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_fuel_ts ON fuel_history(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_kpi_event_time ON kpi_events(event_time);
-    CREATE INDEX IF NOT EXISTS idx_kpi_category ON kpi_events(category);
-    CREATE INDEX IF NOT EXISTS idx_kpi_asset ON kpi_events(asset_id);
-    CREATE INDEX IF NOT EXISTS idx_kpi_event_id ON kpi_events(event_id);
-    CREATE INDEX IF NOT EXISTS idx_kpi_label_event_time ON kpi_events(label, event_time);
 
     CREATE TABLE IF NOT EXISTS roles (
       id TEXT PRIMARY KEY,
@@ -337,6 +319,7 @@ function initSchema() {
   ensureColumn('trips', 'idle_hours', 'REAL');
   ensureColumn('trips', 'engine_hours', 'REAL');
   ensureColumn('trips', 'has_subtrips', 'INTEGER NOT NULL DEFAULT 0');
+  try { db.exec('DROP TABLE IF EXISTS kpi_events'); } catch { /* already gone */ }
   ensureColumn('report_automations', 'title', 'TEXT');
   ensureColumn('report_automations', 'report_config', 'TEXT');
   ensureColumn('report_automations', 'format', "TEXT NOT NULL DEFAULT 'csv'");
@@ -408,16 +391,12 @@ export function updateEventAddress(eventId, address) {
   if (!id || !address) return;
   const database = getDb();
   database.prepare('UPDATE events SET address = ? WHERE event_id = ?').run(address, id);
-  database.prepare('UPDATE panic SET address = ? WHERE event_id = ?').run(address, id);
 }
 
 export function isEventKnown(eventId) {
   const id = eventId?.toString();
-  const database = getDb();
-  return !!(
-    database.prepare('SELECT 1 FROM events WHERE event_id = ?').get(id) ||
-    database.prepare('SELECT 1 FROM panic WHERE event_id = ?').get(id)
-  );
+  if (!id) return false;
+  return !!getDb().prepare('SELECT 1 FROM events WHERE event_id = ?').get(id);
 }
 
 export function getAcknowledged() {
@@ -432,31 +411,6 @@ export function clearAcknowledged() {
   getDb().prepare('DELETE FROM acknowledged').run();
 }
 
-/**
- * Safety UI reads `events`, while Road Speed / Tiered often land only in `kpi_events`.
- * Promote qualifying rows (≥60 kph) into `events` so Behaviour Profile can see them.
- */
-let lastOverspeedPromoteMs = 0;
-export function promoteKpiOverspeedVariantsToEvents() {
-  const now = Date.now();
-  if (now - lastOverspeedPromoteMs < 60_000) return 0;
-  lastOverspeedPromoteMs = now;
-  const database = getDb();
-  const result = database.prepare(`
-    INSERT OR IGNORE INTO events
-      (event_id, timestamp, asset_id, driver_id, driver_name, driver_phone, event_type, label,
-       event_time, received_at, latitude, longitude, address, speed, speed_limit, type)
-    SELECT
-      event_id, timestamp, asset_id, driver_id, driver_name, NULL, event_type_id, label,
-      event_time, timestamp, latitude, longitude, NULL, speed, NULL, 'warning'
-    FROM kpi_events
-    WHERE label IN ('Road Speed Overspeeding', 'Overspeed Tiered')
-      AND speed IS NOT NULL
-      AND speed >= 60
-  `).run();
-  return result.changes || 0;
-}
-
 function normalizeAssetIds(assetIds) {
   if (assetIds == null) return null;
   const ids = [...new Set(
@@ -467,8 +421,71 @@ function normalizeAssetIds(assetIds) {
   return ids;
 }
 
+/** SQLite variable-safe chunk size for asset_id IN (...). */
+export const ASSET_ID_CHUNK = 80;
+
+/**
+ * Run a query once per asset-id chunk (or once unscoped when assetIds is null).
+ * `fn(chunkIds|null)` must return an array; results are concatenated.
+ */
+export function queryByAssetIdChunks(assetIds, fn) {
+  const ids = normalizeAssetIds(assetIds);
+  if (!ids) return fn(null) || [];
+  if (ids.length === 0) return [];
+  if (ids.length <= ASSET_ID_CHUNK) return fn(ids) || [];
+  const out = [];
+  for (let i = 0; i < ids.length; i += ASSET_ID_CHUNK) {
+    const part = fn(ids.slice(i, i + ASSET_ID_CHUNK));
+    if (Array.isArray(part) && part.length) out.push(...part);
+  }
+  return out;
+}
+
+function pushTripAssetFilter(conditions, params, assetIds) {
+  const ids = normalizeAssetIds(assetIds);
+  if (!ids) return { empty: false };
+  if (ids.length === 0) return { empty: true };
+  // Prefer TEMP-table scope for large lists so GROUP BY queries stay one-shot.
+  if (ids.length > ASSET_ID_CHUNK) {
+    const database = getDb();
+    database.exec('CREATE TEMP TABLE IF NOT EXISTS tmp_scope_assets (asset_id TEXT PRIMARY KEY)');
+    database.prepare('DELETE FROM tmp_scope_assets').run();
+    const ins = database.prepare('INSERT OR IGNORE INTO tmp_scope_assets (asset_id) VALUES (?)');
+    const tx = database.transaction((list) => {
+      for (const id of list) ins.run(id);
+    });
+    tx(ids);
+    conditions.push('asset_id IN (SELECT asset_id FROM tmp_scope_assets)');
+    return { empty: false };
+  }
+  conditions.push(`asset_id IN (${ids.map(() => '?').join(',')})`);
+  params.push(...ids);
+  return { empty: false };
+}
+
+/** Shared asset-scope binder for events/fuel/aggregates (chunks or TEMP table). */
+export function pushAssetIdScope(conditions, params, assetIds, col = 'asset_id') {
+  if (col === 'asset_id') return pushTripAssetFilter(conditions, params, assetIds);
+  const ids = normalizeAssetIds(assetIds);
+  if (!ids) return { empty: false };
+  if (ids.length === 0) return { empty: true };
+  if (ids.length > ASSET_ID_CHUNK) {
+    const database = getDb();
+    database.exec('CREATE TEMP TABLE IF NOT EXISTS tmp_scope_assets (asset_id TEXT PRIMARY KEY)');
+    database.prepare('DELETE FROM tmp_scope_assets').run();
+    const ins = database.prepare('INSERT OR IGNORE INTO tmp_scope_assets (asset_id) VALUES (?)');
+    const tx = database.transaction((list) => {
+      for (const id of list) ins.run(id);
+    });
+    tx(ids);
+    conditions.push(`${col} IN (SELECT asset_id FROM tmp_scope_assets)`);
+    return { empty: false };
+  }
+  conditions.push(`${col} IN (${ids.map(() => '?').join(',')})`);
+  params.push(...ids);
+  return { empty: false };
+}
 export function getAllEvents(filters = {}) {
-  promoteKpiOverspeedVariantsToEvents();
   const database = getDb();
   const { from, to, types, limit } = filters;
   const unbounded = limit === null;
@@ -478,21 +495,23 @@ export function getAllEvents(filters = {}) {
   const offset = Math.max(Number(filters.offset) || 0, 0);
   const driver = filters.driver || null;
   const assetIds = normalizeAssetIds(filters.assetIds);
+  const excludeHidden = filters.excludeHidden === true || filters.excludeHidden === '1' || filters.excludeHidden === 'true';
+  const acknowledgedIds = excludeHidden ? getAcknowledged() : [];
 
   const conditions = [];
   const params = [];
   if (from) { conditions.push('event_time >= ?'); params.push(from); }
   if (to) { conditions.push('event_time <= ?'); params.push(to); }
-  if (assetIds) {
-    if (assetIds.length === 0) return [];
-    conditions.push(`asset_id IN (${assetIds.map(() => '?').join(',')})`);
-    params.push(...assetIds);
-  }
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) return [];
   if (types && types.length > 0) {
     conditions.push(`label IN (${types.map(() => '?').join(', ')})`);
     params.push(...types);
   }
   if (driver) { conditions.push('driver_name = ?'); params.push(driver); }
+  if (acknowledgedIds.length) {
+    conditions.push(`event_id NOT IN (${acknowledgedIds.map(() => '?').join(',')})`);
+    params.push(...acknowledgedIds);
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const limitClause = parsedLimit == null
@@ -503,92 +522,110 @@ export function getAllEvents(filters = {}) {
     `SELECT * FROM events ${where} ORDER BY event_time DESC ${limitClause}`,
   ).all(...params);
 
-  const panicConditions = [];
-  const panicParams = [];
-  if (from) { panicConditions.push('event_time >= ?'); panicParams.push(from); }
-  if (to) { panicConditions.push('event_time <= ?'); panicParams.push(to); }
-  if (driver) { panicConditions.push('driver_name = ?'); panicParams.push(driver); }
-  const panicWhere = panicConditions.length ? `WHERE ${panicConditions.join(' AND ')}` : '';
-  const includePanic = !types || types.length === 0 || types.includes('Panic');
-  const panics = includePanic
-    ? database.prepare(
-      `SELECT * FROM panic ${panicWhere} ORDER BY event_time DESC ${limitClause}`,
-    ).all(...panicParams)
-    : [];
-
-  // Backfill speed on older overspeed rows from kpi_events when events.speed is null
-  const overspeedMissingSpeed = events.filter(
-    e => isOverspeedLabel(e.label) && (e.speed == null || e.speed === ''),
-  );
-  if (overspeedMissingSpeed.length > 0) {
-    const lookup = database.prepare('SELECT speed FROM kpi_events WHERE event_id = ?');
-    for (const e of overspeedMissingSpeed) {
-      const row = lookup.get(e.event_id?.toString());
-      if (row && row.speed != null) e.speed = row.speed;
-    }
-  }
-
   const filteredEvents = events.filter(e => {
     if (!isOverspeedLabel(e.label)) return true;
-    // After kpi speed backfill: only keep overspeeds with a verified ≥60 kph reading
     return qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: false });
   });
 
-  return [...filteredEvents, ...panics].sort((a, b) => {
-    const aTime = a.event_time || a.timestamp || '';
-    const bTime = b.event_time || b.timestamp || '';
-    return bTime.localeCompare(aTime);
-  });
+  return filteredEvents;
 }
 
 /** Accept slim MiX trip or excel/db snake_case row. */
+const UPSERT_TRIP_SQL = `
+  INSERT INTO trips (
+    trip_id, asset_id, driver_id, trip_start, trip_end,
+    distance_km, driving_time, duration, max_speed_kph, source,
+    driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
+  ) VALUES (
+    @trip_id, @asset_id, @driver_id, @trip_start, @trip_end,
+    @distance_km, @driving_time, @duration, @max_speed_kph, @source,
+    @driving_hours, @standing_hours, @idle_hours, @engine_hours, @has_subtrips
+  )
+  ON CONFLICT(trip_id) DO UPDATE SET
+    asset_id = excluded.asset_id,
+    driver_id = excluded.driver_id,
+    trip_start = excluded.trip_start,
+    trip_end = excluded.trip_end,
+    distance_km = excluded.distance_km,
+    driving_time = excluded.driving_time,
+    duration = excluded.duration,
+    max_speed_kph = excluded.max_speed_kph,
+    source = excluded.source,
+    driving_hours = excluded.driving_hours,
+    standing_hours = excluded.standing_hours,
+    idle_hours = excluded.idle_hours,
+    engine_hours = excluded.engine_hours,
+    has_subtrips = excluded.has_subtrips
+`;
+
+function getUpsertTripStmt() {
+  if (!upsertTripStmt) upsertTripStmt = getDb().prepare(UPSERT_TRIP_SQL);
+  return upsertTripStmt;
+}
+
+function tripMetricBindings(row) {
+  const drivingTime = row.driving_time ?? row.DrivingTime ?? row.drivingTimeSeconds ?? null;
+  const drivingHours = row.driving_hours ?? row.drivingHours ?? null;
+  const standingHours = row.standing_hours ?? row.standingHours ?? null;
+  const idleHours = row.idle_hours ?? row.idleHours ?? null;
+  const engineHours = row.engine_hours ?? row.engineHours ?? null;
+  const hasSubtrips = row.has_subtrips ?? row.hasSubTrips ?? 0;
+  return {
+    driving_time: drivingTime,
+    duration: row.duration ?? row.Duration ?? row.durationSeconds ?? null,
+    driving_hours: drivingHours != null ? Number(drivingHours) : (drivingTime != null ? Number(drivingTime) / 3600 : null),
+    standing_hours: standingHours != null ? Number(standingHours) : null,
+    idle_hours: idleHours != null ? Number(idleHours) : null,
+    engine_hours: engineHours != null ? Number(engineHours) : null,
+    has_subtrips: hasSubtrips ? 1 : 0,
+  };
+}
+
 export function upsertTrip(row, source = 'mix') {
   const tripId = (row.trip_id ?? row.TripId ?? row.tripId)?.toString();
   if (!tripId) return false;
 
   const tripStart = row.trip_start ?? row.TripStart ?? row.tripStart ?? null;
   const tripEnd = row.trip_end ?? row.TripEnd ?? row.tripEnd ?? null;
-  const drivingTime = row.driving_time ?? row.DrivingTime ?? row.drivingTimeSeconds ?? null;
+  const metrics = tripMetricBindings(row);
 
-  getDb().prepare(`
-    INSERT INTO trips (
-      trip_id, asset_id, driver_id, trip_start, trip_end,
-      distance_km, driving_time, duration, max_speed_kph, source
-    ) VALUES (
-      @trip_id, @asset_id, @driver_id, @trip_start, @trip_end,
-      @distance_km, @driving_time, @duration, @max_speed_kph, @source
-    )
-    ON CONFLICT(trip_id) DO UPDATE SET
-      asset_id = excluded.asset_id,
-      driver_id = excluded.driver_id,
-      trip_start = excluded.trip_start,
-      trip_end = excluded.trip_end,
-      distance_km = excluded.distance_km,
-      driving_time = excluded.driving_time,
-      duration = excluded.duration,
-      max_speed_kph = excluded.max_speed_kph,
-      source = excluded.source
-  `).run({
+  getUpsertTripStmt().run({
     trip_id: tripId,
     asset_id: (row.asset_id ?? row.AssetId ?? row.assetId)?.toString?.() ?? row.asset_id ?? null,
     driver_id: (row.driver_id ?? row.DriverId ?? row.driverId)?.toString?.() ?? row.driver_id ?? null,
     trip_start: tripStart,
     trip_end: tripEnd,
     distance_km: Number(row.distance_km ?? row.DistanceKilometers ?? row.distanceKm ?? 0) || 0,
-    driving_time: drivingTime,
-    duration: row.duration ?? row.Duration ?? row.durationSeconds ?? null,
     max_speed_kph: row.max_speed_kph ?? row.MaxSpeedKilometersPerHour ?? row.maxSpeedKph ?? null,
     source: row.source ?? source,
+    ...metrics,
   });
   return true;
 }
 
 export function upsertTrips(rows, source = 'mix') {
   if (!rows?.length) return 0;
+  const stmt = getUpsertTripStmt();
   const tx = getDb().transaction((list) => {
     let n = 0;
     for (const row of list) {
-      if (upsertTrip(row, source)) n += 1;
+      const tripId = (row.trip_id ?? row.TripId ?? row.tripId)?.toString();
+      if (!tripId) continue;
+      const tripStart = row.trip_start ?? row.TripStart ?? row.tripStart ?? null;
+      const tripEnd = row.trip_end ?? row.TripEnd ?? row.tripEnd ?? null;
+      const metrics = tripMetricBindings(row);
+      stmt.run({
+        trip_id: tripId,
+        asset_id: (row.asset_id ?? row.AssetId ?? row.assetId)?.toString?.() ?? row.asset_id ?? null,
+        driver_id: (row.driver_id ?? row.DriverId ?? row.driverId)?.toString?.() ?? row.driver_id ?? null,
+        trip_start: tripStart,
+        trip_end: tripEnd,
+        distance_km: Number(row.distance_km ?? row.DistanceKilometers ?? row.distanceKm ?? 0) || 0,
+        max_speed_kph: row.max_speed_kph ?? row.MaxSpeedKilometersPerHour ?? row.maxSpeedKph ?? null,
+        source: row.source ?? source,
+        ...metrics,
+      });
+      n += 1;
     }
     return n;
   });
@@ -614,6 +651,11 @@ function mapTripRow(row) {
     DrivingTime: row.driving_time,
     Duration: row.duration,
     MaxSpeedKilometersPerHour: row.max_speed_kph,
+    drivingHours: row.driving_hours,
+    standingHours: row.standing_hours,
+    idleHours: row.idle_hours,
+    engineHours: row.engine_hours,
+    hasSubTrips: !!row.has_subtrips,
   };
 }
 
@@ -633,7 +675,8 @@ export function getTripsInRange(startIso, endIso, assetIds = null) {
   if (!ids) {
     return db.prepare(`
       SELECT trip_id, asset_id, driver_id, trip_start, trip_end,
-             distance_km, driving_time, duration, max_speed_kph
+             distance_km, driving_time, duration, max_speed_kph,
+             driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
       FROM trips
       WHERE (
         (trip_end IS NOT NULL AND trip_end >= ? AND trip_end < ?)
@@ -650,7 +693,8 @@ export function getTripsInRange(startIso, endIso, assetIds = null) {
     const placeholders = chunk.map(() => '?').join(',');
     const rows = db.prepare(`
       SELECT trip_id, asset_id, driver_id, trip_start, trip_end,
-             distance_km, driving_time, duration, max_speed_kph
+             distance_km, driving_time, duration, max_speed_kph,
+             driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
       FROM trips
       WHERE asset_id IN (${placeholders})
         AND (
@@ -704,98 +748,43 @@ export function insertFuelReadings(entries) {
 }
 
 /** CamelCase rows for existing fuel APIs / consumption engine. */
-export function getFuelHistory({ fromIso = null, toIso = null, eventType = null } = {}) {
-  const conditions = [];
-  const params = [];
-  if (fromIso) { conditions.push('timestamp >= ?'); params.push(fromIso); }
-  if (toIso) { conditions.push('timestamp <= ?'); params.push(toIso); }
-  if (eventType) {
-    if (eventType === '5min_ticker') {
-      conditions.push("(event_type = ? OR event_type IS NULL OR event_type = '')");
-      params.push(eventType);
-    } else {
-      conditions.push('event_type = ?');
-      params.push(eventType);
+export function getFuelHistory({ fromIso = null, toIso = null, eventType = null, assetIds = null } = {}) {
+  const run = (chunkIds) => {
+    const conditions = [];
+    const params = [];
+    if (fromIso) { conditions.push('timestamp >= ?'); params.push(fromIso); }
+    if (toIso) { conditions.push('timestamp <= ?'); params.push(toIso); }
+    if (chunkIds) {
+      conditions.push(`asset_id IN (${chunkIds.map(() => '?').join(',')})`);
+      params.push(...chunkIds);
     }
+    if (eventType) {
+      if (eventType === '5min_ticker') {
+        conditions.push("(event_type = ? OR event_type IS NULL OR event_type = '')");
+        params.push(eventType);
+      } else {
+        conditions.push('event_type = ?');
+        params.push(eventType);
+      }
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    return getDb().prepare(
+      `SELECT asset_id, timestamp, level, event_type, event_id, driver_id
+       FROM fuel_history ${where} ORDER BY timestamp ASC`,
+    ).all(...params).map(r => ({
+      assetId: r.asset_id,
+      timestamp: r.timestamp,
+      level: r.level,
+      eventType: r.event_type || '5min_ticker',
+      eventId: r.event_id,
+      driverId: r.driver_id,
+    }));
+  };
+  const rows = queryByAssetIdChunks(assetIds, run);
+  if (normalizeAssetIds(assetIds)?.length > ASSET_ID_CHUNK) {
+    rows.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
   }
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const rows = getDb().prepare(
-    `SELECT asset_id, timestamp, level, event_type, event_id, driver_id
-     FROM fuel_history ${where} ORDER BY timestamp ASC`,
-  ).all(...params);
-  return rows.map(r => ({
-    assetId: r.asset_id,
-    timestamp: r.timestamp,
-    level: r.level,
-    eventType: r.event_type || '5min_ticker',
-    eventId: r.event_id,
-    driverId: r.driver_id,
-  }));
-}
-
-export function insertKpiEvent(entry) {
-  const eventId = entry.eventId?.toString();
-  if (!eventId) return false;
-  getDb().prepare(`
-    INSERT OR IGNORE INTO kpi_events
-    (event_id, timestamp, asset_id, driver_id, driver_name, event_type_id, category, label, event_time, end_time, value, speed, latitude, longitude)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    eventId,
-    entry.timestamp || null,
-    entry.assetId?.toString() || null,
-    entry.driverId?.toString() || null,
-    entry.driverName || null,
-    entry.eventTypeId?.toString() || null,
-    entry.category || null,
-    entry.label || null,
-    entry.eventTime || null,
-    entry.endTime || null,
-    entry.value ?? null,
-    entry.speed ?? null,
-    entry.latitude ?? null,
-    entry.longitude ?? null,
-  );
-  return true;
-}
-
-export function insertKpiEvents(entries) {
-  if (!entries?.length) return 0;
-  const tx = getDb().transaction((list) => {
-    let n = 0;
-    for (const e of list) {
-      if (insertKpiEvent(e)) n += 1;
-    }
-    return n;
-  });
-  return tx(entries);
-}
-
-export function getKpiEvents({ fromIso = null, toIso = null } = {}) {
-  const conditions = [];
-  const params = [];
-  if (fromIso) { conditions.push('COALESCE(event_time, timestamp) >= ?'); params.push(fromIso); }
-  if (toIso) { conditions.push('COALESCE(event_time, timestamp) <= ?'); params.push(toIso); }
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const rows = getDb().prepare(
-    `SELECT * FROM kpi_events ${where} ORDER BY COALESCE(event_time, timestamp) ASC`,
-  ).all(...params);
-  return rows.map(r => ({
-    eventId: r.event_id,
-    timestamp: r.timestamp,
-    assetId: r.asset_id,
-    driverId: r.driver_id,
-    driverName: r.driver_name,
-    eventTypeId: r.event_type_id,
-    category: r.category,
-    label: r.label,
-    eventTime: r.event_time,
-    endTime: r.end_time,
-    value: r.value,
-    speed: r.speed,
-    latitude: r.latitude,
-    longitude: r.longitude,
-  }));
+  return rows;
 }
 
 /**
@@ -806,7 +795,6 @@ export function pruneFleetHistory({
   trips = 45,
   events = 45,
   fuel = 45,
-  kpi = 45,
 } = {}) {
   const database = getDb();
   const cut = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -814,7 +802,6 @@ export function pruneFleetHistory({
   const tripCut = cut(trips);
   const eventCut = cut(events);
   const fuelCut = cut(fuel);
-  const kpiCut = cut(kpi);
 
   const tripsDeleted = database.prepare(`
     DELETE FROM trips
@@ -829,30 +816,17 @@ export function pruneFleetHistory({
       AND COALESCE(event_time, timestamp) < ?
   `).run(eventCut).changes;
 
-  const panicDeleted = database.prepare(`
-    DELETE FROM panic
-    WHERE COALESCE(event_time, timestamp) IS NOT NULL
-      AND COALESCE(event_time, timestamp) < ?
-  `).run(eventCut).changes;
-
   const fuelDeleted = database.prepare(`
     DELETE FROM fuel_history WHERE timestamp < ?
   `).run(fuelCut).changes;
-
-  const kpiDeleted = database.prepare(`
-    DELETE FROM kpi_events
-    WHERE COALESCE(event_time, timestamp) IS NOT NULL
-      AND COALESCE(event_time, timestamp) < ?
-  `).run(kpiCut).changes;
 
   try { database.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
   try { database.exec('PRAGMA optimize'); } catch { /* ignore */ }
 
   return {
     trips: tripsDeleted,
-    events: eventsDeleted + panicDeleted,
+    events: eventsDeleted,
     fuel: fuelDeleted,
-    kpi: kpiDeleted,
   };
 }
 
@@ -878,7 +852,12 @@ export function loadTripMetricsInRange(fromIso, toIso) {
            trip_end AS tripEnd,
            distance_km AS distanceKm,
            driving_time AS drivingTime,
-           duration AS duration
+           duration AS duration,
+           driving_hours AS drivingHours,
+           standing_hours AS standingHours,
+           idle_hours AS idleHours,
+           engine_hours AS engineHours,
+           has_subtrips AS hasSubTrips
     FROM trips
     ${where}
   `).all(...params);
@@ -935,15 +914,16 @@ export function loadLastDriverIdByAsset(fromIso, toIso) {
 }
 
 /** Pre-aggregated trip rollups by asset (SQL GROUP BY). */
-export function loadTripRollupsByAsset(fromIso, toIso) {
+export function loadTripRollupsByAsset(fromIso, toIso, assetIds = null) {
   const database = getDb();
   const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) return [];
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   return database.prepare(`
     SELECT asset_id AS assetId,
            COUNT(*) AS tripCount,
            COALESCE(SUM(distance_km), 0) AS totalDistanceKm,
-           COALESCE(SUM(COALESCE(driving_time, duration, 0)), 0) / 3600.0 AS totalDrivingHours,
+           COALESCE(SUM(COALESCE(driving_time, 0)), 0) / 3600.0 AS totalDrivingHours,
            MAX(COALESCE(trip_end, trip_start)) AS lastEndedAt
     FROM trips
     ${where}
@@ -952,15 +932,16 @@ export function loadTripRollupsByAsset(fromIso, toIso) {
 }
 
 /** Pre-aggregated trip rollups by driver. */
-export function loadTripRollupsByDriver(fromIso, toIso) {
+export function loadTripRollupsByDriver(fromIso, toIso, assetIds = null) {
   const database = getDb();
   const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) return [];
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   return database.prepare(`
     SELECT driver_id AS driverId,
            COUNT(*) AS tripCount,
            COALESCE(SUM(distance_km), 0) AS totalDistanceKm,
-           COALESCE(SUM(COALESCE(driving_time, duration, 0)), 0) / 3600.0 AS totalDrivingHours
+           COALESCE(SUM(COALESCE(driving_time, 0)), 0) / 3600.0 AS totalDrivingHours
     FROM trips
     ${where}
     GROUP BY driver_id
@@ -968,9 +949,10 @@ export function loadTripRollupsByDriver(fromIso, toIso) {
 }
 
 /** Distinct driver ↔ asset pairs (for site-scope vehicle matching on trips=0 path). */
-export function loadTripDriverAssets(fromIso, toIso) {
+export function loadTripDriverAssets(fromIso, toIso, assetIds = null) {
   const database = getDb();
   const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) return [];
   conditions.push(`driver_id IS NOT NULL`);
   conditions.push(`driver_id != ''`);
   conditions.push(`asset_id IS NOT NULL`);
@@ -983,16 +965,20 @@ export function loadTripDriverAssets(fromIso, toIso) {
   `).all(...params);
 }
 
-export function countTripsInRange(fromIso, toIso) {
+export function countTripsInRange(fromIso, toIso, assetIds = null) {
   const database = getDb();
   const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) return 0;
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   return database.prepare(`SELECT COUNT(*) AS c FROM trips ${where}`).get(...params)?.c || 0;
 }
 
-export function loadTripTotalsInRange(fromIso, toIso) {
+export function loadTripTotalsInRange(fromIso, toIso, assetIds = null) {
   const database = getDb();
   const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) {
+    return { rawTripCount: 0, totalDistanceKm: 0, assetCount: 0, driverCount: 0 };
+  }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   return database.prepare(`
     WITH asset_rollups AS (

@@ -1,6 +1,6 @@
 import { authFetch } from '../../context/FleetContext';
 import type { LogEntry } from '../reportExport';
-import { buildKpiUrl, type KpiData } from '../operationalKpi';
+import { buildUtilUrl, type KpiData } from '../operationalKpi';
 import type { ReportType, TabularReport } from '../reportTypes';
 import { reportTypeLabel } from '../reportTypes';
 import { buildEventReport } from './buildEventReport';
@@ -54,8 +54,8 @@ async function fetchKpi(fromIso: string | null, toIso: string | null): Promise<K
   const fromDay = fromIso ? fromIso.slice(0, 10) : undefined;
   const toDay = toIso ? toIso.slice(0, 10) : undefined;
   const url = fromDay && toDay
-    ? buildKpiUrl('custom', 'all', fromDay, toDay)
-    : buildKpiUrl('week', 'all');
+    ? buildUtilUrl('custom', 'all', fromDay, toDay)
+    : buildUtilUrl('week', 'all');
   const res = await authFetch(url);
   if (!res.ok) return null;
   return res.json();

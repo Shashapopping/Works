@@ -1,7 +1,7 @@
 /**
  * SQL census for facts (score, incident totals, risk). Never returns event rows.
  */
-import { getDb } from './db.js';
+import { getAcknowledged, getDb, pushAssetIdScope } from './db.js';
 import { OVERSPEED_MIN_KPH } from './overspeed-filter.js';
 
 export const SCORING_LABELS = [
@@ -50,12 +50,18 @@ function overspeedKeepSql(labelCol = 'label', speedCol = 'speed') {
 export function countMatchingEvents(filters = {}) {
   const database = getDb();
   const { from, to, types, driver } = filters;
+  const excludeHidden = filters.excludeHidden === true || filters.excludeHidden === '1' || filters.excludeHidden === 'true';
+  const hiddenIds = excludeHidden ? getAcknowledged() : [];
   const { conditions, params } = rangeConditions(from, to);
   const assetFilter = pushAssetIdFilter(conditions, params, filters.assetIds);
   if (assetFilter.empty) return 0;
   if (driver) {
     conditions.push('driver_name = ?');
     params.push(driver);
+  }
+  if (hiddenIds.length) {
+    conditions.push(`event_id NOT IN (${hiddenIds.map(() => '?').join(',')})`);
+    params.push(...hiddenIds);
   }
   const includeEvents = !types || types.length === 0 || types.some(t => t && t !== 'Panic');
   const includePanic = !types || types.length === 0 || types.includes('Panic');
@@ -78,29 +84,13 @@ export function countMatchingEvents(filters = {}) {
 
   let panicN = 0;
   if (includePanic) {
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    panicN = database.prepare(`SELECT COUNT(*) n FROM panic ${where}`).get(...params).n;
+    panicN = 0;
   }
   return eventsN + panicN;
 }
 
-function normalizeAssetIds(assetIds) {
-  if (assetIds == null) return null;
-  const ids = [...new Set(
-    (Array.isArray(assetIds) ? assetIds : String(assetIds).split(','))
-      .map(id => String(id || '').trim())
-      .filter(Boolean),
-  )];
-  return ids;
-}
-
 function pushAssetIdFilter(conditions, params, assetIds, col = 'asset_id') {
-  const ids = normalizeAssetIds(assetIds);
-  if (!ids) return { empty: false };
-  if (ids.length === 0) return { empty: true };
-  conditions.push(`${col} IN (${ids.map(() => '?').join(',')})`);
-  params.push(...ids);
-  return { empty: false };
+  return pushAssetIdScope(conditions, params, assetIds, col);
 }
 
 export function querySafetyEventAggregates({ from = null, to = null, assetIds = null } = {}) {
@@ -129,11 +119,7 @@ export function querySafetyEventAggregates({ from = null, to = null, assetIds = 
     byLabel[r.label] = r.n;
     scoringCount += r.n;
   }
-  const panicRange = rangeConditions(from, to);
-  const panicFilter = pushAssetIdFilter(panicRange.conditions, panicRange.params, assetIds);
-  if (panicFilter.empty) return { ...empty, byLabel, incidentTotal: scoringCount, scoringCount };
-  const panicWhere = panicRange.conditions.length ? `WHERE ${panicRange.conditions.join(' AND ')}` : '';
-  const panicCount = database.prepare(`SELECT COUNT(*) n FROM panic ${panicWhere}`).get(...panicRange.params).n;
+  const panicCount = 0;
   const assetCount = database.prepare(`SELECT COUNT(DISTINCT asset_id) n FROM events ${where}`).get(...params).n;
   const driverCount = database.prepare(`SELECT COUNT(DISTINCT driver_id) n FROM events ${where}`).get(...params).n;
   return {

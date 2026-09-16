@@ -6,7 +6,6 @@ import fs from 'fs';
 import path from 'path';
 import { getAllEvents } from './db.js';
 import { countMatchingEvents } from './event-aggregates.js';
-import { resolveAssetScope } from './transporter-scope.js';
 
 let vehicleLookupCache = { map: new Map(), mtimeMs: 0 };
 
@@ -26,6 +25,8 @@ function vehicleLookup() {
         assetName: v.assetName || 'Unknown Vehicle',
         transporter: v.transporter || 'N/A',
         position: v.position,
+        site: v.site || null,
+        zone: v.zone || null,
       });
     });
     vehicleLookupCache = { map, mtimeMs: stat.mtimeMs };
@@ -57,6 +58,8 @@ function enrichEvent(entry, lookup) {
     regNo: vehicle.regNo || 'N/A',
     assetName: vehicle.assetName || 'Unknown Vehicle',
     transporter: vehicle.transporter || 'N/A',
+    site: vehicle.site || null,
+    zone: vehicle.zone || null,
   };
   if ((enriched.latitude == null || enriched.longitude == null) && vehicle.position) {
     enriched.latitude = vehicle.position.latitude;
@@ -83,6 +86,73 @@ function parseAssetIds(raw, singleRaw) {
   return single ? [single] : null;
 }
 
+function parseScopeKeyList(raw) {
+  if (raw == null || raw === '') return null;
+  const list = String(raw).split(',').map(t => t.trim()).filter(Boolean);
+  return list.length ? [...new Set(list)] : null;
+}
+
+function siteKeyFor(value) {
+  const v = String(value || '').trim();
+  return v || 'Unknown';
+}
+
+function assetIdsForSiteScope(siteScope, lookup) {
+  const keys = parseScopeKeyList(siteScope);
+  if (!keys) return null;
+  const allowed = new Set(keys.map(k => String(k).trim().toLowerCase()));
+  const ids = [];
+  for (const [assetId, vehicle] of lookup.entries()) {
+    const zone = siteKeyFor(vehicle.zone).toLowerCase();
+    const site = String(vehicle.site || '').trim().toLowerCase();
+    const transporter = String(vehicle.transporter || '').trim().toLowerCase();
+    if (allowed.has(zone) || allowed.has(site) || allowed.has(transporter)) {
+      ids.push(String(assetId));
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function mergeAssetScopes(explicitIds, siteIds) {
+  if (!siteIds) return explicitIds;
+  if (!explicitIds) return siteIds;
+  const selected = new Set(siteIds.map(String));
+  return explicitIds.filter(id => selected.has(String(id)));
+}
+
+function isDateOnlyToken(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+function eventRangeBounds(range, from, to) {
+  if (from || to) return { from, to };
+  const now = new Date();
+  const r = String(range || '').toLowerCase();
+  let start = null;
+  if (r === 'today' || r === 'day') {
+    start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+  } else if (r === '7d' || r === '7days' || r === 'week') {
+    start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+  } else if (r === '30d' || r === '30days') {
+    start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 29);
+  }
+  return {
+    from: start ? start.toISOString() : null,
+    to: start ? now.toISOString() : null,
+  };
+}
+
+function normalizeDateBound(value, endOfDay = false) {
+  if (!value) return null;
+  const token = String(value);
+  if (isDateOnlyToken(token)) return token.trim() + 'T' + (endOfDay ? '23:59:59.999' : '00:00:00');
+  return token;
+}
 function matchesSearch(entry, q) {
   if (!q) return true;
   const s = q.toLowerCase();
@@ -95,20 +165,21 @@ function matchesSearch(entry, q) {
 }
 
 /**
- * @param {{ from?: string|null, to?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null, siteScope?: string|null }} query
+ * @param {{ from?: string|null, to?: string|null, range?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, driverName?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null, sites?: string|null, siteScope?: string|null, excludeHidden?: string|null }} query
  */
 export function handleEventsLogQuery(query = {}) {
-  const from = query.from || null;
-  const to = query.to || null;
-  const types = parseTypes(query.types);
-  const driver = query.driver ? String(query.driver) : null;
-  const q = (query.q || query.search || '').trim();
-  const assetIds = resolveAssetScope(
-    parseAssetIds(query.assetIds, query.assetId),
-    query.siteScope,
-  );
-  const format = String(query.format || '').toLowerCase();
   const lookup = vehicleLookup();
+  const rangeBounds = eventRangeBounds(query.range, query.from || null, query.to || null);
+  const from = normalizeDateBound(rangeBounds.from, false);
+  const to = normalizeDateBound(rangeBounds.to, true);
+  const types = parseTypes(query.types);
+  const driver = query.driver || query.driverName ? String(query.driver || query.driverName) : null;
+  const q = (query.q || query.search || '').trim();
+  const explicitAssetIds = parseAssetIds(query.assetIds, query.assetId);
+  const siteAssetIds = assetIdsForSiteScope(query.siteScope || query.sites, lookup);
+  const assetIds = mergeAssetScopes(explicitAssetIds, siteAssetIds);
+  const format = String(query.format || '').toLowerCase();
+  const excludeHidden = query.excludeHidden === true || query.excludeHidden === '1' || query.excludeHidden === 'true';
 
   const needsPostFilter = Boolean(q);
   const fetchLimit = needsPostFilter ? null : undefined;
@@ -125,6 +196,7 @@ export function handleEventsLogQuery(query = {}) {
       offset: needsPostFilter ? 0 : offset,
       driver,
       assetIds,
+      excludeHidden,
     }).map(e => enrichEvent(e, lookup));
 
     if (q) {
@@ -136,7 +208,7 @@ export function handleEventsLogQuery(query = {}) {
       total = entries.length;
       entries = entries.slice(offset, offset + limit);
     } else {
-      total = countMatchingEvents({ from, to, types, driver, assetIds });
+      total = countMatchingEvents({ from, to, types, driver, assetIds, excludeHidden });
     }
     return { entries, total };
   }
@@ -157,7 +229,8 @@ export function handleEventsLogQuery(query = {}) {
     limit: fetchLimit ?? limit,
     driver,
     assetIds,
-  }).map(e => enrichEvent(e, lookup));
+      excludeHidden,
+    }).map(e => enrichEvent(e, lookup));
 
   if (q) {
     entries = entries.filter(e => matchesSearch(e, q));

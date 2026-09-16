@@ -8,6 +8,7 @@ import { SIDEBAR_NAV, type NavGroup } from '../../config/nav';
 import { useAuth } from '../../context/AuthContext';
 import { permissionForPath } from '../../lib/authApi';
 import { brandLogoAlt, brandLogoMarkSrc, clientName, platformName } from '../../lib/branding';
+import { warmRouteOnHover } from '../../lib/apiWarm';
 
 const NAV: NavGroup[] = SIDEBAR_NAV;
 
@@ -142,7 +143,10 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                   fontSize: 12.5, textDecoration: 'none',
                   transition: 'background 0.15s, color 0.15s',
                 })}
-                onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+                onMouseEnter={e => {
+                  warmRouteOnHover(group.path);
+                  if (!isActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)';
+                }}
                 onMouseLeave={e => {
                   if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent';
                   else if (group.accent) (e.currentTarget as HTMLElement).style.background = `${group.accent}22`;
@@ -182,7 +186,11 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                   transition: 'background 0.15s, color 0.15s',
                   userSelect: 'none',
                 }}
-                onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+                onMouseEnter={e => {
+                  warmRouteOnHover(group.path);
+                  if (group.children?.[0]) warmRouteOnHover(group.children[0].path);
+                  if (!isActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)';
+                }}
                 onMouseLeave={e => {
                   if (!isActive || isOpen) (e.currentTarget as HTMLElement).style.background = 'transparent';
                   else if (group.accent) (e.currentTarget as HTMLElement).style.background = `${group.accent}22`;
@@ -233,7 +241,10 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
                           ? (group.accent ? `${group.accent}18` : 'rgba(0,120,212,0.1)')
                           : 'transparent',
                       }}
-                      onMouseEnter={e => { if (!childActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
+                      onMouseEnter={e => {
+                        warmRouteOnHover(child.path);
+                        if (!childActive) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)';
+                      }}
                       onMouseLeave={e => { if (!childActive) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                     >
                       <SubIcon size={13} style={{ flexShrink: 0 }} />
@@ -261,6 +272,7 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
               transition: 'background 0.15s, color 0.15s',
             })}
             onMouseEnter={e => {
+              warmRouteOnHover('/settings/general');
               (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)';
             }}
             onMouseLeave={e => {

@@ -1,13 +1,19 @@
 /**
  * Short-lived in-memory cache for heavy API rollups (per Node process).
  * Complements client TTL cache — speeds cold revisits and parallel page opens.
+ * Supports stale-while-revalidate: serve last value while a refresh runs.
  */
 
 const stores = new Map();
+const refreshing = new Map();
 
 function storeFor(namespace) {
   if (!stores.has(namespace)) stores.set(namespace, new Map());
   return stores.get(namespace);
+}
+
+function refreshKey(namespace, key) {
+  return `${namespace}::${key}`;
 }
 
 /**
@@ -15,14 +21,41 @@ function storeFor(namespace) {
  * @param {number} ttlMs
  * @param {string} key
  * @param {() => unknown} compute
+ * @param {{ swrMs?: number }} [opts] — serve stale up to ttlMs+swrMs while refreshing (default 60s)
  */
-export function memoApiResponse(namespace, ttlMs, key, compute) {
+export function memoApiResponse(namespace, ttlMs, key, compute, opts = {}) {
   const store = storeFor(namespace);
   const hit = store.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value;
+  const now = Date.now();
+  const swrMs = opts.swrMs ?? 60_000;
+
+  if (hit && now - hit.at < ttlMs) return hit.value;
+
+  // Stale-while-revalidate: return previous value and refresh in background once.
+  if (hit && now - hit.at < ttlMs + swrMs) {
+    const rk = refreshKey(namespace, key);
+    if (!refreshing.has(rk)) {
+      refreshing.set(rk, true);
+      setImmediate(() => {
+        try {
+          const value = compute();
+          store.set(key, { at: Date.now(), value });
+          if (store.size > 64) {
+            const oldest = [...store.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
+            if (oldest != null) store.delete(oldest);
+          }
+        } catch { /* keep stale */ }
+        finally {
+          refreshing.delete(rk);
+        }
+      });
+    }
+    return hit.value;
+  }
+
   const value = compute();
-  store.set(key, { at: Date.now(), value });
-  if (store.size > 48) {
+  store.set(key, { at: now, value });
+  if (store.size > 64) {
     const oldest = [...store.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
     if (oldest != null) store.delete(oldest);
   }

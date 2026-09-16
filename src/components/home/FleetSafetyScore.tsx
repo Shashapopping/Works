@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { TrendingDown, TrendingUp, Minus } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { useState } from 'react';
 import { useFleet } from '../../context/FleetContext';
 import {
   scoreBandColor,
@@ -12,19 +12,27 @@ import {
 } from '../../lib/fleetSafetyScore';
 import ConsequenceExplainerModal from '../ConsequenceExplainerModal';
 
+/** Home safety card — uses FleetContext scoped exposure (no duplicate fetch). */
 export default function FleetSafetyScore() {
   const {
-    safetyScore, safetyDelta,
-    metadata, scoreConfig, safetyExposure, safetyExposureLoading,
+    safetyScore: activeScore,
+    safetyDelta: activeDelta,
+    metadata,
+    scoreConfig,
+    safetyExposure: activeExposure,
+    safetyExposureLoading,
+    vehicles,
+    selectedSites,
   } = useFleet();
   const [explainerOpen, setExplainerOpen] = useState(false);
+  const siteFiltered = selectedSites.length > 0;
 
-  const color = scoreBandColor(safetyScore, scoreConfig);
-  const label = scoreBandLabel(safetyScore, scoreConfig);
-  const refreshing = !safetyExposure && safetyExposureLoading;
+  const color = scoreBandColor(activeScore, scoreConfig);
+  const label = scoreBandLabel(activeScore, scoreConfig);
+  const refreshing = !activeExposure && safetyExposureLoading;
 
-  const distanceKm = safetyExposure?.distanceKm ?? 0;
-  const points = totalSafetyPointsFromCensus(safetyExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
+  const distanceKm = activeExposure?.distanceKm ?? 0;
+  const points = totalSafetyPointsFromCensus(activeExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.ivms, distanceKm);
   const scoreDeduction = Math.min(
     FLEET_SCORE_SCALE,
@@ -61,13 +69,13 @@ export default function FleetSafetyScore() {
                 cx="30" cy="30" r="24" fill="none"
                 stroke={color} strokeWidth="5"
                 strokeDasharray={`${2 * Math.PI * 24}`}
-                strokeDashoffset={`${2 * Math.PI * 24 * (1 - safetyScore / FLEET_SCORE_SCALE)}`}
+                strokeDashoffset={`${2 * Math.PI * 24 * (1 - activeScore / FLEET_SCORE_SCALE)}`}
                 strokeLinecap="round"
               />
             </svg>
             <div className="bpl-safety-gauge-center">
               <span className="bpl-safety-gauge-score" style={{ color }}>
-                {safetyScore}
+                {activeScore}
               </span>
               <span className="bpl-safety-gauge-denom">/{FLEET_SCORE_SCALE}</span>
             </div>
@@ -77,10 +85,10 @@ export default function FleetSafetyScore() {
               {label}
             </div>
             <div className="bpl-safety-score-home-delta">
-              {safetyDelta > 0 ? (
-                <><TrendingUp size={13} color="#16a34a" /><span className="bpl-kpi-delta-up">+{safetyDelta} pts</span></>
-              ) : safetyDelta < 0 ? (
-                <><TrendingDown size={13} color="#CC0000" /><span className="bpl-kpi-delta-down">{safetyDelta} pts</span></>
+              {activeDelta > 0 ? (
+                <><TrendingUp size={13} color="#16a34a" /><span className="bpl-kpi-delta-up">+{activeDelta} pts</span></>
+              ) : activeDelta < 0 ? (
+                <><TrendingDown size={13} color="#CC0000" /><span className="bpl-kpi-delta-down">{activeDelta} pts</span></>
               ) : (
                 <><Minus size={13} color="var(--cd-text-muted)" /><span className="bpl-safety-score-home-nochange">No change</span></>
               )}
@@ -104,14 +112,14 @@ export default function FleetSafetyScore() {
 
       {explainerOpen && (
         <ConsequenceExplainerModal
-          fleetScore={safetyScore}
-          fleetDelta={safetyDelta}
-          totalIncidents={safetyExposure?.incidentTotal ?? 0}
-          vehicleCount={metadata.totalVehicles}
+          fleetScore={activeScore}
+          fleetDelta={activeDelta}
+          totalIncidents={activeExposure?.incidentTotal ?? 0}
+          vehicleCount={siteFiltered ? vehicles.length : metadata.totalVehicles}
           actualWeightedRate={weightedRate}
           distanceKm={distanceKm}
-          hosHeldMinutes={safetyExposure?.hosHeldMinutes ?? 0}
-          hosSlices={safetyExposure?.hosSlices}
+          hosHeldMinutes={activeExposure?.hosHeldMinutes ?? 0}
+          hosSlices={activeExposure?.hosSlices}
           scoreConfig={scoreConfig}
           onClose={() => setExplainerOpen(false)}
         />

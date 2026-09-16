@@ -38,11 +38,14 @@ function MiniStat({ label, value, color, tip, note }: {
 }
 
 export default function Cement() {
-  const { vehicles } = useFleet();
+  const { vehicles, scopedAssetIds, siteFilterActive } = useFleet();
   const {
     period, setPeriod, customRange, setCustomRange,
     assets: periodAssets, loading: distanceLoading, label: periodLabel,
-  } = useSegmentPeriod('today');
+  } = useSegmentPeriod('today', {
+    assetIds: siteFilterActive ? scopedAssetIds : [],
+    enabled: !siteFilterActive || scopedAssetIds.length > 0,
+  });
   const fleet = useMemo(() => segmentVehicles(vehicles, 'cement'), [vehicles]);
   const assets = useMemo(() => segmentTripAssets(fleet, periodAssets), [fleet, periodAssets]);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);

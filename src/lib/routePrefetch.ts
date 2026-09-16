@@ -12,7 +12,7 @@ export const ROUTE_CHUNK_LOADERS: Record<string, () => Promise<unknown>> = {
   '/incidents': () => import('../pages/IncidentIntelligence'),
   '/incidents/response': () => import('../pages/IncidentIntelligence'),
   '/incidents/audit': () => import('../pages/AuditPage'),
-  '/operations/utilization': () => import('../pages/UtilizationPage'),
+  '/utilization': () => import('../pages/UtilizationPage'),
   '/tankers': () => import('../pages/Tankers'),
   '/quarry': () => import('../pages/Quarry'),
   '/quarry/kpi': () => import('../pages/OperationalKpi'),

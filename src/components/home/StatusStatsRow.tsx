@@ -12,6 +12,7 @@ import CustomDateTimeRange, { ensureCustomRangeDefaults } from '../CustomDateTim
 import { SkelValue } from '../data/DataBusy';
 import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
+import { filterHosRecordsByVehicles } from '../../lib/siteScope';
 
 export type MetricPeriod = DistanceRange;
 
@@ -136,7 +137,7 @@ const BOTTOM_CARDS: Array<StatusCard | MetricCard> = [
     label: 'Fuel Used',
     color: '#f97316',
     icon: Fuel,
-    tip: 'Total fuel used on quarry assets in the selected period.',
+    tip: 'Total fuel used on quarry assets in the selected period (tank drop / trip fuel). Non-quarry sites show 0.',
     href: '/fuel/monitoring',
   },
 ];
@@ -171,12 +172,21 @@ export default function StatusStatsRow({
     vehiclesLoading,
     hosRecords,
     hosLoading,
+    vehicles,
+    scopedAssetIds,
+    siteFilterActive,
   } = useFleet();
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(
     metricPeriod,
     metricCustom,
+    siteFilterActive ? scopedAssetIds : [],
+    !siteFilterActive || scopedAssetIds.length > 0,
   );
-  const violationCount = hosRecords.filter(r => r.status === 'violation').length;
+  const scopedHosRecords = useMemo(
+    () => filterHosRecordsByVehicles(hosRecords, vehicles, siteFilterActive),
+    [hosRecords, vehicles, siteFilterActive],
+  );
+  const violationCount = scopedHosRecords.filter(r => r.status === 'violation').length;
 
   const fuelLiters = useMemo(() => {
     if (tripFuelLiters > 0) return tripFuelLiters;

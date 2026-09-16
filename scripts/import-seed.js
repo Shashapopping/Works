@@ -55,9 +55,6 @@ export async function importWeekSeed({ verbose = true } = {}) {
     { seed: 'events.jsonl', dest: 'events.log', key: line => {
       try { return JSON.parse(line).eventId || line; } catch { return line; }
     } },
-    { seed: 'kpi-events.jsonl', dest: 'kpi-events.log', key: line => {
-      try { return JSON.parse(line).eventId || line; } catch { return line; }
-    } },
     { seed: 'fuel-history.jsonl', dest: 'fuel-history.log', key: line => {
       try {
         const o = JSON.parse(line);

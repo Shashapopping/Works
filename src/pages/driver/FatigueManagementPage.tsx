@@ -73,7 +73,7 @@ const COL_TIPS: Record<string, string> = {
   'Trip time': 'Sum of each trip’s clock time inside the selected day (clipped at midnight). Gaps between trips are not counted — so an overnight open trip cannot stretch Trip time to ~23h.',
   'Violation value': 'Extra driving minutes past the 4-hour continuous limit.',
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',
-  'Present Block': 'How full the continuous drive block is toward 4 hours. The time under the bar is the actual minutes in the block. Resets after a ≥20 min rest.',
+  'Present Block': 'How full the continuous drive block is toward 4 hours. The time under the bar is the actual minutes in the block. Resets after a >=20 min rest.',
   'Drive left': 'Time left before the 4h continuous-driving breach. Negative time means the 4h limit has already been passed.',
   'Since 8h rest': 'Elapsed time since the last >=8h continuous rest ended. The bar breaches at 24h and can show over 100%.',
   '24h rest': 'Rolling 7-day lookback ending now. Green marks the qualifying 24-hour rest block; all red means no 24-hour rest was found.',
@@ -138,6 +138,7 @@ type HosSiteScope = {
 
 function filterHosRecordsToSiteScope(records: HosRecord[], scope: HosSiteScope | null): HosRecord[] {
   if (!scope) return records;
+  if (scope.allowedAssetIds.size === 0 && scope.allowedSiteIds.size === 0) return [];
   return records.filter(record => {
     const siteId = (record.siteId || '').toString().trim();
     // Site column / scope follows the driver's roster site, not the trip vehicle.
@@ -507,7 +508,14 @@ function ThLabel({
 }
 
 export default function FatigueManagementPage() {
-  const { scoreConfig, vehicles, selectedSites } = useFleet();
+  const {
+    scoreConfig,
+    vehicles,
+    selectedSites,
+    hosRecords: ctxHos,
+    hosLoading: ctxHosLoading,
+    hosLastTripDay: ctxLastTripDay,
+  } = useFleet();
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 200);
@@ -515,12 +523,19 @@ export default function FatigueManagementPage() {
   const [statusFilter, setStatusFilter] = useState<FatigueViewFilter>('all');
   const [hosPointsDate, setHosPointsDate] = useState(lagosDateStr(0));
   const [sortState, setSortState] = useState<FatigueSortState>(null);
-
-  const targetDate = lagosDateStr(0);
+  const todayDate = lagosDateStr(0);
+  const targetDate = todayDate;
   const isTodayView = true;
-
-  const { records: hosRaw, loading: hosLoading, lastTripDay } = useHosRecords(targetDate);
-  const { records: hosPointsRaw, loading: hosPointsLoading } = useHosRecords(hosPointsDate);
+  const hosRaw = ctxHos;
+  const hosLoading = ctxHosLoading && hosRaw.length === 0;
+  const lastTripDay = ctxLastTripDay;
+  const isPointsToday = hosPointsDate === todayDate;
+  const { records: fetchedPoints, loading: fetchedPointsLoading } = useHosRecords(
+    hosPointsDate,
+    { enabled: !isPointsToday },
+  );
+  const hosPointsRaw = isPointsToday ? ctxHos : fetchedPoints;
+  const hosPointsLoading = isPointsToday ? hosLoading : fetchedPointsLoading;
 
   useEffect(() => {
     const q = searchParams.get('q');
@@ -754,8 +769,8 @@ export default function FatigueManagementPage() {
   const hosDayOptions = useMemo(
     () => {
       const opts = Array.from({ length: 7 }, (_, daysBack) => {
-      const day = lagosDateStr(daysBack);
-      return { day, label: hosDayOptionLabel(day, daysBack) };
+        const day = lagosDateStr(daysBack);
+        return { day, label: hosDayOptionLabel(day, daysBack) };
       });
       if (!opts.some(opt => opt.day === hosPointsDate)) {
         opts.push({ day: hosPointsDate, label: compactDateLabel(hosPointsDate) });
@@ -775,12 +790,12 @@ export default function FatigueManagementPage() {
         Driver Management — Fatigue Management <MockNamesBadge />
       </div>
       <p style={{ fontSize: 13, color: 'var(--cd-text-muted)', marginBottom: 16 }}>
-        Hours of service — 4h continuous (20-min rest resets), daily rest (8h rest in 24h), and weekly rest (≥24h off in 7 days).
+        Hours of service — 4h continuous (20-min rest resets), daily rest (8h rest in 24h), and weekly rest (at least 24h off in 7 days).
       </p>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
         <span style={{ fontSize: 12, color: 'var(--cd-text-muted)' }}>
-          HOS points are inspected from {compactDateLabel(hosPointsDate)}; the rest of the table keeps its current day.
+          HOS points are inspected from {compactDateLabel(hosPointsDate)}; the rest of the table keeps today.
         </span>
       </div>
 
@@ -1069,7 +1084,7 @@ export default function FatigueManagementPage() {
                     color={meterColor(currentMin, limit)}
                     title={
                       currentMin <= 0 && isTodayView
-                        ? 'Present block reset after a ≥20 min rest (0 min)'
+                        ? 'Present block reset after a >=20 min rest (0 min)'
                         : `Present continuous block: ${fmtHosMinutes(currentMin)} (${currentMin} min) toward the 4h limit`
                     }
                     showTime
@@ -1085,7 +1100,7 @@ export default function FatigueManagementPage() {
                     }}
                     title={
                       currentMin <= 0 && isTodayView
-                        ? 'Present block reset after a ≥20 min rest — full 4h available again'
+                        ? 'Present block reset after a >=20 min rest — full 4h available again'
                         : driveMinutesLeft < 0
                           ? `4h continuous-driving limit is overdue by ${fmtHosMinutes(Math.abs(driveMinutesLeft))}`
                           : `${fmtHosMinutes(driveMinutesLeft)} left before the 4h continuous-driving breach`

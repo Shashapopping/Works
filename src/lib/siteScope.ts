@@ -25,6 +25,53 @@ export function makeScopedVehicleSiteIdSet(vehicles: FleetVehicle[]) {
   );
 }
 
+/** Sorted unique scope keys for cache keys / query params. */
+export function normalizeScopeKeys(keys: string[] = []) {
+  return [...new Set(keys.map(k => k.trim()).filter(Boolean))].sort();
+}
+
+/**
+ * Prefer explicit assetIds (matches client-filtered fleet exactly).
+ * Fall back to siteScope only when IDs are not ready yet.
+ */
+export function appendUrlScope(
+  url: string,
+  opts: { siteScope?: string[]; assetIds?: string[] } = {},
+) {
+  const ids = normalizeScopeKeys(opts.assetIds || []);
+  if (ids.length) {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}assetIds=${encodeURIComponent(ids.join(','))}`;
+  }
+  const sites = normalizeScopeKeys(opts.siteScope);
+  if (sites.length) {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}siteScope=${encodeURIComponent(sites.join(','))}`;
+  }
+  return url;
+}
+
+/** Build scope opts from header filter + live fleet vehicles (full or pre-filtered). */
+export function fleetScopeOpts(selectedSites: string[], vehicles: FleetVehicle[]) {
+  const sites = normalizeScopeKeys(selectedSites);
+  if (!sites.length) return {};
+  const allowed = new Set(sites.map(s => s.toLowerCase()));
+  const scoped = vehicles.filter(v => {
+    const zone = ((v.zone || '').trim() || 'Unknown').toLowerCase();
+    const site = (v.site || '').trim().toLowerCase();
+    const transporter = (v.transporter || '').trim().toLowerCase();
+    return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
+  });
+  const assetIds = scopedAssetIdList(scoped);
+  if (assetIds.length) return { assetIds };
+  return { siteScope: sites };
+}
+
+/** Asset IDs from already site-filtered fleet vehicles. */
+export function scopedAssetIdList(vehicles: FleetVehicle[]) {
+  return Array.from(makeScopedVehicleIdSet(vehicles)).sort();
+}
+
 export function filterTripDriversByVehicles(tripDrivers: TripDriver[], vehicles: FleetVehicle[]) {
   const allowedRegs = makeScopedVehicleRegSet(vehicles);
   if (allowedRegs.size === 0) return [];
@@ -73,6 +120,18 @@ export function filterDistanceAssetsByVehicles<T extends { regNo?: string | null
     const id = (asset.assetId || '').toString().trim();
     return allowedRegs.has(reg) || allowedIds.has(id);
   });
+}
+
+/** HOS rows for vehicles currently in the header site filter (regs only — matches status card). */
+export function filterHosRecordsByVehicles<T extends { vehicleReg?: string | null }>(
+  records: T[],
+  vehicles: FleetVehicle[],
+  siteFilterActive: boolean,
+) {
+  if (!siteFilterActive) return records;
+  const allowedRegs = makeScopedVehicleRegSet(vehicles);
+  if (allowedRegs.size === 0) return [];
+  return records.filter(r => allowedRegs.has((r.vehicleReg || '').trim().toLowerCase()));
 }
 
 export function summarizeEventsByLabel(events: LogEntry[]) {

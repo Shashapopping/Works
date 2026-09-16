@@ -3,8 +3,8 @@ import react from '@vitejs/plugin-react'
 import { pollOnce, startPolling, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers, getEventTrends } from './scripts/mix-test.js'
 import { resolveEnvironment } from './scripts/environment-service.js'
 import { computeConsumption } from './scripts/consumption-engine.js'
-import { computeKpi } from './scripts/kpi-engine.js'
-import { getFuelHistoryResponse } from './scripts/fuel-history-api.js'
+import { computeUtilization } from './scripts/util-engine.js'
+import { getFuelHistoryResponse, getFuelSeriesResponse } from './scripts/fuel-history-api.js'
 import { getFleetDataResponse } from './scripts/fleet-data-api.js'
 import { handleEventsLogQuery } from './scripts/events-log-api.js'
 import { bootstrapAdminIfNeeded } from './scripts/auth.js'
@@ -179,9 +179,14 @@ export default defineConfig({
               offset: params.get('offset'),
               format: params.get('format'),
               driver: params.get('driver'),
-              q: params.get('q') || params.get('search'),
+              driverName: params.get('driverName'),
+              q: params.get('q'),
+              search: params.get('search'),
               assetIds,
               siteScope: null,
+              range: params.get('range'),
+              sites: params.get('sites'),
+              excludeHidden: params.get('excludeHidden'),
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(body))
@@ -203,6 +208,36 @@ export default defineConfig({
               period: params.get('period') || 'day',
               from: params.get('from'),
               to: params.get('to'),
+              assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || params.get('sites') || null,
+            })
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(result))
+          } catch (err: any) {
+            if (err?.statusCode === 400) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: err.message }))
+              return
+            }
+            res.statusCode = 500
+            res.end('Internal Server Error')
+          }
+        })
+
+        // GET /api/fuel/series?period=day|week|month OR ?from=YYYY-MM-DD&to=YYYY-MM-DD
+        server.middlewares.use('/api/fuel/series', async (req, res) => {
+          if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
+          if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
+          try {
+            const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
+            const params = new URLSearchParams(qs)
+            const result = getFuelSeriesResponse({
+              period: params.get('period') || 'day',
+              from: params.get('from'),
+              to: params.get('to'),
+              assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || params.get('sites') || null,
             })
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(result))
@@ -230,8 +265,16 @@ export default defineConfig({
             const to = params.get('to')
             const site = params.get('site')
             const tripsParam = params.get('trips')
-            const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
-            const data = computeConsumption({ period, from, to, siteFilter: site, includeTrips })
+            const includeTrips = tripsParam === '1' || tripsParam === 'true'
+            const data = computeConsumption({
+              period,
+              from,
+              to,
+              siteFilter: site,
+              assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || params.get('sites') || null,
+              includeTrips,
+            })
             const summaryParam = params.get('summary')
             const summaryOnly = summaryParam === '1' || summaryParam === 'true'
             const body = summaryOnly ? {
@@ -248,18 +291,20 @@ export default defineConfig({
           } catch { res.statusCode = 500; res.end('Internal Server Error') }
         })
 
-        // GET /api/kpi?period=day|week|month&scope=quarry|all OR ?from=&to=
-        server.middlewares.use('/api/kpi', async (req, res) => {
+        // GET /api/utilization?period=day|week|month&scope=quarry|all OR ?from=&to=
+        server.middlewares.use('/api/utilization', async (req, res) => {
           if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
           if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
           try {
             const qs = (req.originalUrl || req.url || '').split('?')[1] || ''
             const params = new URLSearchParams(qs)
-            const data = computeKpi({
+            const data = computeUtilization({
               period: params.get('period') || 'week',
               from: params.get('from'),
               to: params.get('to'),
-              scope: params.get('scope') || 'quarry',
+              scope: params.get('scope') || 'all',
+              assetIds: params.get('assetIds') || null,
+              siteScope: params.get('siteScope') || params.get('sites') || null,
             })
             const summaryParam = params.get('summary')
             const summaryOnly = summaryParam === '1' || summaryParam === 'true'
@@ -328,7 +373,7 @@ export default defineConfig({
           // Strip journeys arrays — kept in-memory for per-asset detail route
           if ((req.originalUrl || req.url || '').includes('/journeys/')) { res.statusCode = 404; res.end('Not Found'); return }
           const tripsParam = params.get('trips')
-          const includeTrips = tripsParam !== '0' && tripsParam !== 'false'
+          const includeTrips = tripsParam === '1' || tripsParam === 'true'
           const summaryParam = params.get('summary')
           const summaryOnly = summaryParam === '1' || summaryParam === 'true' || summaryParam === 'totals'
           const summary = getDriverDistanceSummary({
@@ -338,6 +383,8 @@ export default defineConfig({
             to: params.get('to') || null,
             includeTrips,
             summaryOnly,
+            assetIds: params.get('assetIds') || null,
+            siteScope: params.get('siteScope') || params.get('sites') || null,
           })
           const includeJourneys = params.get('includeJourneys') === '1' || params.get('includeJourneys') === 'true'
           const slim = includeJourneys
