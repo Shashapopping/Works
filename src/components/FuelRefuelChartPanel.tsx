@@ -58,10 +58,15 @@ function FuelTooltip({ active, payload, label, multiDay }: {
   );
 }
 
-function buildHistoryUrl(from: string, to: string) {
+function buildHistoryUrl(from: string, to: string, assetId: string) {
   const fromDate = from.slice(0, 10);
   const toDate = to.slice(0, 10);
-  return `/api/fuel/history?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}`;
+  const params = new URLSearchParams({
+    from: fromDate,
+    to: toDate,
+    assetIds: assetId,
+  });
+  return `/api/fuel/history?${params.toString()}`;
 }
 
 export interface FuelRefuelChartPanelProps {
@@ -89,8 +94,8 @@ export default function FuelRefuelChartPanel({
 }: FuelRefuelChartPanelProps) {
   const color = fuelZoneColor(zone);
   const historyUrl = useMemo(
-    () => buildHistoryUrl(periodStart, periodEnd),
-    [periodStart, periodEnd],
+    () => buildHistoryUrl(periodStart, periodEnd, assetId),
+    [periodStart, periodEnd, assetId],
   );
 
   const [series, setSeries] = useState<FuelSeries | null>(() => {

@@ -5,6 +5,7 @@ import {
   authLogout,
   authMe,
   fetchAuthMode,
+  getStoredToken,
   permissionForPath,
   type AuthUser,
 } from '../lib/authApi';
@@ -48,10 +49,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(() => !readCachedUser());
 
   const refresh = async () => {
-    const me = await authMe();
-    const nextUser = me?.user ?? null;
-    setUser(nextUser);
-    writeCachedUser(nextUser);
+    try {
+      const me = await authMe();
+      const nextUser = me?.user ?? null;
+      setUser(nextUser);
+      writeCachedUser(nextUser);
+    } catch {
+      // Transient API/DB failure — keep existing session UI; authMe clears token on real 401.
+    }
   };
 
   useEffect(() => {
@@ -60,15 +65,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         void fetchAuthMode().catch(() => null);
         const me = await authMe();
-        if (!cancelled) {
-          const nextUser = me?.user ?? null;
-          setUser(nextUser);
-          writeCachedUser(nextUser);
-        }
-      } catch {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (me?.user) {
+          setUser(me.user);
+          writeCachedUser(me.user);
+        } else {
+          // Explicit 401 / no session — logged out
           setUser(null);
           writeCachedUser(null);
+        }
+      } catch {
+        // Server blip (OOM restart, timeout) — do not wipe a still-valid cookie/JWT session.
+        if (!cancelled && !readCachedUser() && !getStoredToken()) {
+          setUser(null);
         }
       } finally {
         if (!cancelled) setLoading(false);

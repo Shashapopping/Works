@@ -19,6 +19,7 @@ import { appendUrlScope } from '../lib/siteScope';
 import {
   buildTabularReportBlob,
   exportTabularReport,
+  archiveReportDownload,
   type ExportFormat,
   type LogEntry,
 } from '../lib/reportExport';
@@ -241,6 +242,39 @@ function eventRowsFromPayload(data: any): Record<string, unknown>[] {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.entries)) return data.entries;
   return [];
+}
+
+/** Page through /api/events/log until every matching IVMS row is collected (past 10k dump). */
+async function fetchAllIvmsEventRows(
+  paramsBase: URLSearchParams,
+  scopeAssetIds: string[],
+): Promise<{ rows: Record<string, unknown>[]; total: number }> {
+  const pageSize = 1000;
+  let offset = 0;
+  let total = Infinity;
+  const all: Record<string, unknown>[] = [];
+
+  while (offset < total && all.length < 500_000) {
+    const params = new URLSearchParams(paramsBase);
+    params.set('format', 'page');
+    params.set('limit', String(pageSize));
+    params.set('offset', String(offset));
+    const url = appendUrlScope(`/api/events/log?${params}`, {
+      assetIds: scopeAssetIds,
+    });
+    const res = await authFetch(url);
+    if (!res.ok) throw new Error('Failed to fetch events for export');
+    const data = await res.json();
+    const rows = eventRowsFromPayload(data);
+    total = typeof data?.total === 'number' ? data.total : offset + rows.length;
+    if (!rows.length) break;
+    all.push(...rows);
+    offset += rows.length;
+    // /events/log page mode may cap below the requested limit — don't stop early.
+    if (offset >= total) break;
+  }
+
+  return { rows: all, total: Number.isFinite(total) ? total : all.length };
 }
 
 function mapApiEntry(e: Record<string, unknown>, vehicles: ReturnType<typeof useFleet>['vehicles']): LogEntry {
@@ -837,46 +871,56 @@ export default function ReportsPage() {
 
   const canGenerate =
     reportType === 'events'
-      ? filtered.length > 0
+      ? filtered.length > 0 || eventCensusTotal > 0 || connectivityEntries.length > 0
       : !tabularPreviewLoading && (tabularPreview?.rowCount ?? 0) > 0;
   const estimatedEmailRows =
     reportType === 'events'
-      ? filtered.length
+      ? (wantsIvmsEvents(selectedEventTypes, EVENT_TYPES.length) ? eventCensusTotal : 0)
+        + connectivityEntries.length
       : (tabularPreview?.rowCount ?? 0);
+
+  const buildIvmsExportParams = (from: string | null, to: string | null) => {
+    const params = new URLSearchParams();
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
+    if (
+      ivmsTypes.length > 0
+      && ivmsTypes.length < IVMS_EVENT_TYPES.length
+      && selectedEventTypes.size < EVENT_TYPES.length
+    ) {
+      params.set('types', ivmsTypes.join(','));
+    }
+    if (searchTerm.trim()) params.set('q', searchTerm.trim());
+    return params;
+  };
 
   const runGenerate = async () => {
     const { from, to } = getDateBounds(dateRange, fromDate, toDate);
     let eventsForReport: LogEntry[] = [];
     if (reportType === 'events') {
-      const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
       const fetchIvms = wantsIvmsEvents(selectedEventTypes, EVENT_TYPES.length);
 
       if (fetchIvms) {
-        const params = new URLSearchParams();
-        if (from) params.set('from', from);
-        if (to) params.set('to', to);
-        if (
-          ivmsTypes.length > 0
-          && ivmsTypes.length < IVMS_EVENT_TYPES.length
-          && selectedEventTypes.size < EVENT_TYPES.length
-        ) {
-          params.set('types', ivmsTypes.join(','));
+        if (siteFilterActive && scopedAssetIds.length === 0) {
+          eventsForReport = [];
+        } else {
+          const { rows } = await fetchAllIvmsEventRows(
+            buildIvmsExportParams(from, to),
+            siteFilterActive ? scopedAssetIds : [],
+          );
+          const veh = vehiclesRef.current;
+          eventsForReport = rows
+            .map((e: Record<string, unknown>) => mapApiEntry(e, veh))
+            .filter(e => {
+              if (e.type === 'panic') return false;
+              const label = eventLabel(e);
+              if (HIDDEN_LABELS.includes(label)) return false;
+              if (!matchesEventType(e, selectedEventTypes)) return false;
+              if (!eventMatchesSelectedSite(e)) return false;
+              return eventMatchesSearch(e);
+            });
         }
-        const res = await authFetch(`/api/events/log?${params}`);
-        if (!res.ok) throw new Error('Failed to fetch events for export');
-        const data = await res.json();
-        const rows = eventRowsFromPayload(data);
-        const veh = vehiclesRef.current;
-        eventsForReport = rows
-          .map((e: Record<string, unknown>) => mapApiEntry(e, veh))
-          .filter(e => {
-            if (e.type === 'panic') return false;
-            const label = eventLabel(e);
-            if (HIDDEN_LABELS.includes(label)) return false;
-            if (!matchesEventType(e, selectedEventTypes)) return false;
-            if (!eventMatchesSelectedSite(e)) return false;
-            return eventMatchesSearch(e);
-          });
       }
 
       eventsForReport = [...eventsForReport, ...connectivityEntries];
@@ -907,6 +951,89 @@ export default function ReportsPage() {
     setDownloading(true);
     setEmailStatus(null);
     try {
+      // Events CSV/Excel: server pages the full IVMS set (no 10k one-shot dump).
+      if (reportType === 'events' && (exportFormat === 'csv' || exportFormat === 'excel')) {
+        const { from, to } = getDateBounds(dateRange, fromDate, toDate);
+        const fetchIvms = wantsIvmsEvents(selectedEventTypes, EVENT_TYPES.length);
+        if (siteFilterActive && scopedAssetIds.length === 0 && fetchIvms && connectivityEntries.length === 0) {
+          setEmailStatus('No rows for this report type and filters.');
+          return;
+        }
+
+        const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
+        let typesParam: string | null = null;
+        if (
+          fetchIvms
+          && ivmsTypes.length > 0
+          && ivmsTypes.length < IVMS_EVENT_TYPES.length
+          && selectedEventTypes.size < EVENT_TYPES.length
+        ) {
+          typesParam = ivmsTypes.join(',');
+        }
+
+        const res = await authFetch('/api/reports/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reportType: 'events',
+            format: exportFormat,
+            from: from || null,
+            to: to || null,
+            types: typesParam,
+            assetIds: siteFilterActive && scopedAssetIds.length
+              ? scopedAssetIds.join(',')
+              : null,
+            q: searchTerm.trim() || null,
+            title: `${reportTitle} — ${reportTypeLabel('events')}`,
+            meta: buildMeta(),
+            includeIvms: fetchIvms && !(siteFilterActive && scopedAssetIds.length === 0),
+            extraEntries: connectivityEntries,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err?.error || 'Failed to export report');
+        }
+        const rowCount = Number(res.headers.get('X-Report-Row-Count') || 0);
+        if (rowCount === 0) {
+          setEmailStatus('No rows for this report type and filters.');
+          return;
+        }
+        const disposition = res.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="([^"]+)"/i);
+        const filename = match?.[1] || `hbm-events-${new Date().toISOString().slice(0, 10)}.${exportFormat === 'excel' ? 'xlsx' : 'csv'}`;
+        const mime = res.headers.get('Content-Type')
+          || (exportFormat === 'excel'
+            ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            : 'text/csv;charset=utf-8');
+        const buffer = await res.arrayBuffer();
+        const blob = new Blob([buffer], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        void archiveReportDownload({
+          filename,
+          mime,
+          blob,
+          type: 'Events',
+          meta: {
+            reportTitle: `${reportTitle} — ${reportTypeLabel('events')}`,
+            filters: buildMeta(),
+            format: exportFormat,
+            reportType: 'events',
+            rowCount,
+          },
+        });
+        if (res.headers.get('X-Report-Truncated') === '1') {
+          setEmailStatus(`Downloaded ${rowCount.toLocaleString()} rows (export safety cap reached).`);
+        }
+        persistOfflineSnapshotIfNeeded(vehicles, selectedEventTypes, trackingWindowHours);
+        return;
+      }
+
       const tabular = await runGenerate();
       if (tabular.rowCount === 0) {
         setEmailStatus('No rows for this report type and filters.');

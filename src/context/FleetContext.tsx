@@ -632,8 +632,18 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       const params = new URLSearchParams({
         from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
         to: new Date().toISOString(),
-        limit: '500',
+        format: 'page',
+        limit: '120',
         excludeHidden: '1',
+        // Home/ARIA only need scored IVMS labels — not the full 7d dump.
+        types: [
+          'Harsh Braking',
+          'Harsh Acceleration',
+          'Overspeeding',
+          'Overspeed Tiered',
+          'Road Speed Overspeeding',
+          'Harsh Cornering',
+        ].join(','),
       });
       const scope = fleetScopeOpts(selectedSites, vehiclesRef.current as any);
       if (scope.assetIds?.length) params.set('assetIds', scope.assetIds.join(','));

@@ -120,6 +120,26 @@ function mergeAssetScopes(explicitIds, siteIds) {
   return explicitIds.filter(id => selected.has(String(id)));
 }
 
+/** Resolve Event Explorer q against live fleet lookup (reg / name / id). */
+function matchedAssetIdsForSearch(q, lookup) {
+  const s = String(q || '').trim().toLowerCase();
+  if (!s) return [];
+  const ids = [];
+  for (const [assetId, vehicle] of lookup.entries()) {
+    const id = String(assetId || '');
+    const reg = String(vehicle.regNo || '');
+    const name = String(vehicle.assetName || '');
+    if (
+      id.toLowerCase().includes(s)
+      || (reg && reg !== 'N/A' && reg.toLowerCase().includes(s))
+      || (name && name.toLowerCase().includes(s))
+    ) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
 function isDateOnlyToken(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
 }
@@ -153,16 +173,6 @@ function normalizeDateBound(value, endOfDay = false) {
   if (isDateOnlyToken(token)) return token.trim() + 'T' + (endOfDay ? '23:59:59.999' : '00:00:00');
   return token;
 }
-function matchesSearch(entry, q) {
-  if (!q) return true;
-  const s = q.toLowerCase();
-  return (
-    (entry.regNo && entry.regNo !== 'N/A' && entry.regNo.toLowerCase().includes(s))
-    || (entry.assetName && entry.assetName.toLowerCase().includes(s))
-    || (entry.assetId && String(entry.assetId).toLowerCase().includes(s))
-    || (entry.driverName && entry.driverName !== 'N/A' && entry.driverName.toLowerCase().includes(s))
-  );
-}
 
 /**
  * @param {{ from?: string|null, to?: string|null, range?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, driverName?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null, sites?: string|null, siteScope?: string|null, excludeHidden?: string|null }} query
@@ -180,36 +190,37 @@ export function handleEventsLogQuery(query = {}) {
   const assetIds = mergeAssetScopes(explicitAssetIds, siteAssetIds);
   const format = String(query.format || '').toLowerCase();
   const excludeHidden = query.excludeHidden === true || query.excludeHidden === '1' || query.excludeHidden === 'true';
-
-  const needsPostFilter = Boolean(q);
-  const fetchLimit = needsPostFilter ? null : undefined;
+  const searchAssetIds = q ? matchedAssetIdsForSearch(q, lookup) : null;
+  const searchOpts = q
+    ? { searchQ: q, searchAssetIds }
+    : {};
 
   if (format === 'page') {
-    const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 500);
+    // Allow up to 1000 for complete exports / paging; UI preview uses smaller limits.
+    const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 1000);
     const offset = Math.max(Number(query.offset) || 0, 0);
 
-    let entries = getAllEvents({
+    const entries = getAllEvents({
       from,
       to,
       types,
-      limit: needsPostFilter ? null : limit,
-      offset: needsPostFilter ? 0 : offset,
+      limit,
+      offset,
       driver,
       assetIds,
       excludeHidden,
+      ...searchOpts,
     }).map(e => enrichEvent(e, lookup));
 
-    if (q) {
-      entries = entries.filter(e => matchesSearch(e, q));
-    }
-
-    let total;
-    if (needsPostFilter) {
-      total = entries.length;
-      entries = entries.slice(offset, offset + limit);
-    } else {
-      total = countMatchingEvents({ from, to, types, driver, assetIds, excludeHidden });
-    }
+    const total = countMatchingEvents({
+      from,
+      to,
+      types,
+      driver,
+      assetIds,
+      excludeHidden,
+      ...searchOpts,
+    });
     return { entries, total };
   }
 
@@ -217,24 +228,20 @@ export function handleEventsLogQuery(query = {}) {
   const hasRange = !!(from || to);
   let limit;
   if (limitRaw == null || limitRaw === '' || String(limitRaw).toLowerCase() === 'all') {
-    limit = hasRange ? null : 500;
+    // Cap even "all" — never load an unbounded window into the Node heap.
+    limit = hasRange ? 10_000 : 500;
   } else {
     limit = Math.min(Math.max(Number(limitRaw) || 500, 1), 20000);
   }
 
-  let entries = getAllEvents({
+  return getAllEvents({
     from,
     to,
     types,
-    limit: fetchLimit ?? limit,
+    limit,
     driver,
     assetIds,
-      excludeHidden,
-    }).map(e => enrichEvent(e, lookup));
-
-  if (q) {
-    entries = entries.filter(e => matchesSearch(e, q));
-  }
-
-  return entries;
+    excludeHidden,
+    ...searchOpts,
+  }).map(e => enrichEvent(e, lookup));
 }

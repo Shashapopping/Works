@@ -16,7 +16,9 @@ export function assetExpandEventsUrl(
 ): string {
   const b = pagePeriodIsoBounds(range, customFrom, customTo);
   const params = new URLSearchParams();
-  params.set('limit', 'all');
+  params.set('format', 'page');
+  params.set('limit', '100');
+  params.set('offset', '0');
   if (asset.assetId) params.set('assetId', asset.assetId);
   else if (asset.regNo) params.set('q', asset.regNo.trim());
   if (b.from) params.set('from', b.from);
@@ -32,7 +34,9 @@ export function driverExpandEventsUrl(
 ): string {
   const b = pagePeriodIsoBounds(range, customFrom, customTo);
   const params = new URLSearchParams();
-  params.set('limit', 'all');
+  params.set('format', 'page');
+  params.set('limit', '100');
+  params.set('offset', '0');
   params.set('driver', driverName);
   if (b.from) params.set('from', b.from);
   if (b.to) params.set('to', b.to);

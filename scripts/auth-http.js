@@ -43,6 +43,7 @@ import {
   updateAutomation,
 } from './report-automate.js';
 import { isReportExportAllowed, normalizeReportEmail } from './report-export-allowlist.js';
+import { buildEventsReportExport } from './report-export-api.js';
 import {
   issueDriverWarning,
   listDriverWarnings,
@@ -383,6 +384,45 @@ export async function handleAuthRequest(req, res) {
       return true;
     }
 
+    // ── Full events report download (pages past the 10k one-shot dump) ───────
+    if (path === '/api/reports/export' && method === 'POST') {
+      const user = await requireUser(req, res, 'reports');
+      if (!user) return true;
+      const body = await readBody(req);
+      const reportType = String(body.reportType || 'events').toLowerCase();
+      if (reportType !== 'events') {
+        sendJson(res, 400, { error: 'Only events report export is supported on this endpoint' });
+        return true;
+      }
+      const format = String(body.format || 'csv').toLowerCase();
+      if (format !== 'csv' && format !== 'excel') {
+        sendJson(res, 400, { error: 'format must be csv or excel' });
+        return true;
+      }
+      const result = await buildEventsReportExport({
+        reportType: 'events',
+        format,
+        from: body.from || null,
+        to: body.to || null,
+        types: body.types || null,
+        assetIds: body.assetIds || null,
+        siteScope: body.siteScope || body.sites || null,
+        sites: body.sites || null,
+        q: body.q || body.search || null,
+        title: body.title || 'HBM Events Report',
+        meta: body.meta || '',
+        includeIvms: body.includeIvms !== false,
+        extraEntries: Array.isArray(body.extraEntries) ? body.extraEntries : [],
+      });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', result.mime);
+      res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      res.setHeader('X-Report-Row-Count', String(result.rowCount));
+      if (result.truncated) res.setHeader('X-Report-Truncated', '1');
+      res.end(result.buffer);
+      return true;
+    }
+
     // ── Ad-hoc report export email (any authenticated user) ──────────────────
     if (path === '/api/reports/email' && method === 'POST') {
       const user = await requireUser(req, res, 'reports');
@@ -581,6 +621,7 @@ export function authExpressMiddleware() {
       path?.startsWith('/api/coaching') ||
       path?.startsWith('/api/reports/automate') ||
       path === '/api/reports/email' ||
+      path === '/api/reports/export' ||
       path?.startsWith('/api/documents')
     ) {
       // Normalize url for handleAuthRequest
@@ -605,6 +646,7 @@ export function authViteMiddleware() {
       urlPath.startsWith('/api/coaching') ||
       urlPath.startsWith('/api/reports/automate') ||
       urlPath === '/api/reports/email' ||
+      urlPath === '/api/reports/export' ||
       urlPath.startsWith('/api/documents')
     ) {
       const handled = await handleAuthRequest(req, res);
