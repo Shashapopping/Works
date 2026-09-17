@@ -34,11 +34,20 @@ export interface EnvironmentContext {
   environment_source?: { weather: string; traffic: string };
 }
 
+export interface IndustryCitation {
+  label: string;
+  url: string;
+  /** Short note shown on the citation chip (what this source supports). */
+  note: string;
+}
+
 export interface SafeIQAnalysis {
   severity: Severity;
   severity_reason: string;
   root_cause: string;
   industry_reference: string;
+  /** Sources for the industry paragraph — shown as openable chips under it. */
+  industry_citations?: IndustryCitation[];
   coaching_recommendation: string;
   ops_flag: boolean;
   ops_flag_reason: string;
