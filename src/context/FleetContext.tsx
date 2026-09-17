@@ -635,6 +635,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+        // Bust in-memory cards when SafeIQ copy templates change.
+        const SAFEIQ_COPY_VERSION = 'v4';
+        if (!seenEventIds.current.has(`__copy:${SAFEIQ_COPY_VERSION}`)) {
+          seenEventIds.current.clear();
+          seenEventIds.current.add(`__copy:${SAFEIQ_COPY_VERSION}`);
+          setNotifications([]);
+          setSelectedNotification(null);
+        }
+
         const SAFEIQ_LABELS = new Set([
           'Harsh Braking',
           'Harsh Acceleration',
@@ -649,11 +658,19 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         const toIso = new Date().toISOString();
         const fromIso = new Date(Date.now() - TREND_LOOKBACK_MS).toISOString();
         const typesParam = encodeURIComponent([...SAFEIQ_LABELS].join(','));
+        const safeIqScope = fleetScopeOpts(selectedSites, vehiclesRef.current as any);
+        const safetyUrl = appendUrlScope(
+          `/api/events/log?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&limit=400&types=${typesParam}`,
+          safeIqScope,
+        );
+        const scopedAssetSet = safeIqScope.assetIds?.length
+          ? new Set(safeIqScope.assetIds.map(String))
+          : null;
         const safetyData = await cachedFetchJson<LogEntry[]>(
-          'safeiq-events-14d',
+          safetyUrl,
           CACHE_TTL.fleetEvents,
           async () => {
-            const res = await authFetch(`/api/events/log?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&limit=400&types=${typesParam}`);
+            const res = await authFetch(safetyUrl);
             if (!res.ok) return null;
             const payload = await res.json();
             return Array.isArray(payload) ? payload : payload?.entries ?? [];
@@ -665,6 +682,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
         const qualifying = pool.filter(e => {
           if (!e.eventId || !SAFEIQ_LABELS.has(e.label || '') || !isKnownDriver(e.driverName)) return false;
           if (!qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: true })) return false;
+          if (scopedAssetSet && (e.assetId == null || !scopedAssetSet.has(String(e.assetId)))) return false;
           const t = new Date(e.eventTime || e.timestamp).getTime();
           return Number.isFinite(t) && now - t < TREND_LOOKBACK_MS;
         });
@@ -1032,13 +1050,26 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     };
   }, [loadMetadata, loadVehicles, loadEvents, loadHomeAlerts, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, loadHos, scheduleIdle]);
 
+  const selectedSitesKey = useMemo(
+    () => [...selectedSites].map(s => s.trim().toLowerCase()).filter(Boolean).sort().join('|'),
+    [selectedSites],
+  );
+  const prevSelectedSitesKeyRef = useRef(selectedSitesKey);
+
   useEffect(() => {
+    if (prevSelectedSitesKeyRef.current !== selectedSitesKey) {
+      prevSelectedSitesKeyRef.current = selectedSitesKey;
+      // Drop out-of-scope cards so the bell / AI Insights rebuild for the new site set.
+      seenEventIds.current.clear();
+      setNotifications([]);
+      setSelectedNotification(null);
+    }
     void loadHomeAlerts();
     void loadEvents();
     void loadDriverDistance();
     void loadSafetyExposure();
     void loadFuelSummary();
-  }, [selectedSites, vehicles.length, loadHomeAlerts, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
+  }, [selectedSitesKey, vehicles.length, loadHomeAlerts, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
 
   // -- Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays
@@ -1093,6 +1124,18 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       (e.assetId != null && ids.has(e.assetId.toString())) || (e.regNo != null && regs.has(e.regNo)),
     );
   }, [events, filteredVehicles, siteFilterActive]);
+
+  const filteredNotifications = useMemo(() => {
+    if (!siteFilterActive) return notifications;
+    const ids = new Set(filteredVehicles.map(v => v.id?.toString()).filter(Boolean));
+    const regs = new Set(filteredVehicles.map(v => v.regNo).filter(Boolean));
+    return notifications.filter(n => {
+      const driverId = n.driver?.id != null ? String(n.driver.id) : '';
+      const vehicleId = n.vehicle?.id != null ? String(n.vehicle.id) : '';
+      return (driverId && ids.has(driverId))
+        || (vehicleId && (regs.has(vehicleId) || ids.has(vehicleId)));
+    });
+  }, [notifications, filteredVehicles, siteFilterActive]);
 
   // When sites are selected, recompute the status rollup from filtered vehicles
   // so Home status cards match; otherwise trust the server aggregate.
@@ -1151,7 +1194,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const totalDistanceKm = Math.round(effectiveDriverDistance?.totalDistanceKm ?? 0);
 
   const redAlertCount = SAFEIQ_ENABLED
-    ? notifications.filter(
+    ? filteredNotifications.filter(
         n => n.analysis?.severity === 'RED' && isKnownDriver(n.driver.name),
       ).length
     : 0;
@@ -1198,15 +1241,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     [effectiveDriverDistance],
   );
   const demoNotifications = useMemo(
-    () => (DEMO_BRANDING ? notifications.map(sanitizeNotification) : notifications),
-    [notifications],
+    () => (DEMO_BRANDING ? filteredNotifications.map(sanitizeNotification) : filteredNotifications),
+    [filteredNotifications],
   );
-  const demoSelectedNotification = useMemo(
-    () => (selectedNotification && DEMO_BRANDING
-      ? sanitizeNotification(selectedNotification)
-      : selectedNotification),
-    [selectedNotification],
-  );
+  const demoSelectedNotification = useMemo(() => {
+    if (!selectedNotification) return null;
+    const stillVisible = filteredNotifications.some(n => n.id === selectedNotification.id);
+    if (!stillVisible) return null;
+    return DEMO_BRANDING ? sanitizeNotification(selectedNotification) : selectedNotification;
+  }, [selectedNotification, filteredNotifications]);
   const demoVaultRecords = useMemo(
     () => (DEMO_BRANDING ? vaultRecords.map(sanitizeVaultRecord) : vaultRecords),
     [vaultRecords],

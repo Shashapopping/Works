@@ -22,9 +22,10 @@ interface Props {
   onOpen: (n: SafetyNotification) => void;
   onDismiss?: (id: string) => void;
   showDismiss?: boolean;
+  emptyHint?: string | null;
 }
 
-export default function SafeIQFeed({ notifications, onOpen, onDismiss, showDismiss = true }: Props) {
+export default function SafeIQFeed({ notifications, onOpen, onDismiss, showDismiss = true, emptyHint }: Props) {
   const visible = notifications.filter(n => isKnownDriver(n.driver.name));
 
   if (visible.length === 0) {
@@ -32,7 +33,9 @@ export default function SafeIQFeed({ notifications, onOpen, onDismiss, showDismi
       <div className="bpl-card bpl-safeiq-feed-empty">
         <ShieldAlert size={36} color="var(--cd-border)" />
         <div className="bpl-safeiq-feed-empty-title">No SafeIQ analyses yet</div>
-        <div className="bpl-safeiq-feed-empty-sub">Analyses appear when drivers cross incident thresholds</div>
+        <div className="bpl-safeiq-feed-empty-sub">
+          {emptyHint || 'Analyses appear when drivers cross incident thresholds'}
+        </div>
       </div>
     );
   }

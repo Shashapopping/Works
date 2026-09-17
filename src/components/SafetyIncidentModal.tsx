@@ -280,6 +280,37 @@ export default function SafetyIncidentModal({ notification: n, onClose }: Props)
                 <div style={{ marginBottom: '14px' }}>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--cd-text-muted)', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '6px' }}>Industry Reference</div>
                   <div style={{ fontSize: '12px', color: 'var(--cd-text-muted)', lineHeight: '1.6', fontStyle: 'italic' }}><HighlightedText text={analysis.industry_reference} /></div>
+                  {analysis.industry_citations && analysis.industry_citations.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                      {analysis.industry_citations.map(c => (
+                        <a
+                          key={c.url}
+                          href={c.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={c.note}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: 10,
+                            fontWeight: 600,
+                            fontStyle: 'normal',
+                            color: 'var(--cd-text)',
+                            background: 'var(--cd-surface-2, var(--cd-border))',
+                            border: '1px solid var(--cd-border)',
+                            borderRadius: 6,
+                            padding: '3px 8px',
+                            textDecoration: 'none',
+                            maxWidth: '100%',
+                          }}
+                        >
+                          <ExternalLink size={10} style={{ flexShrink: 0, opacity: 0.7 }} />
+                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--cd-text-muted)', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: '6px' }}>Coaching Recommendation</div>

@@ -2,16 +2,33 @@ import { Brain, Sparkles } from 'lucide-react';
 import FeatureGate from '../components/FeatureGate';
 import SafeIQFeed from '../components/SafeIQFeed';
 import { useFleet } from '../context/FleetContext';
+import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 
 export default function AiInsightsPage() {
-  const { notifications, openNotification, dismissNotification, insights } = useFleet();
+  const {
+    notifications,
+    openNotification,
+    dismissNotification,
+    insights,
+    selectedSites,
+    siteOptions,
+    siteNameOptions,
+    siteFilterActive,
+  } = useFleet();
+
+  const siteScopeLabel = siteFilterActive
+    ? selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions, 'selected sites')
+    : null;
 
   return (
     <FeatureGate featureId="aria">
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">AI Insights</h1>
-        <p className="bpl-page-subtitle">SafeIQ incident analyses and fleet intelligence recommendations</p>
+        <p className="bpl-page-subtitle">
+          SafeIQ incident analyses and fleet intelligence recommendations
+          {siteScopeLabel ? ` · filtered for ${siteScopeLabel}` : ''}
+        </p>
       </div>
 
       <div className="bpl-aria-page-grid">
@@ -27,6 +44,7 @@ export default function AiInsightsPage() {
             notifications={notifications}
             onOpen={openNotification}
             onDismiss={dismissNotification}
+            emptyHint={siteScopeLabel ? `No analyses for ${siteScopeLabel}` : null}
           />
         </section>
 
