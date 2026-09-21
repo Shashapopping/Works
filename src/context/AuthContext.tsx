@@ -6,6 +6,7 @@ import {
   authMe,
   clearSessionExpiredFlag,
   fetchAuthMode,
+  getStoredToken,
   onSessionExpired,
   permissionForPath,
   setStoredToken,
@@ -62,16 +63,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const refresh = async () => {
-    const me = await authMe();
-    const nextUser = me?.user ?? null;
-    setUser(nextUser);
-    writeCachedUser(nextUser);
-    if (nextUser) {
-      hadUserRef.current = true;
-      setSessionExpired(false);
-      clearSessionExpiredFlag();
-    } else if (hadUserRef.current) {
-      setSessionExpired(true);
+    try {
+      const me = await authMe();
+      const nextUser = me?.user ?? null;
+      setUser(nextUser);
+      writeCachedUser(nextUser);
+      if (nextUser) {
+        hadUserRef.current = true;
+        setSessionExpired(false);
+        clearSessionExpiredFlag();
+      } else if (hadUserRef.current) {
+        setSessionExpired(true);
+      }
+    } catch {
+      // Transient API/DB failure — keep existing session UI; authMe clears token on real 401.
     }
   };
 
@@ -90,14 +95,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSessionExpired(false);
         } else if (hadUserRef.current) {
           setSessionExpired(true);
+        } else {
+          // Explicit 401 / no session — logged out
+          setUser(null);
+          writeCachedUser(null);
         }
       } catch {
-        if (!cancelled) {
-          // Network / 5xx on /api/auth/me — keep cached user so a blip does not force logout.
-          if (!readCachedUser()) {
-            setUser(null);
-            writeCachedUser(null);
-          }
+        // Server blip (OOM restart, timeout) — do not wipe a still-valid cookie/JWT session.
+        if (!cancelled && !readCachedUser() && !getStoredToken()) {
+          setUser(null);
+          writeCachedUser(null);
         }
       } finally {
         if (!cancelled) setLoading(false);

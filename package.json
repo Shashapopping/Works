@@ -84,6 +84,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server.js",
+    "deploy:build": "npm run build",
     "backfill:week": "node scripts/backfill-week.js",
     "trips:compact": "node scripts/compact-trips-log.js",
     "db:migrate": "node scripts/migrate-to-sqlite.js",

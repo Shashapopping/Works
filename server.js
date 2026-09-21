@@ -440,12 +440,23 @@ app.get('/api/utilization', (req, res) => {
   }
 })
 
-// Serve built frontend
-app.use(express.static(path.join(__dirname, 'dist')))
+// Serve built frontend (dist is gitignored — always `npm run build` after deploy pull)
+const distDir = path.join(__dirname, 'dist')
+const distIndex = path.join(distDir, 'index.html')
+if (!fs.existsSync(distIndex)) {
+  console.warn('⚠️  dist/index.html missing — run: npm run build')
+}
+app.use(express.static(distDir))
 
-// All other routes serve index.html
+// SPA fallback — never throw ENOENT into the error log when build is missing
 app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'))
+  if (!fs.existsSync(distIndex)) {
+    return res
+      .status(503)
+      .type('text')
+      .send('Frontend build missing. On the server run: npm run build && pm2 restart HBM-Dashboard')
+  }
+  res.sendFile(distIndex)
 })
 
 // Start server and polling

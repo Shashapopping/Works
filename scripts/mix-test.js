@@ -17,6 +17,8 @@ import {
   updateEventAddress,
   upsertTrips,
   getTripsInRange,
+  forEachTripInRange,
+  forEachDriverTripGroupInRange,
   countTrips,
   countTripsInRange,
   loadTripTotalsInRange,
@@ -52,9 +54,10 @@ const POLL_INTERVAL_MS = 30 * 1000;
 const TRIPS_POLL_INTERVAL_MS = 5 * 60 * 1000;
 /** While the sinceToken is >2h behind (within the live window), poll more often. */
 const TRIPS_CATCHUP_POLL_MS = 30 * 1000;
-const TRIPS_PAGE_SIZE = 1000;
+/** Smaller pages keep SubTrips JSON peak heap down on 768MB Node. */
+const TRIPS_PAGE_SIZE = 250;
 /** Keep trip sync light — only a few pages per cycle (no multi-day backfill drain). */
-const TRIPS_MAX_PAGES_PER_CYCLE = 8;
+const TRIPS_MAX_PAGES_PER_CYCLE = 4;
 const TRIPS_CATCHUP_BUDGET_MS = 20_000;
 /** Only sync recent trips for live HOS/distance. Older history stays in SQLite as-is. */
 const TRIPS_LIVE_LOOKBACK_HOURS = 24;
@@ -1278,7 +1281,15 @@ async function getLatestTrips(token) {
       break;
     }
 
-    const slimList = trips.map(slimTrip);
+    // Slim one-by-one and drop SubTrips so the fat MiX page is not held twice.
+    const slimList = new Array(trips.length);
+    for (let i = 0; i < trips.length; i++) {
+      const raw = trips[i];
+      slimList[i] = slimTrip(raw);
+      if (raw && typeof raw === 'object') raw.SubTrips = undefined;
+      trips[i] = null;
+    }
+    trips = null;
     const inserted = upsertTrips(slimList, 'mix');
     totalReceived += slimList.length;
     totalInserted += inserted;
@@ -1997,13 +2008,18 @@ function computeHosRecords(dayStr) {
     }
   } catch { /* ignore */ }
 
-  const byDriver = new Map();
-  for (const raw of getTripsInRange(new Date(weekStart).toISOString(), new Date(windowEnd).toISOString())) {
-    pushNormalizedTrip(byDriver, raw, weekStart, windowEnd, liveStatusByAsset);
-  }
-
   const records = [];
-  for (const [key, allTrips] of byDriver.entries()) {
+  // Stream by driver (ordered) — same HOS rules, peak RAM ≈ one driver's week of trips.
+  forEachDriverTripGroupInRange(
+    new Date(weekStart).toISOString(),
+    new Date(windowEnd).toISOString(),
+    null,
+    (_driverId, slimRows) => {
+      const byDriver = new Map();
+      for (const raw of slimRows) {
+        pushNormalizedTrip(byDriver, raw, weekStart, windowEnd, liveStatusByAsset);
+      }
+      for (const [key, allTrips] of byDriver.entries()) {
     allTrips.sort((a, b) => a.startMs - b.startMs);
 
     const dayTrips = clipTripsToWindow(
@@ -2147,7 +2163,9 @@ function computeHosRecords(dayStr) {
       restDueAt,
       lastUpdated: new Date(nowMs).toISOString(),
     });
-  }
+      }
+    },
+  );
 
   const statusOrder = { violation: 0, warning: 1, compliant: 2 };
   records.sort((a, b) => {
@@ -2277,27 +2295,33 @@ export function getHosHeldMinutesInRange(fromIso, toIso, assetIds = null) {
   const ids = parseAssetIdList(assetIds);
   if (ids && ids.length === 0) return empty;
 
-  const byDriver = new Map();
-  for (const raw of getTripsInRange(new Date(start).toISOString(), new Date(end).toISOString(), ids)) {
-    pushNormalizedTrip(byDriver, raw, start, end);
-  }
-
+  let continuous4hMinutes = 0;
   const nowMs = Date.now();
   const isLive = end >= nowMs - 120_000;
-  let continuous4hMinutes = 0;
 
-  for (const allTrips of byDriver.values()) {
-    allTrips.sort((a, b) => a.startMs - b.startMs);
-    const windowTrips = clipTripsToWindow(allTrips, start, end);
-    if (!windowTrips.length) continue;
-    const analysis = analyzeDriverTripBlocks(windowTrips, {
-      isToday: isLive,
-      nowMs: isLive ? nowMs : end,
-      driveLimitMin: HOS_DRIVE_LIMIT_MIN,
-      restGapMin: HOS_REST_GAP_MIN,
-    });
-    continuous4hMinutes += analysis.violationDriveMinutes || 0;
-  }
+  forEachDriverTripGroupInRange(
+    new Date(start).toISOString(),
+    new Date(end).toISOString(),
+    ids,
+    (_driverId, slimRows) => {
+      const byDriver = new Map();
+      for (const raw of slimRows) {
+        pushNormalizedTrip(byDriver, raw, start, end);
+      }
+      for (const allTrips of byDriver.values()) {
+        allTrips.sort((a, b) => a.startMs - b.startMs);
+        const windowTrips = clipTripsToWindow(allTrips, start, end);
+        if (!windowTrips.length) continue;
+        const analysis = analyzeDriverTripBlocks(windowTrips, {
+          isToday: isLive,
+          nowMs: isLive ? nowMs : end,
+          driveLimitMin: HOS_DRIVE_LIMIT_MIN,
+          restGapMin: HOS_REST_GAP_MIN,
+        });
+        continuous4hMinutes += analysis.violationDriveMinutes || 0;
+      }
+    },
+  );
 
   return {
     hosHeldMinutes: continuous4hMinutes,

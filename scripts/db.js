@@ -4,7 +4,21 @@
  */
 import Database from 'better-sqlite3';
 import path from 'path';
-import { qualifiesAsOverspeed, isOverspeedLabel, OVERSPEED_MIN_KPH } from './overspeed-filter.js';
+import { OVERSPEED_MIN_KPH } from './overspeed-filter.js';
+
+const OS_EVENT_LABELS = [
+  'Overspeeding',
+  'Overspeed Tiered',
+  'Road Speed Overspeeding',
+  'Overspeeding — Excessive Speed',
+];
+
+function pushOverspeedKeepSql(conditions, params) {
+  conditions.push(
+    `(label NOT IN (${OS_EVENT_LABELS.map(() => '?').join(',')}) OR speed IS NULL OR speed = '' OR CAST(speed AS REAL) >= ${OVERSPEED_MIN_KPH})`,
+  );
+  params.push(...OS_EVENT_LABELS);
+}
 
 let db;
 let upsertTripStmt = null;
@@ -17,9 +31,10 @@ export function getDb() {
     db.pragma('foreign_keys = ON');
     // Cap page cache (~8MB) so heavy domains do not balloon RSS on small VMs
     db.pragma('cache_size = -8000');
-    db.pragma('temp_store = MEMORY');
-    // 128MB mmap is a conservative sweet spot for read-heavy dashboards.
-    db.pragma('mmap_size = 134217728');
+    // Prefer disk temp tables — large event/trip queries must not spike RAM.
+    db.pragma('temp_store = FILE');
+    // Keep mmap modest on 2GB droplets (was 128MB; that alone ate a big RSS slice).
+    db.pragma('mmap_size = 33554432');
     // Retry briefly instead of instantly throwing SQLITE_BUSY.
     db.pragma('busy_timeout = 5000');
     initSchema();
@@ -463,6 +478,41 @@ function pushTripAssetFilter(conditions, params, assetIds) {
   return { empty: false };
 }
 
+/**
+ * Event Explorer text search without loading the full date range into JS.
+ * Matches driver_name OR asset_id in the pre-resolved vehicle id list.
+ */
+export function pushEventTextSearch(conditions, params, { q, matchedAssetIds } = {}) {
+  const term = String(q || '').trim();
+  if (!term) return;
+  const like = `%${term}%`;
+  const ids = normalizeAssetIds(matchedAssetIds) || [];
+  if (!ids.length) {
+    conditions.push('driver_name LIKE ? COLLATE NOCASE');
+    params.push(like);
+    return;
+  }
+  if (ids.length > ASSET_ID_CHUNK) {
+    const database = getDb();
+    database.exec('CREATE TEMP TABLE IF NOT EXISTS tmp_search_assets (asset_id TEXT PRIMARY KEY)');
+    database.prepare('DELETE FROM tmp_search_assets').run();
+    const ins = database.prepare('INSERT OR IGNORE INTO tmp_search_assets (asset_id) VALUES (?)');
+    const tx = database.transaction((list) => {
+      for (const id of list) ins.run(id);
+    });
+    tx(ids);
+    conditions.push(
+      '(driver_name LIKE ? COLLATE NOCASE OR asset_id IN (SELECT asset_id FROM tmp_search_assets))',
+    );
+    params.push(like);
+    return;
+  }
+  conditions.push(
+    `(driver_name LIKE ? COLLATE NOCASE OR asset_id IN (${ids.map(() => '?').join(',')}))`,
+  );
+  params.push(like, ...ids);
+}
+
 /** Shared asset-scope binder for events/fuel/aggregates (chunks or TEMP table). */
 export function pushAssetIdScope(conditions, params, assetIds, col = 'asset_id') {
   if (col === 'asset_id') return pushTripAssetFilter(conditions, params, assetIds);
@@ -485,18 +535,23 @@ export function pushAssetIdScope(conditions, params, assetIds, col = 'asset_id')
   params.push(...ids);
   return { empty: false };
 }
+/** Hard ceiling when callers pass limit:null — never materialize unbounded event windows. */
+const EVENTS_UNBOUNDED_CAP = 10_000;
+
 export function getAllEvents(filters = {}) {
   const database = getDb();
   const { from, to, types, limit } = filters;
   const unbounded = limit === null;
   const parsedLimit = unbounded
-    ? ((from || to) ? null : 500)
+    ? ((from || to) ? EVENTS_UNBOUNDED_CAP : 500)
     : Math.min(Math.max(Number.isFinite(Number(limit)) ? Number(limit) : 5000, 1), 20000);
   const offset = Math.max(Number(filters.offset) || 0, 0);
   const driver = filters.driver || null;
   const assetIds = normalizeAssetIds(filters.assetIds);
   const excludeHidden = filters.excludeHidden === true || filters.excludeHidden === '1' || filters.excludeHidden === 'true';
   const acknowledgedIds = excludeHidden ? getAcknowledged() : [];
+  const searchQ = filters.searchQ || filters.q || null;
+  const searchAssetIds = filters.searchAssetIds || null;
 
   const conditions = [];
   const params = [];
@@ -512,22 +567,15 @@ export function getAllEvents(filters = {}) {
     conditions.push(`event_id NOT IN (${acknowledgedIds.map(() => '?').join(',')})`);
     params.push(...acknowledgedIds);
   }
+  pushEventTextSearch(conditions, params, { q: searchQ, matchedAssetIds: searchAssetIds });
+  pushOverspeedKeepSql(conditions, params);
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limitClause = parsedLimit == null
-    ? ''
-    : `LIMIT ${Math.floor(parsedLimit)} OFFSET ${Math.floor(offset)}`;
+  const limitClause = `LIMIT ${Math.floor(parsedLimit)} OFFSET ${Math.floor(offset)}`;
 
-  const events = database.prepare(
+  return database.prepare(
     `SELECT * FROM events ${where} ORDER BY event_time DESC ${limitClause}`,
   ).all(...params);
-
-  const filteredEvents = events.filter(e => {
-    if (!isOverspeedLabel(e.label)) return true;
-    return qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: false });
-  });
-
-  return filteredEvents;
 }
 
 /** Accept slim MiX trip or excel/db snake_case row. */
@@ -708,6 +756,167 @@ export function getTripsInRange(startIso, endIso, assetIds = null) {
   return out;
 }
 
+/**
+ * Stream trips in range without building a giant intermediate array (HOS / exposure).
+ * `fn` receives the same slim object as getTripsInRange.
+ */
+export function forEachTripInRange(startIso, endIso, assetIds, fn) {
+  const db = getDb();
+  const ids = Array.isArray(assetIds)
+    ? [...new Set(assetIds.map(id => id?.toString()).filter(Boolean))]
+    : null;
+  if (ids && ids.length === 0) return 0;
+
+  let n = 0;
+  const visit = (row) => {
+    fn(mapTripRow(row));
+    n += 1;
+  };
+
+  if (!ids) {
+    const stmt = db.prepare(`
+      SELECT trip_id, asset_id, driver_id, trip_start, trip_end,
+             distance_km, driving_time, duration, max_speed_kph,
+             driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
+      FROM trips
+      WHERE (
+        (trip_end IS NOT NULL AND trip_end >= ? AND trip_end < ?)
+        OR
+        (trip_end IS NULL AND trip_start >= ? AND trip_start < ?)
+      )
+    `);
+    for (const row of stmt.iterate(startIso, endIso, startIso, endIso)) visit(row);
+    return n;
+  }
+
+  const CHUNK = 80;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    const stmt = db.prepare(`
+      SELECT trip_id, asset_id, driver_id, trip_start, trip_end,
+             distance_km, driving_time, duration, max_speed_kph,
+             driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
+      FROM trips
+      WHERE asset_id IN (${placeholders})
+        AND (
+          (trip_end IS NOT NULL AND trip_end >= ? AND trip_end < ?)
+          OR
+          (trip_end IS NULL AND trip_start >= ? AND trip_start < ?)
+        )
+    `);
+    for (const row of stmt.iterate(...chunk, startIso, endIso, startIso, endIso)) visit(row);
+  }
+  return n;
+}
+
+/**
+ * Stream trips grouped by driver_id (ordered). Invokes onGroup(driverId, slimRows)
+ * once per driver then drops that driver's rows — peak RAM ≈ one driver's week.
+ * Same trip fields as getTripsInRange / forEachTripInRange.
+ */
+export function forEachDriverTripGroupInRange(startIso, endIso, assetIds, onGroup) {
+  const db = getDb();
+  const ids = Array.isArray(assetIds)
+    ? [...new Set(assetIds.map(id => id?.toString()).filter(Boolean))]
+    : null;
+  if (ids && ids.length === 0) return 0;
+
+  const rangeSql = `(
+    (trip_end IS NOT NULL AND trip_end >= ? AND trip_end < ?)
+    OR
+    (trip_end IS NULL AND trip_start >= ? AND trip_start < ?)
+  )`;
+  const selectSql = `
+    SELECT trip_id, asset_id, driver_id, trip_start, trip_end,
+           distance_km, driving_time, duration, max_speed_kph,
+           driving_hours, standing_hours, idle_hours, engine_hours, has_subtrips
+    FROM trips
+  `;
+
+  let groups = 0;
+  const runOrdered = (sql, params) => {
+    let currentId = null;
+    let bucket = [];
+    const flush = () => {
+      if (currentId == null || !bucket.length) {
+        bucket = [];
+        return;
+      }
+      onGroup(currentId, bucket);
+      groups += 1;
+      bucket = [];
+    };
+    for (const row of db.prepare(sql).iterate(...params)) {
+      const did = row.driver_id != null ? String(row.driver_id) : '';
+      if (!did) continue;
+      if (currentId != null && did !== currentId) flush();
+      currentId = did;
+      bucket.push(mapTripRow(row));
+    }
+    flush();
+  };
+
+  if (!ids) {
+    runOrdered(
+      `${selectSql}
+       WHERE driver_id IS NOT NULL AND driver_id != '' AND ${rangeSql}
+       ORDER BY driver_id, COALESCE(trip_start, trip_end)`,
+      [startIso, endIso, startIso, endIso],
+    );
+    return groups;
+  }
+
+  // SQLite default bind limit is 999. Keep headroom for the 4 range binds.
+  const MAX_IDS_PER_QUERY = 900;
+  if (ids.length <= MAX_IDS_PER_QUERY) {
+    const placeholders = ids.map(() => '?').join(',');
+    runOrdered(
+      `${selectSql}
+       WHERE asset_id IN (${placeholders})
+         AND driver_id IS NOT NULL AND driver_id != ''
+         AND ${rangeSql}
+       ORDER BY driver_id, COALESCE(trip_start, trip_end)`,
+      [...ids, startIso, endIso, startIso, endIso],
+    );
+    return groups;
+  }
+
+  // Large asset lists: never flush per asset-chunk (that would split one driver's
+  // trips across groups and corrupt continuous-driving / rest-gap HOS math).
+  // Accumulate by driver across chunks, then invoke onGroup once per driver.
+  const byDriver = new Map();
+  const CHUNK = 80;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    const sql = `${selectSql}
+      WHERE asset_id IN (${placeholders})
+        AND driver_id IS NOT NULL AND driver_id != ''
+        AND ${rangeSql}
+      ORDER BY driver_id, COALESCE(trip_start, trip_end)`;
+    for (const row of db.prepare(sql).iterate(
+      ...chunk, startIso, endIso, startIso, endIso,
+    )) {
+      const did = row.driver_id != null ? String(row.driver_id) : '';
+      if (!did) continue;
+      if (!byDriver.has(did)) byDriver.set(did, []);
+      byDriver.get(did).push(mapTripRow(row));
+    }
+  }
+  for (const [did, bucket] of byDriver) {
+    if (!bucket.length) continue;
+    bucket.sort((a, b) => {
+      const sa = a.TripStart || a.TripEnd || '';
+      const sb = b.TripStart || b.TripEnd || '';
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    });
+    onGroup(did, bucket);
+    groups += 1;
+  }
+  return groups;
+}
+
 function fuelDedupeKey({ assetId, timestamp, level, eventType, eventId }) {
   if (eventId) return `id:${eventId}`;
   return `ts:${assetId}:${timestamp}:${level}:${eventType || ''}`;
@@ -747,8 +956,15 @@ export function insertFuelReadings(entries) {
   return tx(entries);
 }
 
+/** Hard ceiling — never materialize unbounded fuel windows into the Node heap. */
+const FUEL_HISTORY_HARD_CAP = 50_000;
+
 /** CamelCase rows for existing fuel APIs / consumption engine. */
-export function getFuelHistory({ fromIso = null, toIso = null, eventType = null, assetIds = null } = {}) {
+export function getFuelHistory({ fromIso = null, toIso = null, eventType = null, assetIds = null, limit = FUEL_HISTORY_HARD_CAP } = {}) {
+  const hardLimit = Math.min(
+    Math.max(Number.isFinite(Number(limit)) ? Number(limit) : FUEL_HISTORY_HARD_CAP, 1),
+    FUEL_HISTORY_HARD_CAP,
+  );
   const run = (chunkIds) => {
     const conditions = [];
     const params = [];
@@ -770,7 +986,7 @@ export function getFuelHistory({ fromIso = null, toIso = null, eventType = null,
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     return getDb().prepare(
       `SELECT asset_id, timestamp, level, event_type, event_id, driver_id
-       FROM fuel_history ${where} ORDER BY timestamp ASC`,
+       FROM fuel_history ${where} ORDER BY timestamp ASC LIMIT ${hardLimit}`,
     ).all(...params).map(r => ({
       assetId: r.asset_id,
       timestamp: r.timestamp,
@@ -781,6 +997,8 @@ export function getFuelHistory({ fromIso = null, toIso = null, eventType = null,
     }));
   };
   const rows = queryByAssetIdChunks(assetIds, run);
+  // Chunked queries each apply LIMIT — trim again after merge.
+  if (rows.length > hardLimit) rows.length = hardLimit;
   if (normalizeAssetIds(assetIds)?.length > ASSET_ID_CHUNK) {
     rows.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
   }
@@ -925,6 +1143,53 @@ export function loadTripRollupsByAsset(fromIso, toIso, assetIds = null) {
            COALESCE(SUM(distance_km), 0) AS totalDistanceKm,
            COALESCE(SUM(COALESCE(driving_time, 0)), 0) / 3600.0 AS totalDrivingHours,
            MAX(COALESCE(trip_end, trip_start)) AS lastEndedAt
+    FROM trips
+    ${where}
+    GROUP BY asset_id
+  `).all(...params);
+}
+
+/**
+ * Utilization rollups — drive / idle / engine hours in SQL (no per-trip JS materialization).
+ * Engine hours prefer engine_hours; else driving+standing; else duration for legacy rows.
+ */
+export function loadUtilRollupsByAsset(fromIso, toIso, assetIds = null) {
+  const database = getDb();
+  const { conditions, params } = tripRangeWhere(fromIso, toIso);
+  if (pushTripAssetFilter(conditions, params, assetIds).empty) return [];
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  return database.prepare(`
+    SELECT asset_id AS assetId,
+           COUNT(*) AS tripCount,
+           COALESCE(SUM(distance_km), 0) AS totalDistanceKm,
+           COALESCE(SUM(
+             CASE
+               WHEN driving_hours IS NOT NULL AND driving_hours > 0 THEN driving_hours
+               WHEN driving_time IS NOT NULL AND driving_time > 0 THEN driving_time / 3600.0
+               ELSE 0
+             END
+           ), 0) AS totalDrivingHours,
+           COALESCE(SUM(
+             CASE
+               WHEN idle_hours IS NOT NULL AND idle_hours > 0 THEN idle_hours
+               WHEN standing_hours IS NOT NULL AND standing_hours > 0 THEN standing_hours
+               ELSE 0
+             END
+           ), 0) AS totalIdleHours,
+           COALESCE(SUM(
+             CASE
+               WHEN engine_hours IS NOT NULL AND engine_hours > 0 THEN engine_hours
+               WHEN COALESCE(driving_hours, 0) + COALESCE(standing_hours, 0) > 0
+                 THEN COALESCE(driving_hours, 0) + COALESCE(standing_hours, 0)
+               WHEN COALESCE(has_subtrips, 0) = 0 AND duration IS NOT NULL AND duration > 0
+                 THEN duration / 3600.0
+               ELSE
+                 CASE
+                   WHEN driving_time IS NOT NULL AND driving_time > 0 THEN driving_time / 3600.0
+                   ELSE 0
+                 END
+             END
+           ), 0) AS totalEngineHours
     FROM trips
     ${where}
     GROUP BY asset_id

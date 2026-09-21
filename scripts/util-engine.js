@@ -4,7 +4,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { getTripsInRange } from './db.js';
+import { loadUtilRollupsByAsset } from './db.js';
 
 const QUARRY_ZONES = new Set(['QUARRY EWEKORO', 'QUARRY MFAMOSING']);
 
@@ -262,22 +262,24 @@ function computeUtilizationFresh({
 
   if (assetIds.size === 0) return emptyPayload(start, end, windowHours, scope);
 
-  const trips = getTripsInRange(
+  const rollups = loadUtilRollupsByAsset(
     new Date(start).toISOString(),
     new Date(end + 1).toISOString(),
     [...assetIds],
   );
-  const runtimeByAsset = computeRuntime(trips);
+  const runtimeByAsset = new Map(
+    rollups.map(r => [String(r.assetId), r]),
+  );
 
   const fleetAssetCount = assetIds.size;
   let assetsWithTrips = 0;
   const assets = [...assetIds].map(id => {
     const info = vehicles.get(id) || {};
     const r = runtimeByAsset.get(id);
-    const engineHours = (r?.engineSeconds || 0) / 3600;
-    const drivingHours = (r?.drivingSeconds || 0) / 3600;
-    const idleHours = (r?.idleSeconds || 0) / 3600;
-    const tripCount = r?.tripCount || 0;
+    const engineHours = Number(r?.totalEngineHours) || 0;
+    const drivingHours = Number(r?.totalDrivingHours) || 0;
+    const idleHours = Number(r?.totalIdleHours) || 0;
+    const tripCount = Number(r?.tripCount) || 0;
     if (tripCount > 0) assetsWithTrips += 1;
     return {
       assetId: id,
@@ -290,7 +292,7 @@ function computeUtilizationFresh({
       drivingHours,
       idleHours,
       tripCount,
-      distanceKm: r?.distanceKm || 0,
+      distanceKm: Number(r?.totalDistanceKm) || 0,
       utilizationPct: engineHours > 0 ? Math.min(100, (drivingHours / engineHours) * 100) : null,
       availabilityPct: windowHours > 0 && engineHours > 0 ? Math.min(100, (engineHours / windowHours) * 100) : null,
     };

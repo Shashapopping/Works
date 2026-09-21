@@ -1,7 +1,7 @@
 /**
  * SQL census for facts (score, incident totals, risk). Never returns event rows.
  */
-import { getAcknowledged, getDb, pushAssetIdScope } from './db.js';
+import { getAcknowledged, getDb, pushAssetIdScope, pushEventTextSearch } from './db.js';
 import { OVERSPEED_MIN_KPH } from './overspeed-filter.js';
 
 export const SCORING_LABELS = [
@@ -59,6 +59,10 @@ export function countMatchingEvents(filters = {}) {
     conditions.push('driver_name = ?');
     params.push(driver);
   }
+  pushEventTextSearch(conditions, params, {
+    q: filters.searchQ || filters.q || null,
+    matchedAssetIds: filters.searchAssetIds || null,
+  });
   if (hiddenIds.length) {
     conditions.push(`event_id NOT IN (${hiddenIds.map(() => '?').join(',')})`);
     params.push(...hiddenIds);
