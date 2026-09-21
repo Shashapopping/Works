@@ -40,6 +40,9 @@ export interface KpiData {
   scope: KpiScope;
   summary: {
     assetCount: number;
+    /** Vehicles in scope (full fleet size) — for activity %, not only assets with trips. */
+    fleetAssetCount?: number;
+    assetsWithTrips?: number;
     totalEngineHours: number;
     totalDrivingHours: number;
     totalIdleHours: number;

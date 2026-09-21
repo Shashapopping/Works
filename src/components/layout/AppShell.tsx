@@ -304,6 +304,13 @@ export default function AppShell() {
   const { title, sub } = getPageTitle(location.pathname);
   const visibleNotifications = notifications.filter(n => isKnownDriver(n.driver.name));
   const bellCount = teamUnread + (SAFEIQ_ENABLED ? visibleNotifications.length : 0);
+  // Full fleet: 10m live toasts. Scoped (e.g. Joza): 30m — fewer events.
+  const toastMaxAgeMs = siteFilterActive ? 30 * 60 * 1000 : 10 * 60 * 1000;
+  const toastNotifications = visibleNotifications.filter(n => {
+    if (toastDismissed.has(n.id)) return false;
+    const t = new Date(n.timestamp).getTime();
+    return Number.isFinite(t) && Date.now() - t < toastMaxAgeMs;
+  });
 
   const openTeamNotification = (n: UserNotification) => {
     dismissTeamNotification(n.id);
@@ -450,11 +457,7 @@ export default function AppShell() {
 
       {SAFEIQ_ENABLED && (
         <SafetyToast
-          notifications={notifications.filter(n => {
-            if (toastDismissed.has(n.id)) return false;
-            const t = new Date(n.timestamp).getTime();
-            return Number.isFinite(t) && Date.now() - t < 10 * 60 * 1000;
-          })}
+          notifications={toastNotifications}
           onDismiss={id => setToastDismissed(prev => new Set([...prev, id]))}
           onClearAll={() => setToastDismissed(new Set(notifications.map(n => n.id)))}
           onOpen={openNotification}
@@ -467,9 +470,10 @@ export default function AppShell() {
       <LogoutConfirmModal
         open={logoutConfirmOpen}
         onCancel={() => setLogoutConfirmOpen(false)}
-        onConfirm={async () => {
+        onConfirm={() => {
           setLogoutConfirmOpen(false);
-          await logout();
+          // Local session clears immediately; do not await a slow server round-trip.
+          void logout();
           navigate('/login');
         }}
       />

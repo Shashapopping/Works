@@ -10,12 +10,15 @@ type LoginPortal = 'admin' | 'transporter';
 export default function Login() {
   const { user, loading, login, changePassword } = useAuth();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from || '/';
+  const from = (location.state as { from?: string; reason?: string } | null)?.from || '/';
+  const sessionExpired = (location.state as { reason?: string } | null)?.reason === 'session_expired';
 
   const [portal, setPortal] = useState<LoginPortal | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(() => (
+    sessionExpired ? 'Your session expired. Please sign in again.' : ''
+  ));
   const [busy, setBusy] = useState(false);
 
   const [currentPassword, setCurrentPassword] = useState('');
@@ -28,7 +31,10 @@ export default function Login() {
     const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
     const oauthErr = params.get('msg');
     if (params.get('oauth') && oauthErr) setError(oauthErr);
-  }, []);
+    else if ((location.state as { reason?: string } | null)?.reason === 'session_expired') {
+      setError('Your session expired. Please sign in again.');
+    }
+  }, [location.state]);
 
   if (loading) {
     return (

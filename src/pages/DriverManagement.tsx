@@ -400,13 +400,6 @@ export default function DriverManagement() {
   }, [dateRange, customRange]);
 
   useEffect(() => {
-    const q = searchParams.get('q');
-    if (!q) return;
-    setSearch(q);
-    setExpandedDrivers(new Set([q]));
-  }, []);
-
-  useEffect(() => {
     setExpandEvents({});
     setExpandLoading({});
   }, [dateRange, customRange.from, customRange.to]);
@@ -508,14 +501,29 @@ export default function DriverManagement() {
       });
   };
 
-  // Deep-link ?q= — load expand events once the matched driver is known
+  // Deep-link ?q= — re-run when q changes (including while already on this page).
+  const deepLinkQ = searchParams.get('q')?.trim() || '';
   useEffect(() => {
-    const q = searchParams.get('q');
-    if (!q || drivers.length === 0) return;
-    const match = drivers.find(d => d.key === q || d.name === q);
-    if (match) loadExpandEvents(match);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drivers.length > 0]);
+    if (!deepLinkQ) return;
+    setSearch(deepLinkQ);
+    if (drivers.length === 0) {
+      setExpandedDrivers(new Set([deepLinkQ]));
+      return;
+    }
+    const qLower = deepLinkQ.toLowerCase();
+    const match = drivers.find(d =>
+      d.key.toLowerCase() === qLower
+      || d.name.toLowerCase() === qLower
+      || displayDriverName(d.name).toLowerCase() === qLower
+    );
+    if (match) {
+      setExpandedDrivers(new Set([match.key, match.name, deepLinkQ]));
+      loadExpandEvents(match);
+    } else {
+      setExpandedDrivers(new Set([deepLinkQ]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deep-link + drivers ready
+  }, [deepLinkQ, drivers.length]);
 
   const debouncedSearch = useDebouncedValue(search, 200);
   const deferredSearch = useDeferredValue(debouncedSearch);

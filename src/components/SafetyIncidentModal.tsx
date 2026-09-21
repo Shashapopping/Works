@@ -7,7 +7,7 @@ import { brandLabel } from '../lib/branding';
 
 // ─── keyword highlight ────────────────────────────────────────────────────────
 const DANGER_PATTERN = /\b(harsh braking|harsh acceleration|overspeeding|overspeed tiered|overspeed|cornering|panic alert|panic|tailgating|following distance|speeding|collision|near.miss|critical|immediate action|intervention required)\b/gi;
-const IMPORTANT_PATTERN = /\b(rain|wet|fog|visibility|slippery|heavy traffic|congestion|peak hour|FMCSA|FRSC|ISO 39001|BASIC|threshold|recurring|pattern|behaviour|behavior|trend|escalat)\b/gi;
+const IMPORTANT_PATTERN = /\b(rain|wet|fog|visibility|slippery|heavy traffic|congestion|peak hour|FRSC|ISO 55001|ISO|RTSSS|threshold|recurring|pattern|behaviour|behavior|trend|escalat)\b/gi;
 
 function HighlightedText({ text }: { text: string }) {
   const combined = new RegExp(
@@ -132,7 +132,8 @@ export default function SafetyIncidentModal({ notification: n, onClose }: Props)
 
   const goToDriver = () => {
     onClose();
-    navigate(`/drivers?q=${encodeURIComponent(displayDriverName(n.driver.name))}`);
+    // Use the raw telematics name so Driver Management can match d.name / d.key.
+    navigate(`/drivers?q=${encodeURIComponent(n.driver.name)}`);
   };
 
   const overlayStyle: React.CSSProperties = {
@@ -284,7 +285,7 @@ export default function SafetyIncidentModal({ notification: n, onClose }: Props)
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
                       {analysis.industry_citations.map(c => (
                         <a
-                          key={c.url}
+                          key={`${c.tag}:${c.org}:${c.url}`}
                           href={c.url}
                           target="_blank"
                           rel="noopener noreferrer"

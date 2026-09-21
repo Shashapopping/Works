@@ -1,11 +1,14 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   authChangePassword,
   authLogin,
   authLogout,
   authMe,
+  clearSessionExpiredFlag,
   fetchAuthMode,
+  onSessionExpired,
   permissionForPath,
+  setStoredToken,
   type AuthUser,
 } from '../lib/authApi';
 import { resetApiWarmState, warmHomeApisOnce } from '../lib/apiWarm';
@@ -14,6 +17,7 @@ import { clearHomeSnapshot } from '../lib/homeSnapshot';
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
+  sessionExpired: boolean;
   login: (email: string, password: string, viaTransporterPortal?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   changePassword: (current: string, next: string) => Promise<void>;
@@ -46,12 +50,29 @@ function writeCachedUser(user: AuthUser | null) {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => readCachedUser());
   const [loading, setLoading] = useState(() => !readCachedUser());
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const hadUserRef = useRef(!!readCachedUser());
+
+  const clearLocalSession = () => {
+    resetApiWarmState();
+    clearHomeSnapshot();
+    setStoredToken(null);
+    setUser(null);
+    writeCachedUser(null);
+  };
 
   const refresh = async () => {
     const me = await authMe();
     const nextUser = me?.user ?? null;
     setUser(nextUser);
     writeCachedUser(nextUser);
+    if (nextUser) {
+      hadUserRef.current = true;
+      setSessionExpired(false);
+      clearSessionExpiredFlag();
+    } else if (hadUserRef.current) {
+      setSessionExpired(true);
+    }
   };
 
   useEffect(() => {
@@ -60,15 +81,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         void fetchAuthMode().catch(() => null);
         const me = await authMe();
-        if (!cancelled) {
-          const nextUser = me?.user ?? null;
-          setUser(nextUser);
-          writeCachedUser(nextUser);
+        if (cancelled) return;
+        const nextUser = me?.user ?? null;
+        setUser(nextUser);
+        writeCachedUser(nextUser);
+        if (nextUser) {
+          hadUserRef.current = true;
+          setSessionExpired(false);
+        } else if (hadUserRef.current) {
+          setSessionExpired(true);
         }
       } catch {
         if (!cancelled) {
-          setUser(null);
-          writeCachedUser(null);
+          // Network / 5xx on /api/auth/me — keep cached user so a blip does not force logout.
+          if (!readCachedUser()) {
+            setUser(null);
+            writeCachedUser(null);
+          }
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -78,21 +107,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    return onSessionExpired(() => {
+      if (!hadUserRef.current && !readCachedUser()) return;
+      hadUserRef.current = false;
+      setSessionExpired(true);
+      clearLocalSession();
+    });
+  }, []);
+
+  useEffect(() => {
     if (user) warmHomeApisOnce();
   }, [user]);
 
   const login = async (email: string, password: string, viaTransporterPortal?: boolean) => {
     const u = await authLogin(email, password, viaTransporterPortal);
+    hadUserRef.current = true;
+    setSessionExpired(false);
+    clearSessionExpiredFlag();
     setUser(u);
     writeCachedUser(u);
   };
 
+  /** Clear UI immediately; server logout is best-effort with a short timeout. */
   const logout = async () => {
-    resetApiWarmState();
-    clearHomeSnapshot();
+    hadUserRef.current = false;
+    setSessionExpired(false);
+    clearSessionExpiredFlag();
+    clearLocalSession();
     await authLogout();
-    setUser(null);
-    writeCachedUser(null);
   };
 
   const changePassword = async (current: string, next: string) => {
@@ -113,7 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, loading, login, logout, changePassword, refresh, hasPermission, canAccessPath,
+      user, loading, sessionExpired, login, logout, changePassword, refresh, hasPermission, canAccessPath,
     }}>
       {children}
     </AuthContext.Provider>

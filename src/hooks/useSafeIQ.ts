@@ -35,10 +35,14 @@ export interface EnvironmentContext {
 }
 
 export interface IndustryCitation {
+  /** Short chip label, e.g. "FRSC · Speeding". */
   label: string;
   url: string;
-  /** Short note shown on the citation chip (what this source supports). */
+  /** Hover text: what this source supports for this card. */
   note: string;
+  /** SafeIQ response section this citation is tagged to. */
+  tag: 'weather' | 'traffic' | 'speeding' | 'trend' | 'hos';
+  org: 'FRSC' | 'ISO 55001';
 }
 
 export interface SafeIQAnalysis {

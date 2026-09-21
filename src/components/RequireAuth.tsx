@@ -9,7 +9,7 @@ const FALLBACK_PATHS = [
 ];
 
 export default function RequireAuth() {
-  const { user, loading, canAccessPath, hasPermission } = useAuth();
+  const { user, loading, canAccessPath, hasPermission, sessionExpired } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -21,7 +21,16 @@ export default function RequireAuth() {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{
+          from: location.pathname,
+          ...(sessionExpired ? { reason: 'session_expired' as const } : {}),
+        }}
+      />
+    );
   }
 
   if (user.mustChangePassword) {

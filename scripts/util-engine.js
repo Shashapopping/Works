@@ -223,6 +223,8 @@ function emptyPayload(start, end, windowHours, scope) {
     scope,
     summary: {
       assetCount: 0,
+      fleetAssetCount: 0,
+      assetsWithTrips: 0,
       totalEngineHours: 0,
       totalDrivingHours: 0,
       totalIdleHours: 0,
@@ -267,12 +269,16 @@ function computeUtilizationFresh({
   );
   const runtimeByAsset = computeRuntime(trips);
 
+  const fleetAssetCount = assetIds.size;
+  let assetsWithTrips = 0;
   const assets = [...assetIds].map(id => {
     const info = vehicles.get(id) || {};
     const r = runtimeByAsset.get(id);
     const engineHours = (r?.engineSeconds || 0) / 3600;
     const drivingHours = (r?.drivingSeconds || 0) / 3600;
     const idleHours = (r?.idleSeconds || 0) / 3600;
+    const tripCount = r?.tripCount || 0;
+    if (tripCount > 0) assetsWithTrips += 1;
     return {
       assetId: id,
       regNo: info.regNo || id,
@@ -283,7 +289,7 @@ function computeUtilizationFresh({
       engineHours,
       drivingHours,
       idleHours,
-      tripCount: r?.tripCount || 0,
+      tripCount,
       distanceKm: r?.distanceKm || 0,
       utilizationPct: engineHours > 0 ? Math.min(100, (drivingHours / engineHours) * 100) : null,
       availabilityPct: windowHours > 0 && engineHours > 0 ? Math.min(100, (engineHours / windowHours) * 100) : null,
@@ -302,6 +308,8 @@ function computeUtilizationFresh({
     scope,
     summary: {
       assetCount: assets.length,
+      fleetAssetCount,
+      assetsWithTrips,
       totalEngineHours: sum(a => a.engineHours),
       totalDrivingHours: sum(a => a.drivingHours),
       totalIdleHours: sum(a => a.idleHours),

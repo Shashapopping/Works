@@ -42,8 +42,33 @@ export class ApiError extends Error {
 }
 
 const JWT_STORAGE_KEY = 'bpl_jwt_token';
+const SESSION_EXPIRED_EVENT = 'hbm:session-expired';
+const LOGOUT_FETCH_TIMEOUT_MS = 1500;
 
 let authMode: 'jwt' | 'session' | null = null;
+let sessionExpiredNotified = false;
+
+/** Soft signal that the cookie/JWT session is gone — AuthContext clears local user. */
+export function notifySessionExpired() {
+  if (sessionExpiredNotified) return;
+  sessionExpiredNotified = true;
+  setStoredToken(null);
+  try {
+    window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearSessionExpiredFlag() {
+  sessionExpiredNotified = false;
+}
+
+export function onSessionExpired(handler: () => void) {
+  const listener = () => handler();
+  window.addEventListener(SESSION_EXPIRED_EVENT, listener);
+  return () => window.removeEventListener(SESSION_EXPIRED_EVENT, listener);
+}
 
 export function getStoredToken(): string | null {
   try {
@@ -73,7 +98,7 @@ export function authFetchInit(init: RequestInit = {}): RequestInit {
   return { ...init, credentials: 'include', headers };
 }
 
-async function parseJson(res: Response) {
+async function parseJson(res: Response, opts?: { treat401AsSessionExpired?: boolean }) {
   const data = await res.json().catch(() => ({})) as {
     error?: string;
     code?: string;
@@ -82,6 +107,13 @@ async function parseJson(res: Response) {
     upgrade?: boolean;
   };
   if (!res.ok) {
+    if (res.status === 401 && opts?.treat401AsSessionExpired) {
+      notifySessionExpired();
+      throw new ApiError('Session expired. Please sign in again.', {
+        status: 401,
+        code: data.code || 'session_expired',
+      });
+    }
     throw new ApiError(data.error || res.statusText || 'Request failed', {
       status: res.status,
       code: data.code,
@@ -128,10 +160,12 @@ export async function authMe(): Promise<{ user: AuthUser; authMode?: string } | 
   const res = await fetch('/api/auth/me', authFetchInit());
   if (res.status === 401) {
     setStoredToken(null);
+    notifySessionExpired();
     return null;
   }
   const data = await parseJson(res) as { user: AuthUser; authMode?: 'jwt' | 'session' };
   if (data.authMode) authMode = data.authMode;
+  clearSessionExpiredFlag();
   return data;
 }
 
@@ -164,12 +198,22 @@ export async function authLogin(
   if (data.authMode) authMode = data.authMode;
   if (data.token) setStoredToken(data.token);
   else setStoredToken(null);
+  clearSessionExpiredFlag();
   return data.user;
 }
 
+/** Clear server session — bounded so a busy Node process cannot stall the UI. */
 export async function authLogout(): Promise<void> {
-  await fetch('/api/auth/logout', authFetchInit({ method: 'POST' }));
-  setStoredToken(null);
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), LOGOUT_FETCH_TIMEOUT_MS);
+  try {
+    await fetch('/api/auth/logout', authFetchInit({ method: 'POST', signal: controller.signal }));
+  } catch {
+    /* timeout / offline — local logout already applied */
+  } finally {
+    window.clearTimeout(timer);
+    setStoredToken(null);
+  }
 }
 
 export async function authChangePassword(currentPassword: string, newPassword: string): Promise<void> {
@@ -183,7 +227,7 @@ export async function authChangePassword(currentPassword: string, newPassword: s
 
 export async function fetchRoles() {
   const res = await fetch('/api/roles', authFetchInit());
-  return parseJson(res) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
+  return parseJson(res, { treat401AsSessionExpired: true }) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
 }
 
 export async function putRoles(roles: Array<{ id: string; name: string; desc: string; permissions: string[] }>) {
@@ -192,13 +236,13 @@ export async function putRoles(roles: Array<{ id: string; name: string; desc: st
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ roles }),
   }));
-  return parseJson(res) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
+  return parseJson(res, { treat401AsSessionExpired: true }) as Promise<{ roles: Array<{ id: string; name: string; desc: string; permissions: string[] }> }>;
 }
 
 export async function fetchUsers(scope: 'client' | 'all' = 'client') {
   const qs = scope === 'all' ? '?scope=all' : '';
   const res = await fetch(`/api/users${qs}`, authFetchInit());
-  return parseJson(res) as Promise<{
+  return parseJson(res, { treat401AsSessionExpired: true }) as Promise<{
     users: AuthUser[];
     roles: Array<{ id: string; name: string; desc: string }>;
     seats: SeatInfo;
@@ -219,7 +263,7 @@ export async function createUserApi(body: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }));
-  return parseJson(res) as Promise<{
+  return parseJson(res, { treat401AsSessionExpired: true }) as Promise<{
     user: AuthUser & { emailSent?: boolean; emailError?: string | null };
     seats?: SeatInfo;
   }>;
@@ -239,7 +283,7 @@ export async function patchUserApi(id: string, body: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }));
-  return parseJson(res) as Promise<{ user: AuthUser; seats?: SeatInfo }>;
+  return parseJson(res, { treat401AsSessionExpired: true }) as Promise<{ user: AuthUser; seats?: SeatInfo }>;
 }
 
 /** Map app paths to permission ids */
@@ -291,6 +335,10 @@ export async function fetchAuthJsonCached<T>(
     CACHE_TTL.admin,
     async () => {
       const res = await fetch(url, authFetchInit());
+      if (res.status === 401) {
+        notifySessionExpired();
+        return null;
+      }
       if (!res.ok) return null;
       return parseJson(res) as T;
     },

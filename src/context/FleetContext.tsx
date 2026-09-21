@@ -38,7 +38,7 @@ import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL, authCachedJson, safe
 import { fetchHosCached, peekHos } from '../hooks/useHosRecords';
 import { buildHosUrl, type HosRecord } from '../lib/hos';
 import { startJitteredInterval } from '../lib/pollSchedule';
-import { SAFEIQ_ENABLED, safeIqTrendFromCounts } from '../config/safeIq';
+import { SAFEIQ_ENABLED, SAFEIQ_SPEED_LIMIT_KMH, safeIqTrendFromCounts } from '../config/safeIq';
 import { filterOverspeedEvents, isOverspeedLabel, qualifiesAsOverspeed } from '../lib/overspeedFilter';
 import { appendUrlScope, filterDistanceAssetsByVehicles, filterTripDriversByVehicles, fleetScopeOpts, scopedAssetIdList } from '../lib/siteScope';
 import { isExcludedFleetPlacement } from '../lib/fleetExclusions';
@@ -636,7 +636,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       }
 
         // Bust in-memory cards when SafeIQ copy templates change.
-        const SAFEIQ_COPY_VERSION = 'v4';
+        const SAFEIQ_COPY_VERSION = 'v9';
         if (!seenEventIds.current.has(`__copy:${SAFEIQ_COPY_VERSION}`)) {
           seenEventIds.current.clear();
           seenEventIds.current.add(`__copy:${SAFEIQ_COPY_VERSION}`);
@@ -663,8 +663,29 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
           `/api/events/log?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&limit=400&types=${typesParam}`,
           safeIqScope,
         );
-        const scopedAssetSet = safeIqScope.assetIds?.length
-          ? new Set(safeIqScope.assetIds.map(String))
+        const siteScoped = selectedSites.length > 0;
+        const allowedSiteKeys = siteScoped
+          ? new Set(selectedSites.map(s => s.trim().toLowerCase()).filter(Boolean))
+          : null;
+        const scopedVehicles = allowedSiteKeys
+          ? vehiclesRef.current.filter(v => {
+              const zone = ((v.zone || '').trim() || 'Unknown').toLowerCase();
+              const site = (v.site || '').trim().toLowerCase();
+              const transporter = (v.transporter || '').trim().toLowerCase();
+              return allowedSiteKeys.has(zone) || allowedSiteKeys.has(site) || allowedSiteKeys.has(transporter);
+            })
+          : null;
+        const scopedAssetSet = scopedVehicles
+          ? new Set(scopedVehicles.map(v => v.id?.toString().trim()).filter(Boolean) as string[])
+          : (safeIqScope.assetIds?.length
+            ? new Set(safeIqScope.assetIds.map(String))
+            : null);
+        const scopedRegSet = scopedVehicles
+          ? new Set(
+              scopedVehicles
+                .map(v => (v.regNo || '').trim().toLowerCase())
+                .filter(Boolean),
+            )
           : null;
         const safetyData = await cachedFetchJson<LogEntry[]>(
           safetyUrl,
@@ -676,13 +697,22 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
             return Array.isArray(payload) ? payload : payload?.entries ?? [];
           },
         );
-        const pool = Array.isArray(safetyData) ? safetyData : data;
+        // Never fall back to an unscoped event pool when a site filter is active.
+        const pool = siteScoped
+          ? (Array.isArray(safetyData) ? safetyData : [])
+          : (Array.isArray(safetyData) ? safetyData : data);
 
         const now = Date.now();
         const qualifying = pool.filter(e => {
           if (!e.eventId || !SAFEIQ_LABELS.has(e.label || '') || !isKnownDriver(e.driverName)) return false;
           if (!qualifiesAsOverspeed(e.label, e.speed, { requireSpeed: true })) return false;
-          if (scopedAssetSet && (e.assetId == null || !scopedAssetSet.has(String(e.assetId)))) return false;
+          if (siteScoped) {
+            // Same gate as event cards: must belong to the selected site's fleet.
+            if (!scopedAssetSet?.size && !scopedRegSet?.size) return false;
+            const idOk = e.assetId != null && !!scopedAssetSet?.has(String(e.assetId).trim());
+            const regOk = !!e.regNo && !!scopedRegSet?.has(e.regNo.trim().toLowerCase());
+            if (!idOk && !regOk) return false;
+          }
           const t = new Date(e.eventTime || e.timestamp).getTime();
           return Number.isFinite(t) && now - t < TREND_LOOKBACK_MS;
         });
@@ -721,7 +751,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
             const newNotifs: SafetyNotification[] = toAnalyse.map(e => {
               const stats = getDriverStats(e.driverName);
               const scoreBaseline = Math.max(35, Math.min(100, 100 - stats.incidents * 3));
-              const vehicleRecord = vehiclesRef.current.find(v => v.id === e.assetId?.toString() || v.regNo === e.regNo);
+              const vehicleRecord = vehiclesRef.current.find(v =>
+                (e.assetId != null && v.id === e.assetId?.toString())
+                || (!!e.regNo && v.regNo === e.regNo),
+              );
               const tankerAsset = /tanker/i.test(`${vehicleRecord?.site ?? ''} ${vehicleRecord?.zone ?? ''}`);
               const fallbackEnv = {
                 weather: 'Unavailable',
@@ -735,10 +768,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
                   e.label === 'Harsh Acceleration' ? 'harsh_acceleration' : 'harsh_braking',
                 magnitude: (() => {
                   if (isSpeeding && e.speed != null) {
-                    const base = `${Math.round(e.speed)} km/h`;
-                    return e.speedLimit != null
-                      ? `${base} (limit ${Math.round(e.speedLimit)} km/h)`
-                      : base;
+                    return `${Math.round(e.speed)} km/h (limit ${SAFEIQ_SPEED_LIMIT_KMH} km/h)`;
                   }
                   return e.label || 'Unknown';
                 })(),
@@ -763,6 +793,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
                 analysis: composeSafeIqAnalysis({
                   event: {
                     ...e,
+                    speedLimit: SAFEIQ_SPEED_LIMIT_KMH,
                     address: (DEMO_BRANDING && e.address) ? demoPlaceLabel(e.address) : e.address,
                   },
                   driverIncidents30Days: stats.incidents,
@@ -784,13 +815,31 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
             });
 
             setNotifications(prev => {
+              // Site filter: replace with this scope's cards only (no leftover fleet-wide toasts).
+              if (siteScoped) {
+                const byId = new Map(newNotifs.map(n => [n.id, n]));
+                for (const n of prev) {
+                  if (byId.has(n.id)) continue;
+                  const assetId = n.driver?.id != null ? String(n.driver.id).trim() : '';
+                  const vehicleKey = n.vehicle?.id != null ? String(n.vehicle.id).trim() : '';
+                  const inScope = (assetId && scopedAssetSet?.has(assetId))
+                    || (vehicleKey && (scopedAssetSet?.has(vehicleKey) || scopedRegSet?.has(vehicleKey.toLowerCase())));
+                  if (inScope) byId.set(n.id, n);
+                }
+                return [...byId.values()]
+                  .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+                  .slice(0, 10);
+              }
               const names = new Set(newNotifs.map(n => n.driver.name));
               return [...newNotifs, ...prev.filter(n => !names.has(n.driver.name))].slice(0, 10);
             });
 
             toAnalyse.forEach(async e => {
               const stats = getDriverStats(e.driverName);
-              const vehicleRecord = vehiclesRef.current.find(v => v.id === e.assetId?.toString() || v.regNo === e.regNo);
+              const vehicleRecord = vehiclesRef.current.find(v =>
+                (e.assetId != null && v.id === e.assetId?.toString())
+                || (!!e.regNo && v.regNo === e.regNo),
+              );
               const rawLat = e.latitude ?? vehicleRecord?.position?.latitude;
               const rawLng = e.longitude ?? vehicleRecord?.position?.longitude;
               const latitude = rawLat != null ? Number(rawLat) : null;
@@ -809,6 +858,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
               const eventForAnalysis = {
                 ...e,
+                speedLimit: SAFEIQ_SPEED_LIMIT_KMH,
                 address: (DEMO_BRANDING && e.address) ? demoPlaceLabel(e.address) : e.address,
               };
               const tankerAsset = /tanker/i.test(`${vehicleRecord?.site ?? ''} ${vehicleRecord?.zone ?? ''}`);
@@ -1055,11 +1105,19 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     [selectedSites],
   );
   const prevSelectedSitesKeyRef = useRef(selectedSitesKey);
+  const prevVehicleCountRef = useRef(vehicles.length);
+  const siteFilterActive = selectedSites.length > 0;
 
   useEffect(() => {
-    if (prevSelectedSitesKeyRef.current !== selectedSitesKey) {
-      prevSelectedSitesKeyRef.current = selectedSitesKey;
-      // Drop out-of-scope cards so the bell / AI Insights rebuild for the new site set.
+    const sitesChanged = prevSelectedSitesKeyRef.current !== selectedSitesKey;
+    const vehiclesBecameReady = siteFilterActive
+      && prevVehicleCountRef.current === 0
+      && vehicles.length > 0;
+    prevSelectedSitesKeyRef.current = selectedSitesKey;
+    prevVehicleCountRef.current = vehicles.length;
+
+    if (sitesChanged || vehiclesBecameReady) {
+      // Rebuild SafeIQ for the active transporter/site set (assetIds need vehicles).
       seenEventIds.current.clear();
       setNotifications([]);
       setSelectedNotification(null);
@@ -1069,7 +1127,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     void loadDriverDistance();
     void loadSafetyExposure();
     void loadFuelSummary();
-  }, [selectedSitesKey, vehicles.length, loadHomeAlerts, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
+  }, [selectedSitesKey, vehicles.length, siteFilterActive, loadHomeAlerts, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
 
   // -- Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays
@@ -1098,8 +1156,6 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [vehicles]);
 
-  const siteFilterActive = selectedSites.length > 0;
-
   const filteredVehicles = useMemo(() => {
     if (!siteFilterActive) return vehicles;
     const allowed = new Set(selectedSites.map(s => s.trim().toLowerCase()).filter(Boolean));
@@ -1127,13 +1183,22 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 
   const filteredNotifications = useMemo(() => {
     if (!siteFilterActive) return notifications;
-    const ids = new Set(filteredVehicles.map(v => v.id?.toString()).filter(Boolean));
-    const regs = new Set(filteredVehicles.map(v => v.regNo).filter(Boolean));
+    // Same rule as cards/events: no scoped vehicles ⇒ nothing in scope.
+    if (!filteredVehicles.length) return [];
+    const ids = new Set(
+      filteredVehicles.map(v => v.id?.toString().trim()).filter(Boolean) as string[],
+    );
+    const regs = new Set(
+      filteredVehicles
+        .map(v => (v.regNo || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
     return notifications.filter(n => {
-      const driverId = n.driver?.id != null ? String(n.driver.id) : '';
-      const vehicleId = n.vehicle?.id != null ? String(n.vehicle.id) : '';
-      return (driverId && ids.has(driverId))
-        || (vehicleId && (regs.has(vehicleId) || ids.has(vehicleId)));
+      const assetId = n.driver?.id != null ? String(n.driver.id).trim() : '';
+      const vehicleKey = n.vehicle?.id != null ? String(n.vehicle.id).trim() : '';
+      const vehicleKeyLower = vehicleKey.toLowerCase();
+      return (assetId && ids.has(assetId))
+        || (vehicleKey && (ids.has(vehicleKey) || regs.has(vehicleKeyLower)));
     });
   }, [notifications, filteredVehicles, siteFilterActive]);
 

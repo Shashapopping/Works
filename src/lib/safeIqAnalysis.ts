@@ -1,8 +1,9 @@
 import type { EnvironmentContext, IndustryCitation, SafeIQAnalysis, Severity } from '../hooks/useSafeIQ';
+import { SAFEIQ_SPEED_LIMIT_KMH } from '../config/safeIq';
 import { isOverspeedLabel } from './overspeedFilter';
 import { fmtHosMinutes, type HosRecord, type HosRuleId } from './hos';
 
-const KNOWLEDGE_VERSION = 'safeiq-responses-v4';
+const KNOWLEDGE_VERSION = 'safeiq-responses-v9';
 const INTERVENTION_INCIDENTS = 8;
 
 export type SafeIqResponseStyle = 'weather' | 'traffic' | 'speeding' | 'trend' | 'hos';
@@ -49,38 +50,102 @@ interface StyleCopy {
 
 const analysisCache = new Map<string, SafeIQAnalysis>();
 
+/**
+ * Industry citations: FRSC first (sole operational advice), then ISO 55001.
+ * Each chip is tagged to the SafeIQ section it supports.
+ */
 const CITE = {
-  highwayCodeWet: {
-    label: 'UK Highway Code R227',
-    url: 'https://www.gov.uk/guidance/the-highway-code/driving-in-adverse-weather-conditions-226-to-237',
-    note: 'Wet weather: stopping distances at least double dry roads because tyres have less grip.',
+  frscWeather: {
+    org: 'FRSC' as const,
+    tag: 'weather' as const,
+    label: 'FRSC · Weather',
+    url: 'https://frsc.gov.ng/wp-content/uploads/2025/04/ARC-COMPENDIUM-2025.pdf',
+    note: 'FRSC ARC Compendium §1.5 Driving in the Rain: traction falls on wet roads; stopping distance may become four or more times longer than dry. Reduce speed and increase following distance.',
   },
-  highwayCodeGap: {
-    label: 'UK Highway Code R126',
-    url: 'https://www.gov.uk/guidance/the-highway-code/general-rules-techniques-and-advice-for-all-drivers-and-riders-103-to-158',
-    note: 'Following gap must be at least doubled on wet roads (up to 10× on ice).',
+  isoWeather: {
+    org: 'ISO 55001' as const,
+    tag: 'weather' as const,
+    label: 'ISO 55001 · Weather',
+    url: 'https://www.iso.org/standard/83054.html',
+    note: 'ISO 55001:2024 — manage asset risk and opportunities in operations (cl. 6.1 / 8.1). Weather-exposed fleet use is a lifecycle risk to plan and control, not only a one-off driver note.',
   },
-  fhwaWet: {
-    label: 'FHWA wet-weather SSD',
-    url: 'https://highways.dot.gov/safety/speed-management/guidelines-use-variable-speed-limit-systems-wet-weather/chapter-2-driver',
-    note: 'Lower tyre–pavement adhesion on wet roads lengthens braking and stopping sight distance.',
+  frscTraffic: {
+    org: 'FRSC' as const,
+    tag: 'traffic' as const,
+    label: 'FRSC · Traffic',
+    url: 'https://frsc.gov.ng/wp-content/uploads/2025/04/ARC-COMPENDIUM-2025.pdf',
+    note: 'FRSC ARC Compendium — convoy / dense traffic: keep safe following distance, avoid tailgating, slow in busy towns. Gaps close; do not chase other road users.',
   },
-  nhtsaRearEnd: {
-    label: 'NHTSA 100-Car rear-end',
-    url: 'https://www.nhtsa.gov/document/analyses-rear-end-crashes-and-near-crashes-100-car-naturalistic-driving-study-support-rear',
-    note: 'Lead/follow conflicts on wet roads were more likely to become crashes or near-crashes than on dry roads.',
+  isoTraffic: {
+    org: 'ISO 55001' as const,
+    tag: 'traffic' as const,
+    label: 'ISO 55001 · Traffic',
+    url: 'https://www.iso.org/transport/fleet-management',
+    note: 'ISO fleet-management guidance under ISO 55001 — structured control of utilization risk, route performance, and cost/risk balance across the vehicle lifecycle.',
   },
-  texasRainRisk: {
-    label: 'Texas rainfall crash risk',
-    url: 'https://pubmed.ncbi.nlm.nih.gov/41120689/',
-    note: 'Matched-pair study (Texas 2006–2021): precipitation raised crash risk ~32–38% on average.',
+  frscSpeeding: {
+    org: 'FRSC' as const,
+    tag: 'speeding' as const,
+    label: 'FRSC · Speeding',
+    url: 'https://frsc.gov.ng/wp-content/uploads/2021/08/Speed-Limiting-Device-Implementation-in-Nigeria_The-Journey-So-Far.pdf',
+    note: 'FRSC Speed Limiting Device implementation — speed limits are maxima under ideal conditions; NRTR Schedule 8 / Reg. 152 sets category limits. Speed control is a documented road-safety duty.',
   },
-  trrWetBrake: {
-    label: 'TRR wet-pavement braking',
-    url: 'https://journals.sagepub.com/doi/10.1177/0361198119832886',
-    note: 'Water film on pavement raises crash rates; wet friction and hydrodynamics lengthen braking distance.',
+  frscSpeedingRain: {
+    org: 'FRSC' as const,
+    tag: 'speeding' as const,
+    label: 'FRSC · Speeding (rain)',
+    url: 'https://frsc.gov.ng/wp-content/uploads/2025/04/ARC-COMPENDIUM-2025.pdf',
+    note: 'FRSC rain guidance: reduce speed in rain; wet stopping distance may be 4× dry. Posted/company maxima assume ideal (dry) conditions.',
+  },
+  isoSpeeding: {
+    org: 'ISO 55001' as const,
+    tag: 'speeding' as const,
+    label: 'ISO 55001 · Speeding',
+    url: 'https://www.iso.org/standard/83054.html',
+    note: 'ISO 55001:2024 — balance performance, cost, and risk across the asset lifecycle. Speeding raises operational risk and life-cycle cost (wear, incident exposure) from acquisition through disposal.',
+  },
+  frscTrend: {
+    org: 'FRSC' as const,
+    tag: 'trend' as const,
+    label: 'FRSC · Trend',
+    url: 'https://frsc.gov.ng/wp-content/uploads/2021/08/The-Road-Transport-Safety-Standardization-Scheme-RTSSS.pdf',
+    note: 'FRSC RTSSS — fleet operators must run a Safety Unit, train/retrain drivers, keep crash and driver records, and treat driving risk as part of organisational safety policy.',
+  },
+  isoTrend: {
+    org: 'ISO 55001' as const,
+    tag: 'trend' as const,
+    label: 'ISO 55001 · Trend',
+    url: 'https://committee.iso.org/files/live/sites/tc251/files/guidance/ISO%20TC251%20ISO55001%20Rev3.pdf',
+    note: 'ISO 55001:2024 overview — data/knowledge, predictive action, and continuous improvement so recurring event patterns trigger planned treatment, not one-off notes only.',
+  },
+  frscHos: {
+    org: 'FRSC' as const,
+    tag: 'hos' as const,
+    label: 'FRSC · HOS',
+    url: 'https://rtsss.frsc.gov.ng/pdf/13_art-20120620125245.pdf',
+    note: 'FRSC RTSSS / tanker-trailer safety requirements — Safety Manager enforces rest: ≥8 hours rest in each 24-hour period; drivers must not drive while fatigued; rest after continuous driving blocks.',
+  },
+  isoHos: {
+    org: 'ISO 55001' as const,
+    tag: 'hos' as const,
+    label: 'ISO 55001 · HOS',
+    url: 'https://www.iso.org/standard/83054.html',
+    note: 'ISO 55001:2024 — people, competence, and operational control are part of the asset management system. Fatigue risk on utilization is a managed lifecycle risk, not only a shift anecdote.',
   },
 } as const satisfies Record<string, IndustryCitation>;
+
+function citesFor(style: SafeIqResponseStyle, variant?: 'wet' | 'wetTraffic'): IndustryCitation[] {
+  if (style === 'weather') return [CITE.frscWeather, CITE.isoWeather];
+  if (style === 'traffic') return [CITE.frscTraffic, CITE.isoTraffic];
+  if (style === 'speeding') {
+    if (variant === 'wet' || variant === 'wetTraffic') {
+      return [CITE.frscSpeedingRain, CITE.frscSpeeding, CITE.isoSpeeding];
+    }
+    return [CITE.frscSpeeding, CITE.isoSpeeding];
+  }
+  if (style === 'trend') return [CITE.frscTrend, CITE.isoTrend];
+  return [CITE.frscHos, CITE.isoHos];
+}
 
 function cacheKey(input: ComposeSafeIqInput): string {
   const e = input.event;
@@ -97,7 +162,7 @@ function cacheKey(input: ComposeSafeIqInput): string {
     env.traffic_density,
     env.traffic_delay_pct ?? '',
     e.speed ?? '',
-    e.speedLimit ?? '',
+    SAFEIQ_SPEED_LIMIT_KMH,
     hos?.status ?? '',
     hos?.rulesBreached?.join(',') ?? '',
     hos?.violationDriveMinutes ?? '',
@@ -156,21 +221,20 @@ function isIdleEvent(label?: string): boolean {
   return /idle/i.test(label || '');
 }
 
-function speedBits(e: SafeIqEventInput): { speed: number | null; limit: number | null; excess: number | null } {
+function speedBits(e: SafeIqEventInput): { speed: number | null; limit: number; excess: number | null } {
   const speed = e.speed != null && Number.isFinite(e.speed) ? Math.round(e.speed) : null;
-  const limit = e.speedLimit != null && Number.isFinite(e.speedLimit) ? Math.round(e.speedLimit) : null;
-  const excess = speed != null && limit != null ? speed - limit : null;
+  const limit = SAFEIQ_SPEED_LIMIT_KMH;
+  const excess = speed != null ? speed - limit : null;
   return { speed, limit, excess };
 }
 
 function speedHeadline(e: SafeIqEventInput): string {
   const { speed, limit, excess } = speedBits(e);
   const loc = locationOf(e);
-  if (speed != null && limit != null && excess != null) {
-    return `${speed} km/h vs posted ${limit} (${excess} km/h over) at ${loc}`;
+  if (speed != null && excess != null) {
+    return `${speed} km/h vs company ${limit} km/h (${excess} km/h over) at ${loc}`;
   }
-  if (speed != null) return `${speed} km/h logged overspeed at ${loc}`;
-  return `Overspeed logged at ${loc}`;
+  return `Overspeed vs company ${limit} km/h at ${loc}`;
 }
 
 function countClause(input: ComposeSafeIqInput): string {
@@ -236,15 +300,15 @@ export function selectResponseStyle(input: ComposeSafeIqInput): SafeIqResponseSt
 
 const INDUSTRY: Record<SafeIqResponseStyle, string> = {
   weather:
-    'FRSC Highway Code §14(3) sets minimum following distances in adverse weather and notes that wet-road stopping distance can increase by about 40% versus dry running. That is a condition to account for; it is not, by itself, a finding that this driver was at fault. FMCSA unsafe-driving guidance treats weather as context for following distance, not as a standalone offence.',
+    'FRSC (ARC Compendium §1.5 Driving in the Rain): rain cuts visibility and tyre traction; stopping distance may become four or more times longer than on a dry road — reduce speed and increase following distance. ISO 55001:2024 adds the fleet-asset view: weather exposure is an operational risk to manage across the vehicle lifecycle (performance, cost, risk), not only a one-shift coaching line.',
   traffic:
-    'In congested running, rear-end exposure rises when gaps close. FRSC following-distance guidance still applies in traffic; FMCSA unsafe-driving reviews look at harsh-event frequency, not at a single queue. Heavy traffic explains why a gap can collapse. It does not prove aggressive driving on its own.',
+    'FRSC (ARC Compendium): in dense traffic keep a safe following distance, avoid tailgating, and slow in busy towns — closed gaps raise rear-end exposure. ISO 55001 fleet/asset practice treats utilization under congestion as a controllable lifecycle risk (route, timing, wear), supporting FRSC’s road-user rules with asset-level planning.',
   speeding:
-    'Overspeed is a documented breach when MiX logs it at ≥60 km/h (same floor as the map). First offence: record and coach; repeat inside 14 days: formal review.',
+    'FRSC: speed limits are maxima under ideal conditions (Speed Limiting Device / NRTR framework); this fleet’s SafeIQ standard is 60 km/h. First overspeed: document and coach; repeat inside 14 days: formal review. ISO 55001:2024 frames the same event as asset risk — speeding raises incident and wear cost from acquisition through disposal.',
   trend:
-    'Carriers commonly treat eight scored events in a short window as the point to document and coach (FMCSA BASIC unsafe-driving frequency). Below that mark, the usual step is to note the event. A declining label here means implied score fell at least 5% week-over-week. It is not a verdict on this one row.',
+    'FRSC RTSSS: operators must run a Safety Unit, train/retrain drivers, and keep driver/crash records — rising event counts are an organisational safety signal. ISO 55001:2024 supports that with data, predictive action, and continuous improvement so a declining week-over-week pattern triggers planned treatment, not a one-off note only.',
   hos:
-    'This fleet’s HOS rules are: 4 hours continuous driving needs a ≥20-minute rest; 8 hours continuous rest inside each rolling 24 hours; 24 hours continuous off-duty rest inside each rolling 7 days. A skipped rest is a logged hours breach on the Fatigue page. It is a fatigue risk marker for this shift. It does not prove that fatigue caused this event.',
+    'FRSC RTSSS / Safety Manager duty: enforce rest — at least 8 hours rest within each 24-hour period; drivers must not drive while fatigued; rest after continuous driving blocks (FRSC public advice: rest after about four hours). This fleet’s dashboard mirrors that (4h continuous, daily 8h, weekly 24h). ISO 55001:2024 treats fatigue on utilization as a managed people/competence and operational-control risk in the asset system. A skipped rest is a fatigue-risk marker — not proof fatigue caused this event.',
 };
 
 function weatherCopy(input: ComposeSafeIqInput): StyleCopy {
@@ -255,14 +319,14 @@ function weatherCopy(input: ComposeSafeIqInput): StyleCopy {
     ? `, with ${Math.round(env.precipitation_mm)} mm precipitation`
     : '';
   const grip = isWetRoad(env)
-    ? 'Wet roads cut tyre grip — UK Highway Code: stopping distance at least doubles vs dry.'
+    ? 'Wet road: less grip, longer stop — slow down and open the gap.'
     : 'Low visibility or dust can hide gaps; slow down and open the gap.';
   return {
     severity_reason: `${weatherLabel(env)} at the scene — contributing condition for this ${event}.`,
     root_cause: `${weatherLabel(env)}${precip} on a ${roadPhrase(env.road_type)} at ${loc}. ${grip} This ${event} happened in that weather. ${countClause(input)}`,
     industry_reference: INDUSTRY.weather,
-    industry_citations: isWetRoad(env) ? [CITE.highwayCodeWet, CITE.fhwaWet] : undefined,
-    coaching_recommendation: 'Remind the wet-road gap (double the dry following distance). Escalate only if the same weather band keeps repeating.',
+    industry_citations: citesFor('weather'),
+    coaching_recommendation: 'Ease off and increase following distance in this weather. Escalate only if the same weather band keeps repeating.',
   };
 }
 
@@ -276,7 +340,7 @@ function trafficCopy(input: ComposeSafeIqInput): StyleCopy {
     severity_reason: `Heavy/congested traffic at this ${eventLabel(input.event)} — rear-end exposure up.`,
     root_cause: `Traffic ${env.traffic_density} on a ${roadPhrase(env.road_type)} at ${locationOf(input.event)}.${delay}${desc ? ` ${desc}.` : ''} Gaps close fast in a queue. ${countClause(input)}`,
     industry_reference: INDUSTRY.traffic,
-    industry_citations: [CITE.nhtsaRearEnd],
+    industry_citations: citesFor('traffic'),
     coaching_recommendation: 'Coach holding gap in slow traffic. If harsh events stack only in congestion, look at route timing.',
   };
 }
@@ -285,49 +349,47 @@ function speedingCopy(input: ComposeSafeIqInput): StyleCopy {
   const env = input.environment;
   const wet = isWetRoad(env);
   const congested = isTrafficMaterial(env);
-  const { excess } = speedBits(input.event);
+  const { excess, limit } = speedBits(input.event);
   const headline = speedHeadline(input.event);
   const weather = weatherLabel(env);
   const modest = excess == null || excess < 15;
 
-  // Wet + congested traffic + speeding — distinct from rain-only.
   if (wet && congested) {
     return {
       severity_reason: `Overspeed in ${weather.toLowerCase()} and ${env.traffic_density} traffic — wet grip loss plus closed gaps.`,
-      root_cause: `${headline}. Rain/wet pavement stretches stopping distance; ${env.traffic_density} traffic closes the gap ahead. Together that is a rear-end setup, not a speed-only card. ${countClause(input)}`,
+      root_cause: `${headline} during ${weather.toLowerCase()} in ${env.traffic_density} traffic. Wet road needs a longer stop — especially in dense traffic, where the gap ahead is already short. ${countClause(input)}`,
       industry_reference:
-        'UK Highway Code Rule 227: wet stopping distances are at least double dry because tyres lose grip. Rule 126: double the following gap on wet roads. NHTSA’s 100-Car study found lead/follow conflicts on wet roads more often became crashes or near-crashes than the same conflicts on dry roads. Congestion removes the extra space wet roads need — speeding in rain and traffic stacks both risks.',
-      industry_citations: [CITE.highwayCodeWet, CITE.highwayCodeGap, CITE.nhtsaRearEnd, CITE.texasRainRisk],
+        `FRSC (rain + following distance): reduce speed in rain; stopping may take four or more times dry distance; keep a safe gap and avoid tailgating in dense traffic. This fleet’s SafeIQ limit is ${limit} km/h (ideal-condition maximum). ISO 55001:2024 adds asset risk — congested wet running raises lifecycle incident and wear cost. Congestion removes the extra space wet roads need.`,
+      industry_citations: citesFor('speeding', 'wetTraffic'),
       coaching_recommendation: modest
-        ? 'Coach: slow earlier in rain, hold a double gap in queues. Document this row; a second wet/traffic overspeed inside 14 days → formal review.'
-        : 'Document the excess. Pre-shift talk: wet + traffic means leave earlier and leave more space. Repeat inside 14 days → formal review.',
+        ? `In rain and ${env.traffic_density} traffic, stay under ${limit} km/h and hold a longer gap. Second wet/traffic overspeed in 14 days → formal review.`
+        : `Document. In rain and ${env.traffic_density} traffic stay under ${limit} km/h and leave more space. Repeat inside 14 days → formal review.`,
     };
   }
 
-  // Wet / rain + speeding (open road or light/moderate traffic).
   if (wet) {
     return {
       severity_reason: `Overspeed in ${weather.toLowerCase()} — wet roads and speed do not mix.`,
-      root_cause: `${headline} during ${weather.toLowerCase()}. Water cuts tyre grip; the same speed that feels fine dry leaves far less room to stop. ${countClause(input)}`,
+      root_cause: `${headline} during ${weather.toLowerCase()}. Wet road: less grip, longer stop required — ${limit} km/h is the dry maximum; in rain drive below it. ${countClause(input)}`,
       industry_reference:
-        'UK Highway Code Rule 227: in wet weather, stopping distances are at least double those on dry roads because tyres have less grip. FHWA wet-weather guidance: lower tyre–pavement adhesion lengthens braking distance. TRR wet-pavement work links water film to longer braking and higher crash rates. Speeding removes the margin those rules exist to protect.',
-      industry_citations: [CITE.highwayCodeWet, CITE.fhwaWet, CITE.trrWetBrake, CITE.texasRainRisk],
+        `FRSC ARC Compendium — Driving in the Rain: reduce speed; wet stopping distance may become four or more times dry. Speed limits assume ideal (dry) conditions; this fleet’s SafeIQ standard is ${limit} km/h. ISO 55001:2024 treats that excess as asset operational risk across the vehicle lifecycle.`,
+      industry_citations: citesFor('speeding', 'wet'),
       coaching_recommendation: modest
-        ? 'Brief coaching: ease off in rain; treat posted speed as a dry-road ceiling, not a wet target. Second wet overspeed in 14 days → formal review.'
-        : 'Document and talk wet-road speed before the next shift. Repeat inside 14 days → formal review.',
+        ? `In rain, stay under ${limit} km/h — that limit is for dry roads. Second wet overspeed in 14 days → formal review.`
+        : `Document. In rain stay under ${limit} km/h. Repeat inside 14 days → formal review.`,
     };
   }
 
-  // Dry / clear speeding.
   return {
     severity_reason: excess != null
-      ? `${excess} km/h over posted — documented overspeed.`
-      : 'Logged overspeed — document and coach.',
+      ? `${excess} km/h over company ${limit} km/h — documented overspeed.`
+      : `Logged overspeed vs company ${limit} km/h — document and coach.`,
     root_cause: `${headline}. Conditions ${weather.toLowerCase()}, traffic ${env.traffic_density}. This card is speed control, not weather. ${countClause(input)}`,
     industry_reference: INDUSTRY.speeding,
+    industry_citations: citesFor('speeding'),
     coaching_recommendation: modest
-      ? 'Document and a short corridor-limit reminder before next shift. Second overspeed in 14 days → formal review.'
-      : 'Document the excess and review the corridor limit. Repeat inside 14 days → formal review.',
+      ? 'Document and a short 60 km/h reminder before next shift. Second overspeed in 14 days → formal review.'
+      : 'Document the excess and review the company 60 km/h standard. Repeat inside 14 days → formal review.',
   };
 }
 
@@ -342,6 +404,7 @@ function trendCopy(input: ComposeSafeIqInput): StyleCopy {
         : `Week-over-week score down ≥5% (${n} events in 7 days).`,
       root_cause: `${driver}: ${n} events in 7 days (${input.driverTrend}) after this ${event} at ${locationOf(input.event)}. Lead reading is the count, not a single-moment story. ${weatherLabel(input.environment)}, traffic ${input.environment.traffic_density}.`,
       industry_reference: INDUSTRY.trend,
+      industry_citations: citesFor('trend'),
       coaching_recommendation: n >= INTERVENTION_INCIDENTS
         ? 'Documented coaching / refresher is the usual step at this count. Watch the next few weeks.'
         : 'Note the event; closer watch for a few weeks. Escalate at eight-in-7-days.',
@@ -351,6 +414,7 @@ function trendCopy(input: ComposeSafeIqInput): StyleCopy {
     severity_reason: `Isolated ${event} — ${input.driverTrend} 7-day record (${n}).`,
     root_cause: `${event} at ${locationOf(input.event)}; ${n} event${n === 1 ? '' : 's'} in 7 days (${input.driverTrend}). Weather ${weatherLabel(input.environment).toLowerCase()}, traffic ${input.environment.traffic_density}. Treat as one row unless it repeats.`,
     industry_reference: INDUSTRY.trend,
+    industry_citations: citesFor('trend'),
     coaching_recommendation: 'Document. No extra intervention from this row alone.',
   };
 }
@@ -398,10 +462,11 @@ function hosCopy(input: ComposeSafeIqInput): StyleCopy {
     severity_reason: `HOS rest skipped (${rule === '4h_continuous' ? '4h continuous' : rule === '8h_24h' ? 'daily rest' : 'weekly rest'}). Fatigue-risk flag — not proof this ${event} was caused by fatigue.`,
     root_cause: `${lead}${extra} This ${event} at ${locationOf(input.event)} is on the same shift. ${countClause(input)}`,
     industry_reference: INDUSTRY.hos,
+    industry_citations: citesFor('hos'),
     coaching_recommendation: rule === 'weekly_rest'
-      ? 'Full day off before the next long block. Keep on file; not a fatigue-crash finding unless investigation says so.'
+      ? 'Full day off before the next issued dispatch.'
       : rule === '8h_24h'
-        ? 'No long block until 8-hour continuous rest is done. Rest skip + event are two facts, not one cause chain.'
+        ? 'No issued dispatch until 8-hour continuous rest is done.'
         : 'Park for a qualifying 20-minute rest. If 4h skips repeat, look at dispatch spacing.',
   };
 }

@@ -6,10 +6,9 @@ import TablePaginationBar from '../components/TablePaginationBar';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useTableSort } from '../hooks/useTableSort';
-import { buildKpiUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
+import { buildUtilUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelTable, SkelValue } from '../components/data/DataBusy';
-import { filterDistanceAssetsByVehicles } from '../lib/siteScope';
 
 type PeriodMode = KpiPeriodMode;
 
@@ -30,23 +29,10 @@ function utilBar(pct: number, color: string) {
   );
 }
 
-function summarizeScopedAssets(assets: KpiAssetRow[]) {
-  const utilValues = assets
-    .map(a => a.utilizationPct)
-    .filter((v): v is number => v != null && Number.isFinite(v));
-  return {
-    assetCount: assets.length,
-    totalEngineHours: assets.reduce((s, a) => s + (a.engineHours || 0), 0),
-    totalDistanceKm: assets.reduce((s, a) => s + (a.distanceKm || 0), 0),
-    avgUtilizationPct: utilValues.length
-      ? utilValues.reduce((s, v) => s + v, 0) / utilValues.length
-      : null,
-  };
-}
-
 export default function UtilizationPage() {
-  const { vehicles, selectedSites } = useFleet();
-  const siteFiltered = selectedSites.length > 0;
+  const { selectedSites } = useFleet();
+  const siteScopeKey = selectedSites.join(',');
+  const siteScope = siteScopeKey ? selectedSites : undefined;
   const [period, setPeriod] = useState<PeriodMode>('week');
   const [customRange, setCustomRange] = useState(() => {
     const to = new Date();
@@ -57,12 +43,13 @@ export default function UtilizationPage() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 250);
 
-  const url = buildKpiUrl(period, 'all', customRange.from, customRange.to);
+  const url = buildUtilUrl(period, 'all', customRange.from, customRange.to, { siteScope });
   const [data, setData] = useState<KpiData | null>(() => cachePeek<KpiData>(CACHE_KEYS.kpi(url)));
   const [loading, setLoading] = useState(() => !cachePeek(CACHE_KEYS.kpi(url)));
 
   const fetchData = useCallback(async () => {
-    const nextUrl = buildKpiUrl(period, 'all', customRange.from, customRange.to);
+    const scope = siteScopeKey ? siteScopeKey.split(',') : undefined;
+    const nextUrl = buildUtilUrl(period, 'all', customRange.from, customRange.to, { siteScope: scope });
     const key = CACHE_KEYS.kpi(nextUrl);
     const cached = cachePeek<KpiData>(key);
     if (cached) {
@@ -80,18 +67,13 @@ export default function UtilizationPage() {
       if (next) setData(next);
     } catch { /* keep prior */ }
     finally { setLoading(false); }
-  }, [period, customRange.from, customRange.to]);
+  }, [period, customRange.from, customRange.to, siteScopeKey]);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
 
-  const scopedAssets = useMemo(() => {
-    const rows = data?.assets ?? [];
-    return siteFiltered ? filterDistanceAssetsByVehicles(rows, vehicles) : rows;
-  }, [data?.assets, siteFiltered, vehicles]);
-
-  const assets = useMemo(() => {
+  const tableAssets = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
-    let rows = scopedAssets;
+    let rows = data?.assets ?? [];
     if (q) {
       rows = rows.filter(a =>
         (a.regNo || '').toLowerCase().includes(q)
@@ -99,31 +81,31 @@ export default function UtilizationPage() {
         || (a.zone || '').toLowerCase().includes(q));
     }
     return rows;
-  }, [scopedAssets, debouncedSearch]);
+  }, [data?.assets, debouncedSearch]);
 
   type SortKey = 'regNo' | 'zone' | 'utilizationPct' | 'availabilityPct' | 'distanceKm' | 'engineHours';
   const getSortValue = (row: KpiAssetRow, key: SortKey) => row[key];
-  const { sorted, toggle, ariaSort, indicator } = useTableSort(assets, getSortValue);
+  const { sorted, toggle, ariaSort, indicator } = useTableSort(tableAssets, getSortValue);
   const {
     pageRows, page, pageCount, from: pageFrom, to: pageTo, total: pageTotal, hasPrev, hasNext, prev, next,
-  } = useClientPagination(sorted, 50, `${period}|${customRange.from}|${customRange.to}|${debouncedSearch}|${selectedSites.join(',')}`);
+  } = useClientPagination(sorted, 50, `${period}|${customRange.from}|${customRange.to}|${debouncedSearch}|${(siteScope || []).join(',')}`);
 
-  const summary = useMemo(() => {
-    if (!siteFiltered) return data?.summary ?? null;
-    return summarizeScopedAssets(scopedAssets);
-  }, [siteFiltered, data?.summary, scopedAssets]);
-
-  const withTrips = assets.filter(a => (a.tripCount ?? 0) > 0).length;
-  const available = siteFiltered
-    ? (vehicles.length || scopedAssets.length)
-    : (vehicles.length || summary?.assetCount || 0);
+  const summary = data?.summary ?? null;
+  // Activity % comes from utilization summary — do not wait on FleetContext /api/data vehicles.
+  const withTrips = summary?.assetsWithTrips
+    ?? (data?.assets ?? []).filter(a => (a.tripCount ?? 0) > 0).length;
+  const available = summary?.fleetAssetCount
+    ?? summary?.assetCount
+    ?? 0;
+  const activityPct = available > 0 ? Math.round((withTrips / available) * 100) : null;
+  const showKpiSkeleton = loading && !data;
 
   return (
     <div>
       <div className="bpl-page-header">
         <h1 className="bpl-page-title">Utilization</h1>
         <p className="bpl-page-subtitle">
-          Engine / drive intensity and distance across {siteFiltered ? 'selected transporters' : 'the fleet'}
+          Engine / drive intensity and distance across {siteScope ? 'selected transporters' : 'the fleet'}
         </p>
       </div>
 
@@ -178,21 +160,41 @@ export default function UtilizationPage() {
 
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--cd-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
-          Trip activity · {withTrips}/{available} assets with trips
+          Trip activity · {showKpiSkeleton ? '…' : `${withTrips}/${available}`} assets with trips
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
           {[
-            { label: 'Fleet activity %', value: available > 0 ? `${Math.round((withTrips / available) * 100)}%` : '—', tip: 'Share of fleet with at least one trip.', color: '#0f172a' },
-            { label: 'Total distance', value: summary ? `${Math.round(summary.totalDistanceKm).toLocaleString()} km` : '—', tip: 'Total km from trips in period.', color: '#2563eb' },
-            { label: 'Avg utilization', value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—', tip: 'Average loaded utilization across assets.', color: '#0d9488' },
-            { label: 'Engine hours', value: summary ? `${fmt(summary.totalEngineHours, 0)} h` : '—', tip: 'Total engine-on hours.', color: '#7c3aed' },
+            {
+              label: 'Fleet activity %',
+              value: activityPct != null ? `${activityPct}%` : '—',
+              tip: 'Share of fleet with at least one trip.',
+              color: '#0f172a',
+            },
+            {
+              label: 'Total distance',
+              value: summary ? `${Math.round(summary.totalDistanceKm).toLocaleString()} km` : '—',
+              tip: 'Total km from trips in period.',
+              color: '#2563eb',
+            },
+            {
+              label: 'Avg utilization',
+              value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—',
+              tip: 'Average loaded utilization across assets.',
+              color: '#0d9488',
+            },
+            {
+              label: 'Engine hours',
+              value: summary ? `${fmt(summary.totalEngineHours, 0)} h` : '—',
+              tip: 'Total engine-on hours.',
+              color: '#7c3aed',
+            },
           ].map(k => (
             <div key={k.label} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}` }}>
               <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>
                 {k.label}
               </div>
               <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>
-                {loading && !data ? <SkelValue /> : k.value}
+                {showKpiSkeleton ? <SkelValue /> : k.value}
               </div>
               <div style={{
                 fontSize: 10,
@@ -255,7 +257,7 @@ export default function UtilizationPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && pageRows.length === 0 ? (
+            {showKpiSkeleton && pageRows.length === 0 ? (
               <tr><td colSpan={6} style={{ padding: 12 }}><SkelTable rows={8} /></td></tr>
             ) : pageRows.length === 0 ? (
               <tr><td colSpan={6} style={{ padding: 24, textAlign: 'center', color: 'var(--cd-text-muted)' }}>No assets</td></tr>
