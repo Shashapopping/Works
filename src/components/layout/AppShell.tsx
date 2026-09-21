@@ -227,7 +227,7 @@ function NotifPanel({
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
                     {n.magnitude} · {n.vehicle.id}
-                    {n.eventCount > 1 && <span style={{ color: accent, fontWeight: 600 }}> · {n.eventCount} incidents/30d</span>}
+                    {n.eventCount > 1 && <span style={{ color: accent, fontWeight: 600 }}> · {n.eventCount} events/7d</span>}
                   </div>
                   <EnvironmentBadge environment={n.environment} compact />
                   <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 3 }}>

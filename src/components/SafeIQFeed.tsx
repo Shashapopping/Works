@@ -91,7 +91,7 @@ export default function SafeIQFeed({ notifications, onOpen, onDismiss, showDismi
                 <div className="bpl-safeiq-feed-stat-value">{n.magnitude}</div>
               </div>
               <div>
-                <div className="bpl-safeiq-feed-stat-label">Incidents / 7d</div>
+                <div className="bpl-safeiq-feed-stat-label">Events / 7d</div>
                 <div className="bpl-safeiq-feed-stat-value" style={{ color: accent }}>{n.eventCount}</div>
               </div>
               <div>

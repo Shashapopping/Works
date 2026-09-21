@@ -35,12 +35,12 @@ import { type PageDateRange, defaultPageCustomRange, pagePeriodIsoBounds } from 
 const scoreColor = (s: number, config?: FleetScoreConfig) => scoreBandColor(s, config);
 const scoreLabel = (s: number, config?: FleetScoreConfig) => scoreBandLabel(s, config);
 
-/** Build /api/safety/summary or /api/risk/drivers URL for the page period, optionally scoped to assets. */
+/** Build /api/safety/summary or /api/risk/drivers URL for the page period. */
 function safetyApiUrl(
   path: '/api/safety/summary' | '/api/risk/drivers',
   dateRange: PageDateRange,
   customRange: { from: string; to: string },
-  assetIds: string[],
+  siteScope: string[],
   previous = false,
 ): string {
   const params = new URLSearchParams();
@@ -81,7 +81,8 @@ function safetyApiUrl(
     params.set('range', '30d');
   }
 
-  if (assetIds.length) params.set('assetIds', assetIds.join(','));
+  const sites = [...new Set(siteScope.map(s => s.trim()).filter(Boolean))].sort();
+  if (sites.length) params.set('siteScope', sites.join(','));
   return `${path}?${params}`;
 }
 
@@ -323,23 +324,23 @@ function mapRiskDrivers(
 
 // ─── WorstPerformers ─────────────────────────────────────────────────────────
 function WorstPerformers({
-  assetIds,
+  siteScope,
   siteFiltered,
   dateRange,
   customRange,
 }: {
-  assetIds: string[];
+  siteScope: string[];
   siteFiltered: boolean;
   dateRange: PageDateRange;
   customRange: { from: string; to: string };
 }) {
-  const { scoreConfig, vehiclesLoading } = useFleet();
-  // Transporter/site lock: wait for scoped vehicle IDs before calling the API
-  // so we never paint fleet-wide drivers under a locked org.
-  const awaitingScope = siteFiltered && assetIds.length === 0 && vehiclesLoading;
-  const url = (siteFiltered && assetIds.length === 0)
-    ? ''
-    : safetyApiUrl('/api/risk/drivers', dateRange, customRange, siteFiltered ? assetIds : []);
+  const { scoreConfig } = useFleet();
+  const url = safetyApiUrl(
+    '/api/risk/drivers',
+    dateRange,
+    customRange,
+    siteFiltered ? siteScope : [],
+  );
 
   const [rows, setRows] = useState<{
     name: string; incidents: number; riskScore: number; types: Record<string, number>; lastEvent: string;
@@ -354,8 +355,7 @@ function WorstPerformers({
     let cancelled = false;
     if (!url) {
       setRows([]);
-      // Keep skeleton only while vehicles for this org are still loading.
-      setLoading(awaitingScope);
+      setLoading(false);
       return;
     }
     const cached = cachePeek<{ drivers?: RiskDriverApiRow[] }>(url);
@@ -375,7 +375,7 @@ function WorstPerformers({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [url, awaitingScope, scoreConfig]);
+  }, [url, scoreConfig]);
 
   const driverMap = rows;
 
@@ -571,7 +571,7 @@ function PriorityActions({ byLabel, score, vehicleCount }: {
         title: `${brakingCount.toLocaleString()} harsh braking events — highest-weight offence`,
         detail: 'Schedule following-distance and anticipation coaching. See worst performers for named drivers.',
         icon: ShieldAlert,
-        to: '/incidents',
+        to: '/incidents?filter=Harsh+Braking',
       });
     }
 
@@ -713,7 +713,6 @@ function KpiStrip({ vehicleCount, exposure, busy }: { vehicleCount: number; expo
 export default function Safety() {
   const {
     vehicles,
-    vehiclesLoading,
     scoreConfig,
     safetyScore: fleetSafetyScore,
     safetyDelta: fleetSafetyDelta,
@@ -726,27 +725,18 @@ export default function Safety() {
   const [customRange, setCustomRange] = useState(defaultPageCustomRange);
 
   const siteFiltered = selectedSites.length > 0;
-  const assetIds = useMemo(
-    () => vehicles.map(v => v.id).filter(Boolean).map(String),
-    [vehicles],
-  );
-  // Locked transporter / site filter: never hit unscoped rollups. Wait for
-  // vehicle IDs so we don't briefly show the full-fleet census.
-  const awaitingScope = siteFiltered && assetIds.length === 0 && vehiclesLoading;
-  const emptyScope = siteFiltered && assetIds.length === 0 && !vehiclesLoading;
-  const useContextExposure = dateRange === '30days' && !siteFiltered;
+  // Default 30d window always uses FleetContext (already site-scoped via siteScope).
+  const useContextExposure = dateRange === '30days';
 
   const periodUrl = useMemo(() => {
     if (useContextExposure) return '';
-    if (awaitingScope || emptyScope) return '';
-    return safetyApiUrl('/api/safety/summary', dateRange, customRange, siteFiltered ? assetIds : []);
-  }, [dateRange, customRange, siteFiltered, assetIds, useContextExposure, awaitingScope, emptyScope]);
+    return safetyApiUrl('/api/safety/summary', dateRange, customRange, siteFiltered ? selectedSites : []);
+  }, [dateRange, customRange, siteFiltered, selectedSites, useContextExposure]);
 
   const prevUrl = useMemo(() => {
     if (useContextExposure) return '';
-    if (awaitingScope || emptyScope) return '';
-    return safetyApiUrl('/api/safety/summary', dateRange, customRange, siteFiltered ? assetIds : [], true);
-  }, [dateRange, customRange, siteFiltered, assetIds, useContextExposure, awaitingScope, emptyScope]);
+    return safetyApiUrl('/api/safety/summary', dateRange, customRange, siteFiltered ? selectedSites : [], true);
+  }, [dateRange, customRange, siteFiltered, selectedSites, useContextExposure]);
 
   const [periodExposure, setPeriodExposure] = useState<FleetSafetyExposure | null>(() =>
     periodUrl ? cachePeek<FleetSafetyExposure>(periodUrl) : peekSafetySummary<FleetSafetyExposure>('30d'),
@@ -756,8 +746,6 @@ export default function Safety() {
   );
   const [periodLoading, setPeriodLoading] = useState(() => {
     if (useContextExposure) return false;
-    if (awaitingScope) return true;
-    if (emptyScope) return false;
     return !!periodUrl && !cachePeek(periodUrl);
   });
 
@@ -766,11 +754,7 @@ export default function Safety() {
       setPeriodLoading(false);
       return;
     }
-    if (awaitingScope) {
-      setPeriodLoading(true);
-      return;
-    }
-    if (emptyScope || !periodUrl) {
+    if (!periodUrl) {
       setPeriodExposure(null);
       setPrevExposure(null);
       setPeriodLoading(false);
@@ -784,6 +768,8 @@ export default function Safety() {
       if (cachedPrev) setPrevExposure(cachedPrev);
       setPeriodLoading(false);
     } else {
+      setPeriodExposure(null);
+      setPrevExposure(null);
       setPeriodLoading(true);
     }
     Promise.all([
@@ -800,7 +786,7 @@ export default function Safety() {
       .catch(() => {})
       .finally(() => { if (!cancelled) setPeriodLoading(false); });
     return () => { cancelled = true; };
-  }, [periodUrl, prevUrl, useContextExposure, awaitingScope, emptyScope]);
+  }, [periodUrl, prevUrl, useContextExposure]);
 
   const pageExposure = useContextExposure
     ? safetyExposure
@@ -827,8 +813,7 @@ export default function Safety() {
   const hosHeldMinutes = pageExposure?.hosHeldMinutes ?? 0;
   const points = totalSafetyPointsFromCensus(pageExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
   const weightedRate = ratePer100Km(points.ivms, distanceKm);
-  const pageBusy = awaitingScope
-    || (!pageExposure && (useContextExposure ? safetyExposureLoading : periodLoading));
+  const pageBusy = !pageExposure && (useContextExposure ? safetyExposureLoading : periodLoading);
   const scoreBusy = pageBusy;
 
   return (
@@ -871,7 +856,7 @@ export default function Safety() {
       {/* Worst performers */}
       <div style={{ marginBottom: 20 }}>
         <WorstPerformers
-          assetIds={assetIds}
+          siteScope={selectedSites}
           siteFiltered={siteFiltered}
           dateRange={dateRange}
           customRange={customRange}

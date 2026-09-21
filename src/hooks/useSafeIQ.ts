@@ -9,6 +9,8 @@ export interface DriverContext {
   safety_score_baseline: number;
   incidents_last_30_days: number;
   improvement_trend: 'improving' | 'stable' | 'declining';
+  /** MiX roster SiteId when known — used for HOS-style site filtering. */
+  siteId?: string | null;
 }
 
 export interface VehicleContext {

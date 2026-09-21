@@ -20,7 +20,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { useTableSort } from '../hooks/useTableSort';
 import { filterOverspeedEvents, isOverspeedLabel } from '../lib/overspeedFilter';
-import { filterTripDriversByVehicles, filterRiskDriversByVehicles } from '../lib/siteScope';
+import { filterTripDriversByAssignedSite, filterRiskDriversByAssignedSite } from '../lib/siteScope';
 import { assessDriversFromRisk } from '../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../hooks/useAssessmentTripDrivers';
 import { COACHING_EVENT_COUNT, COACHING_SCORE_THRESHOLD, COACHING_WINDOW_DAYS } from '../config/interventionRules';
@@ -232,6 +232,15 @@ function EventsTab({
     return visibleRows.length;
   });
   const [eventsLoading, setEventsLoading] = useState(() => !cachePeek(pageUrl));
+
+  // Apply ?filter= from Priority Actions / deep links whenever the URL changes
+  useEffect(() => {
+    if (highlightEventId) return;
+    if (filterParam && isEventFilterKey(filterParam)) {
+      setEventFilter(filterParam);
+      setPage(0);
+    }
+  }, [filterParam, highlightEventId]);
 
   useEffect(() => {
     if (!highlightEventId) return;
@@ -738,13 +747,13 @@ function PatternsTab({
   }, []);
 
   const scopedTripDrivers = useMemo(
-    () => (siteFiltered ? filterTripDriversByVehicles(tripDrivers, vehicles) : tripDrivers),
+    () => (siteFiltered ? filterTripDriversByAssignedSite(tripDrivers, vehicles) : tripDrivers),
     [siteFiltered, tripDrivers, vehicles],
   );
 
   const scopedPeriodRisk = useMemo(
     () => (siteFiltered
-      ? filterRiskDriversByVehicles(periodRisk, scopedTripDrivers, vehicles)
+      ? filterRiskDriversByAssignedSite(periodRisk, scopedTripDrivers, vehicles)
       : periodRisk),
     [periodRisk, scopedTripDrivers, vehicles, siteFiltered],
   );

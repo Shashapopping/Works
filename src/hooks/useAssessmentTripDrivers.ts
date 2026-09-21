@@ -24,8 +24,8 @@ function scopedCacheSuffix(assetIds: string[] = [], siteScope: string[] = []) {
   return sites.length ? ':sites:' + sites.join(',') : '';
 }
 
-/** v3: drop MiX Unknown from trips=0 vehicles[] (v2 payload crashed Drivers). */
-const ASSESSMENT_TRIPS_CACHE = `${CACHE_KEYS.driverAssessment}:v3`;
+/** v4: trip drivers carry roster siteId for HOS-style site scoping. */
+const ASSESSMENT_TRIPS_CACHE = `${CACHE_KEYS.driverAssessment}:v4`;
 
 async function loadAssessmentTrips(assetIds: string[] = [], siteScope: string[] = []): Promise<TripDriver[] | null> {
   return cachedFetchJson<TripDriver[]>(
@@ -56,7 +56,7 @@ async function loadPeriodTrips(
 ): Promise<TripDriver[] | null> {
   const spec = periodDistanceSpec(period, custom);
   return cachedFetchJson<TripDriver[]>(
-    `driver:period:v3:${spec.url}${scopedCacheSuffix(assetIds, siteScope)}`,
+    `driver:period:v4:${spec.url}${scopedCacheSuffix(assetIds, siteScope)}`,
     CACHE_TTL.driverAssessment,
     async () => {
       const scopedUrl = appendUrlScope(spec.url, {
@@ -119,7 +119,7 @@ export function usePeriodTripDrivers(
   const spec = periodDistanceSpec(period, custom);
   const cacheKey = spec.kind === 'assessment'
     ? ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope)
-    : `driver:period:v3:${spec.url}${scopedCacheSuffix(assetIds, siteScope)}`;
+    : `driver:period:v4:${spec.url}${scopedCacheSuffix(assetIds, siteScope)}`;
   const [tripDrivers, setTripDrivers] = useState<TripDriver[]>(
     () => (enabled ? cachePeek<TripDriver[]>(cacheKey) : null) ?? [],
   );
@@ -135,7 +135,7 @@ export function usePeriodTripDrivers(
     const nextSpec = periodDistanceSpec(period, custom);
     const key = nextSpec.kind === 'assessment'
       ? ASSESSMENT_TRIPS_CACHE + scopedCacheSuffix(assetIds, siteScope)
-      : `driver:period:v3:${nextSpec.url}${scopedCacheSuffix(assetIds, siteScope)}`;
+      : `driver:period:v4:${nextSpec.url}${scopedCacheSuffix(assetIds, siteScope)}`;
     const cached = cachePeek<TripDriver[]>(key);
     setTripDrivers(cached ?? []);
     setLoading(!cached);

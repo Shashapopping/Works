@@ -152,7 +152,7 @@ function ToastCard({ n, onDismiss, onOpen }: ToastCardProps) {
           {n.eventCount > 1 && (
             <>
               <span style={{ fontSize: '10px', color: 'var(--cd-text-muted)' }}>·</span>
-              <span style={{ fontSize: '10px', color: accentColor, fontWeight: '700' }}>{n.eventCount} incidents / 30d</span>
+              <span style={{ fontSize: '10px', color: accentColor, fontWeight: '700' }}>{n.eventCount} events / 7d</span>
             </>
           )}
         </div>

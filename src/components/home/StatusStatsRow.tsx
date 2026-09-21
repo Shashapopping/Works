@@ -5,6 +5,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useFleet, type StatusFilter, type DistanceRange } from '../../context/FleetContext';
+import { useAuth } from '../../context/AuthContext';
 import WidgetStatGraphic from './WidgetStatGraphic';
 import InfoTip from '../InfoTip';
 import PeriodSelect, { type PeriodValue } from './PeriodSelect';
@@ -12,7 +13,8 @@ import CustomDateTimeRange, { ensureCustomRangeDefaults } from '../CustomDateTim
 import { SkelValue } from '../data/DataBusy';
 import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
-import { filterHosRecordsByVehicles } from '../../lib/siteScope';
+import { filterHosRecordsByAssignedSite } from '../../lib/siteScope';
+import { isFeatureLocked } from '../../config/lockedFeatures';
 
 export type MetricPeriod = DistanceRange;
 
@@ -165,6 +167,8 @@ export default function StatusStatsRow({
   navigateOnStatusClick = false,
 }: Props) {
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const showFuelConsumption = hasPermission('fuel-consumption') && !isFeatureLocked('fuel-consumption');
   const {
     metadata,
     totalDistanceKm,
@@ -180,10 +184,10 @@ export default function StatusStatsRow({
     metricPeriod,
     metricCustom,
     siteFilterActive ? scopedAssetIds : [],
-    !siteFilterActive || scopedAssetIds.length > 0,
+    showFuelConsumption && (!siteFilterActive || scopedAssetIds.length > 0),
   );
   const scopedHosRecords = useMemo(
-    () => filterHosRecordsByVehicles(hosRecords, vehicles, siteFilterActive),
+    () => filterHosRecordsByAssignedSite(hosRecords, vehicles, siteFilterActive),
     [hosRecords, vehicles, siteFilterActive],
   );
   const violationCount = scopedHosRecords.filter(r => r.status === 'violation').length;
@@ -195,6 +199,11 @@ export default function StatusStatsRow({
     if (periodDrop > 0) return Math.round(periodDrop);
     return tripFuelLiters;
   }, [tripFuelLiters, fuelData]);
+
+  const cards = useMemo(
+    () => (showFuelConsumption ? ALL_CARDS : ALL_CARDS.filter(c => !(c.kind === 'metric' && c.key === 'fuel'))),
+    [showFuelConsumption],
+  );
 
   const statusCardsLoading = vehiclesLoading && metadata.totalVehicles === 0 && !metadata.lastUpdate;
 
@@ -230,7 +239,7 @@ export default function StatusStatsRow({
   return (
     <div className="bpl-status-stats-layout">
       <div className="bpl-status-stats-grid">
-        {ALL_CARDS.map(card => {
+        {cards.map(card => {
           const Icon = card.icon;
 
           if (card.kind === 'status') {

@@ -170,7 +170,7 @@ export async function authMe(): Promise<{ user: AuthUser; authMode?: string } | 
 }
 
 export async function fetchTransporters(): Promise<string[]> {
-  const res = await fetch('/api/transporters');
+  const res = await fetch('/api/transporters', authFetchInit());
   const data = await parseJson(res) as { transporters: string[] };
   return Array.isArray(data.transporters) ? data.transporters : [];
 }

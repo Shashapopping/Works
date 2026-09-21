@@ -173,22 +173,30 @@ export function seedRolesIfNeeded() {
   console.log('🔐 Seeded default roles');
 }
 
-/** Add transporter role on existing installs (idempotent). */
+/**
+ * Add transporter role on existing installs if missing.
+ * Only seeds default permissions when the role is newly created — never re-grants
+ * the full default set on every bootstrap (that was overwriting admin customizations
+ * like removing fuel-consumption).
+ */
 export function ensureTransporterRole() {
   const role = DEFAULT_ROLES.find(r => r.id === 'transporter');
   if (!role) return;
   const db = getDb();
   const existing = db.prepare('SELECT id FROM roles WHERE id = ?').get(role.id);
-  if (!existing) {
+  if (existing) return;
+
+  const insertPerm = db.prepare(
+    'INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
+  );
+  const tx = db.transaction(() => {
     db.prepare('INSERT INTO roles (id, name, description, created_at) VALUES (?, ?, ?, ?)')
       .run(role.id, role.name, role.description, nowIso());
-  }
-  const insertPerm = db.prepare(
-    'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)',
-  );
-  for (const pid of role.permissions) {
-    if (VALID_PERMISSIONS.has(pid)) insertPerm.run(role.id, pid);
-  }
+    for (const pid of role.permissions) {
+      if (VALID_PERMISSIONS.has(pid)) insertPerm.run(role.id, pid);
+    }
+  });
+  tx();
 }
 
 /**

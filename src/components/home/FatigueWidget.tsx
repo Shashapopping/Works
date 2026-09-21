@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useFleet } from '../../context/FleetContext';
 import { fmtHosMinutes, type HosRecord } from '../../lib/hos';
-import { filterHosRecordsByVehicles } from '../../lib/siteScope';
+import { filterHosRecordsByAssignedSite } from '../../lib/siteScope';
 import { DEMO_BRANDING, demoDriverLabel } from '../../config/demoBranding';
 import { isActiveDriver } from '../../lib/driverUtils';
 import { SkelValue } from '../data/DataBusy';
@@ -42,7 +42,7 @@ export default function FatigueWidget() {
   const { hosRecords: raw, hosLoading: loading, vehicles, siteFilterActive } = useFleet();
 
   const hosRecords = useMemo(
-    () => filterHosRecordsByVehicles(scrub(raw), vehicles, siteFilterActive),
+    () => filterHosRecordsByAssignedSite(scrub(raw), vehicles, siteFilterActive),
     [raw, vehicles, siteFilterActive],
   );
 

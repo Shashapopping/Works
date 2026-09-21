@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
+import { Check, AlertCircle, CheckCircle, XCircle, Lock, Plus, Trash2, GripVertical, Pencil, Info, ChevronDown, Search } from 'lucide-react';
 import { useFleet } from '../context/FleetContext';
 import {
   DEFAULT_FLEET_SCORE_CONFIG,
@@ -61,6 +61,160 @@ const labelStyle: React.CSSProperties = {
   textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
   display: 'block',
 };
+
+/** Searchable multi-select for transporter organizations when creating a user. */
+function TransporterOrgDropdown({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(o => o.toLowerCase().includes(q));
+  }, [options, query]);
+
+  const entireFleet = selected.length === 0;
+  const summary = entireFleet
+    ? 'HBM — Entire fleet'
+    : selected.length === 1
+      ? selected[0]
+      : `${selected.length} organizations`;
+
+  const toggle = (name: string) => {
+    if (selected.includes(name)) onChange(selected.filter(t => t !== name));
+    else onChange([...selected, name]);
+  };
+
+  return (
+    <div ref={rootRef} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          ...fieldStyle,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          cursor: 'pointer',
+          textAlign: 'left',
+          borderColor: open ? 'rgba(0,120,212,0.55)' : 'var(--cd-border)',
+        }}
+      >
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {summary}
+        </span>
+        <ChevronDown size={14} style={{
+          flexShrink: 0, color: 'var(--cd-text-muted)',
+          transform: open ? 'rotate(180deg)' : undefined,
+          transition: 'transform 0.15s',
+        }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0,
+          zIndex: 20050, background: 'var(--cd-surface)',
+          border: '1px solid var(--cd-border)', borderRadius: 10,
+          boxShadow: '0 12px 32px rgba(0,0,0,0.18)', overflow: 'hidden',
+        }}>
+          <div style={{ padding: 8, borderBottom: '1px solid var(--cd-border)' }}>
+            <div style={{ position: 'relative' }}>
+              <Search size={13} style={{ position: 'absolute', left: 9, top: 9, color: 'var(--cd-text-muted)' }} />
+              <input
+                autoFocus
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search transporters…"
+                style={{
+                  ...fieldStyle, paddingLeft: 28, margin: 0,
+                }}
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+              padding: '9px 12px', border: 'none', cursor: 'pointer', textAlign: 'left',
+              background: entireFleet ? 'rgba(0,120,212,0.12)' : 'transparent',
+              color: 'var(--cd-text)', fontSize: 13, fontWeight: 700,
+            }}
+          >
+            <span style={{
+              width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+              border: entireFleet ? '1.5px solid #0078D4' : '1.5px solid var(--cd-border)',
+              background: entireFleet ? '#0078D4' : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {entireFleet && <Check size={10} color="#fff" strokeWidth={3} />}
+            </span>
+            HBM — Entire fleet
+          </button>
+          <div style={{ height: 1, background: 'var(--cd-border)' }} />
+          <div style={{ maxHeight: 220, overflowY: 'auto', padding: '4px 0' }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: '14px 12px', fontSize: 12, color: 'var(--cd-text-muted)', textAlign: 'center' }}>
+                {options.length === 0 ? 'No transporters loaded' : `No match for “${query}”`}
+              </div>
+            ) : filtered.map(name => {
+              const checked = selected.includes(name);
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => toggle(name)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    padding: '8px 12px', border: 'none', cursor: 'pointer', textAlign: 'left',
+                    background: checked ? 'rgba(0,120,212,0.10)' : 'transparent',
+                    color: 'var(--cd-text)', fontSize: 13,
+                  }}
+                >
+                  <span style={{
+                    width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                    border: checked ? '1.5px solid #0078D4' : '1.5px solid var(--cd-border)',
+                    background: checked ? '#0078D4' : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {checked && <Check size={10} color="#fff" strokeWidth={3} />}
+                  </span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function GeneralSettings() {
   const { theme, setTheme } = useFleet();
@@ -1194,35 +1348,13 @@ function UserSettings() {
             <>
               <div style={{ gridColumn: '1 / -1' }}>
                 <label style={labelStyle}>Organizations</label>
-                <div style={{
-                  ...fieldStyle, cursor: 'default', padding: 10,
-                  display: 'flex', flexDirection: 'column', gap: 6,
-                  maxHeight: 200, overflowY: 'auto',
-                }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={form.transporters.length === 0}
-                      onChange={() => setForm(p => ({ ...p, transporters: [] }))}
-                    />
-                    HBM — Entire fleet
-                  </label>
-                  <div style={{ height: 1, background: 'var(--cd-border)', margin: '2px 0' }} />
-                  {transporterOptions.map(name => (
-                    <label key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={form.transporters.includes(name)}
-                        onChange={e => setForm(p => ({
-                          ...p,
-                          transporters: e.target.checked
-                            ? [...p.transporters, name]
-                            : p.transporters.filter(t => t !== name),
-                        }))}
-                      />
-                      {name}
-                    </label>
-                  ))}
+                <TransporterOrgDropdown
+                  options={transporterOptions}
+                  selected={form.transporters}
+                  onChange={transporters => setForm(p => ({ ...p, transporters }))}
+                />
+                <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginTop: 6, lineHeight: 1.4 }}>
+                  Leave as Entire fleet for HBM staff, or pick one or more transporter orgs to lock the account.
                 </div>
               </div>
               <div style={{ gridColumn: '1 / -1' }}>

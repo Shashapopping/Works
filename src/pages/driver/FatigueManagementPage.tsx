@@ -10,7 +10,7 @@ import { useHosRecords } from '../../hooks/useHosRecords';
 import { fmtHosMinutes, hosHeldMinutesFromRecord, type HosRecord, type HosRuleId, type HosStatus } from '../../lib/hos';
 import { hosPointsFromHeldMinutes, type FleetScoreConfig } from '../../lib/fleetSafetyScore';
 import { useFleet } from '../../context/FleetContext';
-import { makeScopedVehicleIdSet, makeScopedVehicleSiteIdSet } from '../../lib/siteScope';
+import { filterHosRecordsByAssignedSite } from '../../lib/siteScope';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import PageControls from '../../components/PageControls';
 
@@ -129,23 +129,6 @@ function scrubHosRecords(list: HosRecord[]): HosRecord[] {
 
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
-
-type HosSiteScope = {
-  allowedAssetIds: Set<string>;
-  allowedSiteIds: Set<string>;
-};
-
-function filterHosRecordsToSiteScope(records: HosRecord[], scope: HosSiteScope | null): HosRecord[] {
-  if (!scope) return records;
-  if (scope.allowedAssetIds.size === 0 && scope.allowedSiteIds.size === 0) return [];
-  return records.filter(record => {
-    const siteId = (record.siteId || '').toString().trim();
-    // Site column / scope follows the driver's roster site, not the trip vehicle.
-    if (siteId) return scope.allowedSiteIds.has(siteId);
-    const assetId = (record.assetId || '').toString().trim();
-    return Boolean(assetId && scope.allowedAssetIds.has(assetId));
-  });
 }
 
 function fmtSignedHosMinutes(min: number) {
@@ -542,25 +525,19 @@ export default function FatigueManagementPage() {
     if (q) setSearch(q);
   }, [searchParams]);
 
-  const hosSiteScope = useMemo<HosSiteScope | null>(() => {
-    if (selectedSites.length === 0) return null;
-    return {
-      allowedAssetIds: makeScopedVehicleIdSet(vehicles),
-      allowedSiteIds: makeScopedVehicleSiteIdSet(vehicles),
-    };
-  }, [selectedSites, vehicles]);
+  const siteFilterActive = selectedSites.length > 0;
 
   const hosRecords = useMemo(() => {
     const activeRecords = scrubHosRecords(hosRaw).filter(r => {
       if (r.id) return isActiveDriverId(r.id);
       return isActiveDriver(r.driverName, null);
     });
-    return filterHosRecordsToSiteScope(activeRecords, hosSiteScope);
-  }, [hosRaw, hosSiteScope]);
+    return filterHosRecordsByAssignedSite(activeRecords, vehicles, siteFilterActive);
+  }, [hosRaw, vehicles, siteFilterActive]);
 
   const scopedHosPointsRecords = useMemo(
-    () => filterHosRecordsToSiteScope(scrubHosRecords(hosPointsRaw), hosSiteScope),
-    [hosPointsRaw, hosSiteScope],
+    () => filterHosRecordsByAssignedSite(scrubHosRecords(hosPointsRaw), vehicles, siteFilterActive),
+    [hosPointsRaw, vehicles, siteFilterActive],
   );
 
   const hosPointDetailsByKey = useMemo(() => {

@@ -348,6 +348,25 @@ function loadDriverLookup() {
   }
 }
 
+/**
+ * Prefer the driver's MiX roster SiteId (same rule as HOS), then fall back to a
+ * vehicle SiteId when the roster has none.
+ */
+function resolveDriverAssignedSite(driverId, fallbackAssetId = null) {
+  if (driverLookup.size === 0) loadDriverLookup();
+  if (siteLookup.size === 0) loadSiteLookup();
+  const driverInfo = driverId ? driverLookup.get(String(driverId)) : null;
+  let siteId = driverInfo?.siteId || null;
+  if (!siteId && fallbackAssetId) {
+    if (vehicleLookup.size === 0) loadVehicleLookup();
+    const vehicle = vehicleLookup.get(String(fallbackAssetId));
+    siteId = vehicle?.SiteId != null ? String(vehicle.SiteId) : null;
+  }
+  if (!siteId) return { siteId: null, site: null };
+  const siteInfo = siteLookup.get(siteId);
+  return { siteId, site: siteInfo?.name || null };
+}
+
 function loadVehicleLookup() {
   try {
     const vehiclesPath = path.join(process.cwd(), 'public', 'vehicles.json');
@@ -1420,6 +1439,7 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
       lastDrivers.map(r => [String(r.assetId), r.driverId != null ? String(r.driverId) : '']),
     );
     const vehiclesByDriver = new Map();
+    const assetsByDriver = new Map();
     for (const row of driverAssets) {
       const driverId = row.driverId != null ? String(row.driverId) : '';
       const assetId = row.assetId != null ? String(row.assetId) : '';
@@ -1428,6 +1448,8 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
       if (!reg || reg === 'N/A') continue;
       if (!vehiclesByDriver.has(driverId)) vehiclesByDriver.set(driverId, new Set());
       vehiclesByDriver.get(driverId).add(reg);
+      if (!assetsByDriver.has(driverId)) assetsByDriver.set(driverId, new Set());
+      assetsByDriver.get(driverId).add(assetId);
     }
     const tripCount = countTripsInRange(fromIso, toIso, assetIds);
 
@@ -1472,6 +1494,10 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
         }
         const totalDrivingTimeSeconds = Math.round((Number(row.totalDrivingHours) || 0) * 3600);
         const journeyCount = Number(row.tripCount) || 0;
+        const fallbackAssetId = driverId
+          ? Array.from(assetsByDriver.get(driverId) || [])[0] || null
+          : null;
+        const assigned = resolveDriverAssignedSite(driverId, fallbackAssetId);
         return {
           driverId,
           driverName: name,
@@ -1480,6 +1506,8 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
           journeyCount,
           totalDrivingTimeSeconds,
           vehicles: driverId ? Array.from(vehiclesByDriver.get(driverId) || []) : [],
+          siteId: assigned.siteId,
+          site: assigned.site,
         };
       })
       .filter(d => d && d.totalDistanceKm > 0)
@@ -1570,6 +1598,7 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
           journeyCount: 0,
           totalDrivingTimeSeconds: 0,
           vehicles: new Set(),
+          fallbackAssetId: asset.assetId || null,
         });
       }
       const d = byDriver.get(key);
@@ -1577,16 +1606,25 @@ function computeDriverDistanceSummary({ range = '24h', month = null, from = null
       d.journeyCount += 1;
       d.totalDrivingTimeSeconds += journey.drivingTimeSeconds || 0;
       if (asset.regNo && asset.regNo !== 'N/A') d.vehicles.add(asset.regNo);
+      if (!d.fallbackAssetId && asset.assetId) d.fallbackAssetId = asset.assetId;
     });
   });
 
   const drivers = Array.from(byDriver.values())
-    .map(d => ({
-      ...d,
-      totalDistanceKm: Number(d.totalDistanceKm.toFixed(2)),
-      totalDrivingTimeSeconds: Math.round(d.totalDrivingTimeSeconds),
-      vehicles: Array.from(d.vehicles),
-    }))
+    .map(d => {
+      const assigned = resolveDriverAssignedSite(d.driverId, d.fallbackAssetId);
+      return {
+        driverId: d.driverId,
+        driverName: d.driverName,
+        driverPhone: d.driverPhone,
+        totalDistanceKm: Number(d.totalDistanceKm.toFixed(2)),
+        journeyCount: d.journeyCount,
+        totalDrivingTimeSeconds: Math.round(d.totalDrivingTimeSeconds),
+        vehicles: Array.from(d.vehicles),
+        siteId: assigned.siteId,
+        site: assigned.site,
+      };
+    })
     .sort((a, b) => b.totalDistanceKm - a.totalDistanceKm);
 
   return {
@@ -2170,7 +2208,7 @@ function parseAssetIdList(raw) {
       .map(id => String(id || '').trim())
       .filter(Boolean),
   )];
-  return ids;
+  return ids.length ? ids : null;
 }
 
 function parseScopeKeyList(raw) {
@@ -2215,7 +2253,7 @@ function assetIdsForSiteScope(siteScope) {
 
 function resolveAssetScope(assetIds = null, siteScope = null) {
   const explicit = parseAssetIdList(assetIds);
-  if (explicit) return explicit;
+  if (explicit && explicit.length) return explicit;
   return assetIdsForSiteScope(siteScope);
 }
 
@@ -2341,12 +2379,28 @@ export function getRiskDrivers({ range = '30d', from = null, to = null, assetIds
       groupBy: groupBy === 'asset' ? 'asset' : 'driver',
       assetIds: ids,
     });
+    if (groupBy === 'asset') {
+      return {
+        range,
+        start: fromIso,
+        end: toIso,
+        assets: aggregates,
+      };
+    }
+    // Attach roster siteId (HOS rule) so Drivers can scope by driver assignment.
+    const drivers = aggregates.map(row => {
+      const assigned = resolveDriverAssignedSite(row.driverId, row.assetId);
+      return {
+        ...row,
+        siteId: assigned.siteId,
+        site: assigned.site,
+      };
+    });
     return {
       range,
       start: fromIso,
       end: toIso,
-      drivers: groupBy === 'asset' ? undefined : aggregates,
-      assets: groupBy === 'asset' ? aggregates : undefined,
+      drivers,
     };
   });
 }

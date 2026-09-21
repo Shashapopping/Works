@@ -26,7 +26,7 @@ import { brandLabel } from '../../lib/branding';
 import { SkelValue, SkelTable } from '../../components/data/DataBusy';
 import { fetchTaggingUsers, issueWrittenWarning, type TaggingUser } from '../../lib/coachingWarningsApi';
 import { authCachedJson, cachePeek, CACHE_TTL } from '../../lib/apiCache';
-import { filterRiskDriversByVehicles, filterTripDriversByVehicles } from '../../lib/siteScope';
+import { filterRiskDriversByAssignedSite, filterTripDriversByAssignedSite } from '../../lib/siteScope';
 
 /** Matches COACHING_WINDOW_DAYS — SQL rollups, not the boot event feed. */
 const COACHING_RISK_URL = `/api/risk/drivers?range=${COACHING_WINDOW_DAYS}d`;
@@ -518,12 +518,12 @@ export function InterventionQueuePage({ mode }: { mode: InterventionMode }) {
   const siteFiltered = selectedSites.length > 0;
 
   const scopedTrips = useMemo(
-    () => (siteFiltered ? filterTripDriversByVehicles(tripDrivers, vehicles) : tripDrivers),
+    () => (siteFiltered ? filterTripDriversByAssignedSite(tripDrivers, vehicles) : tripDrivers),
     [tripDrivers, siteFiltered, vehicles],
   );
 
   const scopedRiskRows = useMemo(
-    () => (siteFiltered ? filterRiskDriversByVehicles(riskRows, scopedTrips, vehicles) : riskRows),
+    () => (siteFiltered ? filterRiskDriversByAssignedSite(riskRows, scopedTrips, vehicles) : riskRows),
     [riskRows, scopedTrips, vehicles, siteFiltered],
   );
 

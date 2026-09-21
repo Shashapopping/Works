@@ -35,6 +35,9 @@ export interface AssessedDriver {
   journeyCount: number;
   consequence: ConsequenceCard;
   events: LogEntry[];
+  /** MiX roster SiteId (preferred) — same rule as HOS. */
+  siteId?: string | null;
+  site?: string | null;
 }
 
 export function assessmentDriverKey(driverId?: string | null, driverName?: string | null): string {
@@ -50,6 +53,8 @@ function emptyProfile(key: string, name: string, phone = 'N/A'): Omit<AssessedDr
     drivingTimeSeconds: 0,
     journeyCount: 0,
     events: [],
+    siteId: null,
+    site: null,
   };
 }
 
@@ -84,6 +89,10 @@ export function mergeAssessmentTripDrivers(batches: TripDriver[][]): TripDriver[
         prev.journeyCount += d.journeyCount;
         prev.totalDrivingTimeSeconds = (prev.totalDrivingTimeSeconds || 0) + (d.totalDrivingTimeSeconds || 0);
         prev.vehicles = Array.from(new Set([...(prev.vehicles || []), ...(d.vehicles || [])]));
+        if (!prev.siteId && d.siteId) {
+          prev.siteId = d.siteId;
+          prev.site = d.site ?? prev.site ?? null;
+        }
       }
     }
   }
@@ -119,6 +128,10 @@ export function assessDrivers(
     if (!key) return;
     const d = ensure(key, t.driverName, t.driverPhone);
     if (t.vehicles?.[0]) d.regNo = t.vehicles[0];
+    if (t.siteId && !d.siteId) {
+      d.siteId = t.siteId;
+      d.site = t.site ?? null;
+    }
     addTripStats(key, t);
     const nameKey = (t.driverName || '').trim();
     if (nameKey && nameKey !== key) addTripStats(nameKey, t);
@@ -343,6 +356,8 @@ export function assessDriversFromRisk(
     driverId?: string | null;
     driverName?: string;
     assetId?: string | null;
+    siteId?: string | null;
+    site?: string | null;
     harshBraking?: number;
     harshAcceleration?: number;
     overspeeding?: number;
@@ -411,6 +426,8 @@ export function assessDriversFromRisk(
       journeyCount: journeysByKey.get(key) || 0,
       consequence,
       events: [],
+      siteId: row.siteId || trip?.siteId || null,
+      site: row.site || trip?.site || null,
     });
   }
 
@@ -438,6 +455,8 @@ export function assessDriversFromRisk(
       journeyCount: journeysByKey.get(key) || 0,
       consequence,
       events: [],
+      siteId: t.siteId || null,
+      site: t.site || null,
     });
   }
 

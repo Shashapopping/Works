@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { MapPin, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { CEMENT_SITE_TREE, allMatchKeys, nodeCount, nodeMatchesQuery, selectedSiteScopeLabel, type SiteTreeNode } from '../lib/cementSiteTree';
 import { isDecommissionedSite, isNonOperationalPlacement } from '../lib/fleetExclusions';
@@ -54,13 +55,42 @@ export default function SiteScopeDropdown({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const scoped = !!allowedSiteKeys?.length;
+  const field = variant === 'field';
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuPos(null);
+      return;
+    }
+    const place = () => {
+      const el = buttonRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const width = Math.min(Math.max(r.width, field ? 280 : 300), Math.min(360, window.innerWidth - 16));
+      let left = r.left;
+      if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+      setMenuPos({ top: r.bottom + 6, left, width });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, field]);
 
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', onClick);
@@ -71,7 +101,14 @@ export default function SiteScopeDropdown({
     };
   }, [open]);
 
-  const selectedSet = useMemo(() => new Set(selectedSites), [selectedSites]);
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  const selectedSet = useMemo(
+    () => new Set(selectedSites.map(s => s.trim().toLowerCase()).filter(Boolean)),
+    [selectedSites],
+  );
 
   const scopedOptions = useMemo(() => {
     if (!scoped || !allowedSiteKeys) return [];
@@ -82,7 +119,8 @@ export default function SiteScopeDropdown({
       const exact = counts.get(key);
       if (exact != null) return { key, label: key, count: exact };
       const fuzzy = byLower.get(key.toLowerCase());
-      return { key, label: key, count: fuzzy?.count ?? 0 };
+      // Prefer the live fleet key casing when the account key only differs by case
+      return { key: fuzzy?.key ?? key, label: fuzzy?.key ?? key, count: fuzzy?.count ?? 0 };
     }).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
   }, [scoped, allowedSiteKeys, siteNameOptions]);
 
@@ -90,9 +128,8 @@ export default function SiteScopeDropdown({
     if (!scoped || !allowedSiteKeys?.length) return false;
     if (selectedSites.length === 0) return true;
     if (selectedSites.length !== allowedSiteKeys.length) return false;
-    const set = new Set(selectedSites);
-    return allowedSiteKeys.every(k => set.has(k));
-  }, [scoped, allowedSiteKeys, selectedSites]);
+    return allowedSiteKeys.every(k => selectedSet.has(k.trim().toLowerCase()));
+  }, [scoped, allowedSiteKeys, selectedSites, selectedSet]);
 
   const isFiltered = scoped ? !showingAllScoped : selectedSites.length > 0;
 
@@ -132,9 +169,10 @@ export default function SiteScopeDropdown({
   const toggleNode = (node: SiteTreeNode) => {
     const keys = allMatchKeys(node, siteOptions, siteNameOptions);
     if (keys.length === 0) return;
-    const allSelected = keys.every(k => selectedSet.has(k));
+    const allSelected = keys.every(k => selectedSet.has(k.toLowerCase()));
     if (allSelected) {
-      setSelectedSites(selectedSites.filter(s => !keys.includes(s)));
+      const drop = new Set(keys.map(k => k.toLowerCase()));
+      setSelectedSites(selectedSites.filter(s => !drop.has(s.trim().toLowerCase())));
     } else {
       const merged = new Set(selectedSites);
       keys.forEach(k => merged.add(k));
@@ -151,7 +189,7 @@ export default function SiteScopeDropdown({
     if (!isFiltered) return totalCount;
     if (scoped) {
       return scopedOptions
-        .filter(o => selectedSet.has(o.key))
+        .filter(o => selectedSet.has(o.key.toLowerCase()))
         .reduce((s, o) => s + o.count, 0);
     }
     return countForKeys(selectedSites, siteOptions, siteNameOptions);
@@ -168,17 +206,120 @@ export default function SiteScopeDropdown({
   }, [scoped, showingAllScoped, orgLabel, selectedSites, siteOptions, siteNameOptions]);
 
   const allChecked = scoped ? showingAllScoped : !isFiltered;
-  const field = variant === 'field';
 
   const selectAll = () => {
-    if (scoped && allowedSiteKeys) setSelectedSites([...allowedSiteKeys]);
+    if (scoped && allowedSiteKeys) setSelectedSites(scopedOptions.map(o => o.key));
     else setSelectedSites([]);
   };
+
+  const menu = open && menuPos ? createPortal(
+    <div
+      ref={menuRef}
+      style={{
+        position: 'fixed',
+        top: menuPos.top,
+        left: menuPos.left,
+        width: menuPos.width,
+        background: '#0e1e2e',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: 12,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+        zIndex: 20050,
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ padding: 10, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <Search size={13} style={{ position: 'absolute', left: 9, color: 'rgba(255,255,255,0.35)' }} />
+          <input
+            autoFocus
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search sites..."
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              padding: '7px 10px 7px 28px', fontSize: 12.5,
+              background: 'rgba(255,255,255,0.05)',
+              border: '0.5px solid rgba(255,255,255,0.12)',
+              borderRadius: 8, color: '#fff', outline: 'none',
+            }}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+            {isFiltered ? activeLabel : `Showing ${orgLabel}`}
+          </span>
+          {isFiltered && (
+            <button
+              type="button"
+              onClick={selectAll}
+              style={{
+                fontSize: 11, fontWeight: 600, color: '#4aa3e8',
+                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+              }}
+            >
+              {scoped ? 'All sites' : 'Clear'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ maxHeight: 340, overflowY: 'auto', padding: 6 }}>
+        <SiteCheckRow label={orgLabel} count={totalCount} checked={allChecked} onClick={selectAll} />
+        <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
+
+        {treeVisible && (CEMENT_SITE_TREE.children || []).map(child => (
+          <SiteTreeRow
+            key={child.key}
+            node={child}
+            depth={0}
+            query={query.trim()}
+            zoneOptions={siteOptions}
+            siteOptions={siteNameOptions}
+            selectedSet={selectedSet}
+            expanded={expanded}
+            onToggleExpand={toggleExpand}
+            onToggleNode={toggleNode}
+          />
+        ))}
+        {treeVisible && filtered.length > 0 && (
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
+        )}
+
+        {filtered.length === 0 && !treeVisible ? (
+          <div style={{ padding: '16px 10px', textAlign: 'center', fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
+            No sites match "{query}"
+          </div>
+        ) : filtered.map(o => (
+          <SiteCheckRow
+            key={o.key}
+            label={o.label}
+            count={o.count}
+            checked={!allChecked && selectedSet.has(o.key.toLowerCase())}
+            onClick={() => toggleSite(o.key)}
+          />
+        ))}
+      </div>
+
+      {isFiltered && (
+        <div style={{
+          padding: '8px 12px', borderTop: '1px solid rgba(255,255,255,0.08)',
+          fontSize: 11, color: 'rgba(255,255,255,0.4)',
+        }}>
+          {scoped
+            ? 'Select sites within your transporter fleet'
+            : 'Tick multiple sites — reports use the combined fleet'}
+        </div>
+      )}
+    </div>,
+    document.body,
+  ) : null;
 
   return (
     <div style={{ position: 'relative', width: field ? '100%' : undefined }} ref={ref}>
       {label && <div className="bpl-field-label">{label}</div>}
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen(o => !o)}
         title={scoped ? `Filter within ${orgLabel}` : `Filter by site — default is ${orgLabel}`}
@@ -221,99 +362,7 @@ export default function SiteScopeDropdown({
           transition: 'transform 0.2s ease', transform: open ? 'rotate(180deg)' : 'none',
         }} />
       </button>
-
-      {open && (
-        <div style={{
-          position: 'absolute', top: field ? 64 : 40, left: 0, width: field ? 'min(360px, 92vw)' : 300,
-          background: '#0e1e2e', border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-          zIndex: 500, overflow: 'hidden',
-        }}>
-          <div style={{ padding: 10, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-              <Search size={13} style={{ position: 'absolute', left: 9, color: 'rgba(255,255,255,0.35)' }} />
-              <input
-                autoFocus
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                placeholder="Search sites..."
-                style={{
-                  width: '100%', boxSizing: 'border-box',
-                  padding: '7px 10px 7px 28px', fontSize: 12.5,
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '0.5px solid rgba(255,255,255,0.12)',
-                  borderRadius: 8, color: '#fff', outline: 'none',
-                }}
-              />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
-                {isFiltered ? activeLabel : `Showing ${orgLabel}`}
-              </span>
-              {isFiltered && (
-                <button
-                  type="button"
-                  onClick={selectAll}
-                  style={{
-                    fontSize: 11, fontWeight: 600, color: '#4aa3e8',
-                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                  }}
-                >
-                  {scoped ? 'All sites' : 'Clear'}
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ maxHeight: 340, overflowY: 'auto', padding: 6 }}>
-            <SiteCheckRow label={orgLabel} count={totalCount} checked={allChecked} onClick={selectAll} />
-            <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
-
-            {treeVisible && (CEMENT_SITE_TREE.children || []).map(child => (
-              <SiteTreeRow
-                key={child.key}
-                node={child}
-                depth={0}
-                query={query.trim()}
-                zoneOptions={siteOptions}
-                siteOptions={siteNameOptions}
-                selectedSet={selectedSet}
-                expanded={expanded}
-                onToggleExpand={toggleExpand}
-                onToggleNode={toggleNode}
-              />
-            ))}
-            {treeVisible && filtered.length > 0 && (
-              <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '6px 4px' }} />
-            )}
-
-            {filtered.length === 0 && !treeVisible ? (
-              <div style={{ padding: '16px 10px', textAlign: 'center', fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
-                No sites match "{query}"
-              </div>
-            ) : filtered.map(o => (
-              <SiteCheckRow
-                key={o.key}
-                label={o.label}
-                count={o.count}
-                checked={!allChecked && selectedSet.has(o.key)}
-                onClick={() => toggleSite(o.key)}
-              />
-            ))}
-          </div>
-
-          {isFiltered && (
-            <div style={{
-              padding: '8px 12px', borderTop: '1px solid rgba(255,255,255,0.08)',
-              fontSize: 11, color: 'rgba(255,255,255,0.4)',
-            }}>
-              {scoped
-                ? 'Select sites within your transporter fleet'
-                : 'Tick multiple sites — reports use the combined fleet'}
-            </div>
-          )}
-        </div>
-      )}
+      {menu}
     </div>
   );
 }
@@ -333,8 +382,8 @@ function SiteTreeRow({ node, depth, query, zoneOptions, siteOptions, selectedSet
   const hasChildren = !!node.children?.length;
   const keys = allMatchKeys(node, zoneOptions, siteOptions);
   const count = nodeCount(node, zoneOptions, siteOptions);
-  const allSelected = keys.length > 0 && keys.every(k => selectedSet.has(k));
-  const someSelected = !allSelected && keys.some(k => selectedSet.has(k));
+  const allSelected = keys.length > 0 && keys.every(k => selectedSet.has(k.toLowerCase()));
+  const someSelected = !allSelected && keys.some(k => selectedSet.has(k.toLowerCase()));
   const isOpen = expanded.has(node.key) || (query !== '' && hasChildren);
 
   return (

@@ -25,6 +25,39 @@ export function makeScopedVehicleSiteIdSet(vehicles: FleetVehicle[]) {
   );
 }
 
+/** Resolve a driver's roster siteId from a lookup keyed by driverId and lowercased name. */
+export function lookupDriverSiteId(
+  siteIdByDriverKey: Map<string, string>,
+  driverId?: string | null,
+  driverName?: string | null,
+): string | null {
+  const id = (driverId || '').toString().trim();
+  if (id && siteIdByDriverKey.has(id)) return siteIdByDriverKey.get(id)!;
+  const name = (driverName || '').trim().toLowerCase();
+  if (name && siteIdByDriverKey.has(name)) return siteIdByDriverKey.get(name)!;
+  return null;
+}
+
+/**
+ * HOS-style event membership for SafeIQ / alerts:
+ * prefer driver roster siteId ∈ scoped vehicle SiteIds; else assetId / reg.
+ */
+export function eventMatchesAssignedSite(
+  event: { driverId?: string | null; driverName?: string | null; assetId?: string | null; regNo?: string | null },
+  vehicles: FleetVehicle[],
+  siteIdByDriverKey: Map<string, string>,
+): boolean {
+  const allowedSiteIds = makeScopedVehicleSiteIdSet(vehicles);
+  const allowedIds = makeScopedVehicleIdSet(vehicles);
+  const allowedRegs = makeScopedVehicleRegSet(vehicles);
+  if (allowedSiteIds.size === 0 && allowedIds.size === 0 && allowedRegs.size === 0) return false;
+  const siteId = lookupDriverSiteId(siteIdByDriverKey, event.driverId, event.driverName);
+  if (siteId) return allowedSiteIds.has(siteId);
+  const assetId = event.assetId != null ? String(event.assetId).trim() : '';
+  if (assetId && allowedIds.has(assetId)) return true;
+  return !!event.regNo && allowedRegs.has(event.regNo.trim().toLowerCase());
+}
+
 /** Sorted unique scope keys for cache keys / query params. */
 export function normalizeScopeKeys(keys: string[] = []) {
   return [...new Set(keys.map(k => k.trim()).filter(Boolean))].sort();
@@ -51,6 +84,17 @@ export function appendUrlScope(
   return url;
 }
 
+/**
+ * Compact site/transporter keys for rollup APIs (safety summary, risk, etc.).
+ * Prefer this over expanding thousands of assetIds — large zones exceed Node's
+ * ~16KB request-header limit and return empty/failed exposure (score flashes to 0).
+ */
+export function fleetSiteScopeOpts(selectedSites: string[]) {
+  const sites = normalizeScopeKeys(selectedSites);
+  if (!sites.length) return {};
+  return { siteScope: sites };
+}
+
 /** Build scope opts from header filter + live fleet vehicles (full or pre-filtered). */
 export function fleetScopeOpts(selectedSites: string[], vehicles: FleetVehicle[]) {
   const sites = normalizeScopeKeys(selectedSites);
@@ -63,7 +107,9 @@ export function fleetScopeOpts(selectedSites: string[], vehicles: FleetVehicle[]
     return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
   });
   const assetIds = scopedAssetIdList(scoped);
-  if (assetIds.length) return { assetIds };
+  // Prefer siteScope when the ID list would blow past typical HTTP header limits
+  // (~16KB). Each MiX asset id is ~19 chars → ~500 ids keeps URLs safely under 12KB.
+  if (assetIds.length && assetIds.length <= 500) return { assetIds };
   return { siteScope: sites };
 }
 
@@ -78,6 +124,22 @@ export function filterTripDriversByVehicles(tripDrivers: TripDriver[], vehicles:
   return tripDrivers.filter(driver =>
     (driver.vehicles || []).some(reg => allowedRegs.has((reg || '').trim().toLowerCase())),
   );
+}
+
+/**
+ * HOS-style membership: prefer driver roster siteId ∈ scoped vehicle SiteIds.
+ * Fall back to trip vehicle regs only when the driver has no siteId.
+ */
+export function filterTripDriversByAssignedSite(tripDrivers: TripDriver[], vehicles: FleetVehicle[]) {
+  const allowedSiteIds = makeScopedVehicleSiteIdSet(vehicles);
+  const allowedRegs = makeScopedVehicleRegSet(vehicles);
+  if (allowedSiteIds.size === 0 && allowedRegs.size === 0) return [];
+  return tripDrivers.filter(driver => {
+    const siteId = (driver.siteId || '').toString().trim();
+    // Site scope follows the driver's roster site, not the trip vehicle.
+    if (siteId) return allowedSiteIds.has(siteId);
+    return (driver.vehicles || []).some(reg => allowedRegs.has((reg || '').trim().toLowerCase()));
+  });
 }
 
 /** Keep risk rollup rows for drivers tied to the scoped fleet (trips and/or asset id). */
@@ -108,6 +170,39 @@ export function filterRiskDriversByVehicles<T extends {
   });
 }
 
+/**
+ * HOS-style risk membership: prefer row.siteId ∈ scoped vehicle SiteIds.
+ * Fall back to assetId (then trip-driver keys) when siteId is missing.
+ */
+export function filterRiskDriversByAssignedSite<T extends {
+  driverId?: string | null;
+  driverName?: string;
+  assetId?: string | null;
+  siteId?: string | null;
+}>(riskRows: T[], tripDrivers: TripDriver[], vehicles: FleetVehicle[]): T[] {
+  if (!vehicles.length) return [];
+  const allowedSiteIds = makeScopedVehicleSiteIdSet(vehicles);
+  const allowedIds = makeScopedVehicleIdSet(vehicles);
+  const driverKeys = new Set<string>();
+  for (const t of tripDrivers) {
+    const key = assessmentDriverKey(t.driverId, t.driverName);
+    if (key) driverKeys.add(key);
+    const nameKey = (t.driverName || '').trim();
+    if (nameKey) driverKeys.add(nameKey);
+  }
+  return riskRows.filter(row => {
+    const siteId = (row.siteId || '').toString().trim();
+    // Site column / scope follows the driver's roster site, not the trip vehicle.
+    if (siteId) return allowedSiteIds.has(siteId);
+    const assetId = row.assetId != null ? String(row.assetId).trim() : '';
+    if (assetId && allowedIds.has(assetId)) return true;
+    const key = assessmentDriverKey(row.driverId, row.driverName);
+    if (key && driverKeys.has(key)) return true;
+    const nameKey = (row.driverName || '').trim();
+    return Boolean(nameKey && driverKeys.has(nameKey));
+  });
+}
+
 export function filterDistanceAssetsByVehicles<T extends { regNo?: string | null; assetId?: string | null }>(
   assets: T[],
   vehicles: FleetVehicle[],
@@ -122,16 +217,42 @@ export function filterDistanceAssetsByVehicles<T extends { regNo?: string | null
   });
 }
 
-/** HOS rows for vehicles currently in the header site filter (regs only — matches status card). */
-export function filterHosRecordsByVehicles<T extends { vehicleReg?: string | null }>(
+/** HOS rows: prefer driver roster siteId (same as Fatigue page), then assetId, then reg. */
+export function filterHosRecordsByAssignedSite<T extends {
+  siteId?: string | null;
+  assetId?: string | null;
+  vehicleReg?: string | null;
+}>(
   records: T[],
   vehicles: FleetVehicle[],
   siteFilterActive: boolean,
 ) {
   if (!siteFilterActive) return records;
+  const allowedSiteIds = makeScopedVehicleSiteIdSet(vehicles);
+  const allowedIds = makeScopedVehicleIdSet(vehicles);
   const allowedRegs = makeScopedVehicleRegSet(vehicles);
-  if (allowedRegs.size === 0) return [];
-  return records.filter(r => allowedRegs.has((r.vehicleReg || '').trim().toLowerCase()));
+  if (allowedSiteIds.size === 0 && allowedIds.size === 0 && allowedRegs.size === 0) return [];
+  return records.filter(record => {
+    const siteId = (record.siteId || '').toString().trim();
+    // Site column / scope follows the driver's roster site, not the trip vehicle.
+    if (siteId) return allowedSiteIds.has(siteId);
+    const assetId = (record.assetId || '').toString().trim();
+    if (assetId && allowedIds.has(assetId)) return true;
+    return allowedRegs.has((record.vehicleReg || '').trim().toLowerCase());
+  });
+}
+
+/** @deprecated Prefer filterHosRecordsByAssignedSite — kept as alias for older call sites. */
+export function filterHosRecordsByVehicles<T extends {
+  siteId?: string | null;
+  assetId?: string | null;
+  vehicleReg?: string | null;
+}>(
+  records: T[],
+  vehicles: FleetVehicle[],
+  siteFilterActive: boolean,
+) {
+  return filterHosRecordsByAssignedSite(records, vehicles, siteFilterActive);
 }
 
 export function summarizeEventsByLabel(events: LogEntry[]) {

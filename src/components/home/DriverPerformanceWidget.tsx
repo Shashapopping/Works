@@ -12,6 +12,7 @@ import {
 } from '../../lib/consequenceScore';
 import { assessDrivers, pickHomeDriverMix, latestEventIso } from '../../lib/driverAssessment';
 import { useAssessmentTripDrivers } from '../../hooks/useAssessmentTripDrivers';
+import { filterTripDriversByAssignedSite } from '../../lib/siteScope';
 import { SkelValue } from '../data/DataBusy';
 
 const BAND_LABEL: Record<ConsequenceCategory, string> = {
@@ -30,10 +31,12 @@ function timeAgo(iso: string) {
 }
 
 export default function DriverPerformanceWidget() {
-  const { events, eventsLoading, scopedAssetIds, siteFilterActive } = useFleet();
-  const { tripDrivers, loading: tripsLoading } = useAssessmentTripDrivers(
-    siteFilterActive ? scopedAssetIds : [],
-    !siteFilterActive || scopedAssetIds.length > 0,
+  const { events, eventsLoading, vehicles, siteFilterActive } = useFleet();
+  // Full trip roster, then HOS-style client filter by driver SiteId (not trip assetIds).
+  const { tripDrivers, loading: tripsLoading } = useAssessmentTripDrivers([], true);
+  const scopedTrips = useMemo(
+    () => (siteFilterActive ? filterTripDriversByAssignedSite(tripDrivers, vehicles) : tripDrivers),
+    [siteFilterActive, tripDrivers, vehicles],
   );
   const [consequenceConfig, setConsequenceConfig] = useState<ConsequenceScoreConfig>(() => loadConsequenceConfig());
 
@@ -53,8 +56,8 @@ export default function DriverPerformanceWidget() {
   }, []);
 
   const rows = useMemo(
-    () => pickHomeDriverMix(assessDrivers(events, tripDrivers, consequenceConfig)),
-    [consequenceConfig, events, tripDrivers],
+    () => pickHomeDriverMix(assessDrivers(events, scopedTrips, consequenceConfig)),
+    [consequenceConfig, events, scopedTrips],
   );
 
   const waiting = rows.length === 0 && (eventsLoading || tripsLoading);

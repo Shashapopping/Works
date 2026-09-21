@@ -27,7 +27,7 @@ import PageControls from '../components/PageControls';
 import { brandLabel } from '../lib/branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
-import { filterTripDriversByVehicles, filterRiskDriversByVehicles } from '../lib/siteScope';
+import { filterTripDriversByAssignedSite, filterRiskDriversByAssignedSite } from '../lib/siteScope';
 import InfoTip from '../components/InfoTip';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 import { fetchDriverWarnings, type DriverWarning } from '../lib/coachingWarningsApi';
@@ -365,12 +365,12 @@ export default function DriverManagement() {
   }, [siteLock, user?.fleetName, selectedSites, siteFiltered, siteNameOptions, siteOptions]);
 
   const scopedPeriodTrips = useMemo(
-    () => siteFiltered ? filterTripDriversByVehicles(periodTrips, vehicles) : periodTrips,
+    () => siteFiltered ? filterTripDriversByAssignedSite(periodTrips, vehicles) : periodTrips,
     [periodTrips, siteFiltered, vehicles],
   );
 
   const scopedRiskRows = useMemo(
-    () => siteFiltered ? filterRiskDriversByVehicles(riskRows, scopedPeriodTrips, vehicles) : riskRows,
+    () => siteFiltered ? filterRiskDriversByAssignedSite(riskRows, scopedPeriodTrips, vehicles) : riskRows,
     [riskRows, scopedPeriodTrips, vehicles, siteFiltered],
   );
 
