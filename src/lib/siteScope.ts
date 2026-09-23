@@ -96,17 +96,38 @@ export function fleetSiteScopeOpts(selectedSites: string[]) {
   return { siteScope: sites };
 }
 
+/** Same OR rule as the global site filter: zone, site name, or transporter. */
+export function vehicleMatchesSiteKeys(
+  v: Pick<FleetVehicle, 'zone' | 'site' | 'transporter'>,
+  allowedLower: Set<string>,
+): boolean {
+  const zone = ((v.zone || '').trim() || 'Unknown').toLowerCase();
+  const site = (v.site || '').trim().toLowerCase();
+  const transporter = (v.transporter || '').trim().toLowerCase();
+  return allowedLower.has(zone) || allowedLower.has(site) || allowedLower.has(transporter);
+}
+
+/** Unique vehicles matching selected keys (empty keys = entire list). */
+export function countUniqueVehiclesForKeys(
+  keys: string[],
+  vehicles: Array<Pick<FleetVehicle, 'zone' | 'site' | 'transporter'>>,
+): number {
+  if (!keys.length) return vehicles.length;
+  const allowed = new Set(keys.map(k => k.trim().toLowerCase()).filter(Boolean));
+  if (!allowed.size) return vehicles.length;
+  let n = 0;
+  for (const v of vehicles) {
+    if (vehicleMatchesSiteKeys(v, allowed)) n += 1;
+  }
+  return n;
+}
+
 /** Build scope opts from header filter + live fleet vehicles (full or pre-filtered). */
 export function fleetScopeOpts(selectedSites: string[], vehicles: FleetVehicle[]) {
   const sites = normalizeScopeKeys(selectedSites);
   if (!sites.length) return {};
   const allowed = new Set(sites.map(s => s.toLowerCase()));
-  const scoped = vehicles.filter(v => {
-    const zone = ((v.zone || '').trim() || 'Unknown').toLowerCase();
-    const site = (v.site || '').trim().toLowerCase();
-    const transporter = (v.transporter || '').trim().toLowerCase();
-    return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
-  });
+  const scoped = vehicles.filter(v => vehicleMatchesSiteKeys(v, allowed));
   const assetIds = scopedAssetIdList(scoped);
   // Prefer siteScope when the ID list would blow past typical HTTP header limits
   // (~16KB). Each MiX asset id is ~19 chars → ~500 ids keeps URLs safely under 12KB.

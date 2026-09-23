@@ -3,9 +3,11 @@ import { createPortal } from 'react-dom';
 import { MapPin, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { CEMENT_SITE_TREE, allMatchKeys, nodeCount, nodeMatchesQuery, selectedSiteScopeLabel, type SiteTreeNode } from '../lib/cementSiteTree';
 import { isDecommissionedSite, isNonOperationalPlacement } from '../lib/fleetExclusions';
+import { countUniqueVehiclesForKeys, vehicleMatchesSiteKeys } from '../lib/siteScope';
 import { brandLabel } from '../lib/branding';
 
 type SiteOption = { key: string; label: string; count: number };
+type CountVehicle = { zone?: string; site?: string; transporter?: string };
 
 interface Props {
   selectedSites: string[];
@@ -13,6 +15,8 @@ interface Props {
   toggleSite: (site: string) => void;
   siteOptions: SiteOption[];
   siteNameOptions: SiteOption[];
+  /** Full operational fleet (before header site filter) for unique badge counts. */
+  vehicles: CountVehicle[];
   variant?: 'header' | 'field';
   label?: string;
   /** When set, dropdown is limited to these site/transporter keys (transporter accounts). */
@@ -21,32 +25,13 @@ interface Props {
   scopeLabel?: string;
 }
 
-function countForKeys(
-  keys: string[],
-  siteOptions: SiteOption[],
-  siteNameOptions: SiteOption[],
-): number {
-  if (keys.length === 0) return siteOptions.reduce((s, o) => s + o.count, 0);
-  const selected = new Set(keys);
-  const zoneHits = siteOptions.filter(o => selected.has(o.key));
-  const siteHits = siteNameOptions.filter(o => selected.has(o.key));
-  // Site-name selections (transporter leaves) must use site counts — zone-only
-  // path was returning 0 and blanked the badge.
-  if (siteHits.length && !zoneHits.length) {
-    return siteHits.reduce((s, o) => s + o.count, 0);
-  }
-  if (zoneHits.length && !siteHits.length) {
-    return zoneHits.reduce((s, o) => s + o.count, 0);
-  }
-  return zoneHits.reduce((s, o) => s + o.count, 0) + siteHits.reduce((s, o) => s + o.count, 0);
-}
-
 export default function SiteScopeDropdown({
   selectedSites,
   setSelectedSites,
   toggleSite,
   siteOptions,
   siteNameOptions,
+  vehicles,
   variant = 'header',
   label,
   allowedSiteKeys,
@@ -110,19 +95,27 @@ export default function SiteScopeDropdown({
     [selectedSites],
   );
 
+  const scopedVehicles = useMemo(() => {
+    if (!scoped || !allowedSiteKeys?.length) return vehicles;
+    const allowed = new Set(allowedSiteKeys.map(k => k.trim().toLowerCase()).filter(Boolean));
+    return vehicles.filter(v => vehicleMatchesSiteKeys(v, allowed));
+  }, [scoped, allowedSiteKeys, vehicles]);
+
+  const countFleet = scoped ? scopedVehicles : vehicles;
+
   const scopedOptions = useMemo(() => {
     if (!scoped || !allowedSiteKeys) return [];
-    const counts = new Map(siteNameOptions.map(o => [o.key, o.count]));
-    // Case-insensitive match so "Joza Non operational" still finds assets
     const byLower = new Map(siteNameOptions.map(o => [o.key.toLowerCase(), o]));
     return allowedSiteKeys.map(key => {
-      const exact = counts.get(key);
-      if (exact != null) return { key, label: key, count: exact };
       const fuzzy = byLower.get(key.toLowerCase());
-      // Prefer the live fleet key casing when the account key only differs by case
-      return { key: fuzzy?.key ?? key, label: fuzzy?.key ?? key, count: fuzzy?.count ?? 0 };
+      const liveKey = fuzzy?.key ?? key;
+      return {
+        key: liveKey,
+        label: liveKey,
+        count: countUniqueVehiclesForKeys([liveKey], countFleet),
+      };
     }).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
-  }, [scoped, allowedSiteKeys, siteNameOptions]);
+  }, [scoped, allowedSiteKeys, siteNameOptions, countFleet]);
 
   const showingAllScoped = useMemo(() => {
     if (!scoped || !allowedSiteKeys?.length) return false;
@@ -144,8 +137,12 @@ export default function SiteScopeDropdown({
         && !isDecommissionedSite(o.key)
         && !isNonOperationalPlacement(o.key)
       ))
+      .map(o => ({
+        ...o,
+        count: countUniqueVehiclesForKeys([o.key], countFleet),
+      }))
       .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
-    [siteOptions, treeKeys],
+    [siteOptions, treeKeys, countFleet],
   );
 
   const filtered = useMemo(() => {
@@ -180,20 +177,15 @@ export default function SiteScopeDropdown({
     }
   };
 
-  const totalCount = useMemo(() => {
-    if (scoped) return scopedOptions.reduce((s, o) => s + o.count, 0);
-    return siteOptions.reduce((s, o) => s + o.count, 0);
-  }, [scoped, scopedOptions, siteOptions]);
+  const totalCount = useMemo(
+    () => countUniqueVehiclesForKeys([], countFleet),
+    [countFleet],
+  );
 
   const activeCount = useMemo(() => {
     if (!isFiltered) return totalCount;
-    if (scoped) {
-      return scopedOptions
-        .filter(o => selectedSet.has(o.key.toLowerCase()))
-        .reduce((s, o) => s + o.count, 0);
-    }
-    return countForKeys(selectedSites, siteOptions, siteNameOptions);
-  }, [isFiltered, totalCount, scoped, scopedOptions, selectedSet, selectedSites, siteOptions, siteNameOptions]);
+    return countUniqueVehiclesForKeys(selectedSites, countFleet);
+  }, [isFiltered, totalCount, selectedSites, countFleet]);
 
   const orgLabel = brandLabel(scopeLabel || CEMENT_SITE_TREE.label);
   const activeLabel = useMemo(() => {
@@ -220,32 +212,34 @@ export default function SiteScopeDropdown({
         top: menuPos.top,
         left: menuPos.left,
         width: menuPos.width,
-        background: '#0e1e2e',
+        zIndex: 10050,
+        background: '#1a2332',
         border: '1px solid rgba(255,255,255,0.1)',
         borderRadius: 12,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        zIndex: 20050,
+        boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
         overflow: 'hidden',
       }}
     >
-      <div style={{ padding: 10, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-          <Search size={13} style={{ position: 'absolute', left: 9, color: 'rgba(255,255,255,0.35)' }} />
+      <div style={{ padding: '10px 12px 8px' }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(255,255,255,0.06)', borderRadius: 8, padding: '7px 10px',
+        }}>
+          <Search size={13} style={{ color: 'rgba(255,255,255,0.35)', flexShrink: 0 }} />
           <input
-            autoFocus
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search sites..."
+            placeholder="Search sites…"
             style={{
-              width: '100%', boxSizing: 'border-box',
-              padding: '7px 10px 7px 28px', fontSize: 12.5,
-              background: 'rgba(255,255,255,0.05)',
-              border: '0.5px solid rgba(255,255,255,0.12)',
-              borderRadius: 8, color: '#fff', outline: 'none',
+              flex: 1, border: 'none', outline: 'none', background: 'transparent',
+              color: '#fff', fontSize: 12.5,
             }}
           />
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          marginTop: 8, padding: '0 2px',
+        }}>
           <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
             {isFiltered ? activeLabel : `Showing ${orgLabel}`}
           </span>
@@ -276,6 +270,7 @@ export default function SiteScopeDropdown({
             query={query.trim()}
             zoneOptions={siteOptions}
             siteOptions={siteNameOptions}
+            vehicles={countFleet}
             selectedSet={selectedSet}
             expanded={expanded}
             onToggleExpand={toggleExpand}
@@ -367,12 +362,13 @@ export default function SiteScopeDropdown({
   );
 }
 
-function SiteTreeRow({ node, depth, query, zoneOptions, siteOptions, selectedSet, expanded, onToggleExpand, onToggleNode }: {
+function SiteTreeRow({ node, depth, query, zoneOptions, siteOptions, vehicles, selectedSet, expanded, onToggleExpand, onToggleNode }: {
   node: SiteTreeNode;
   depth: number;
   query: string;
   zoneOptions: SiteOption[];
   siteOptions: SiteOption[];
+  vehicles: CountVehicle[];
   selectedSet: Set<string>;
   expanded: Set<string>;
   onToggleExpand: (key: string) => void;
@@ -381,7 +377,7 @@ function SiteTreeRow({ node, depth, query, zoneOptions, siteOptions, selectedSet
   if (!nodeMatchesQuery(node, query)) return null;
   const hasChildren = !!node.children?.length;
   const keys = allMatchKeys(node, zoneOptions, siteOptions);
-  const count = nodeCount(node, zoneOptions, siteOptions);
+  const count = nodeCount(node, zoneOptions, siteOptions, vehicles);
   const allSelected = keys.length > 0 && keys.every(k => selectedSet.has(k.toLowerCase()));
   const someSelected = !allSelected && keys.some(k => selectedSet.has(k.toLowerCase()));
   const isOpen = expanded.has(node.key) || (query !== '' && hasChildren);
@@ -434,6 +430,7 @@ function SiteTreeRow({ node, depth, query, zoneOptions, siteOptions, selectedSet
           query={query}
           zoneOptions={zoneOptions}
           siteOptions={siteOptions}
+          vehicles={vehicles}
           selectedSet={selectedSet}
           expanded={expanded}
           onToggleExpand={onToggleExpand}
@@ -476,21 +473,20 @@ function SiteCheckRow({ label, count, checked, onClick }: {
 
 function CheckBox({ checked, partial = false }: { checked: boolean; partial?: boolean }) {
   return (
-    <span
-      aria-hidden
-      style={{
-        width: 16, height: 16, borderRadius: 4, flexShrink: 0,
-        border: checked || partial ? '1.5px solid #4aa3e8' : '1.5px solid rgba(255,255,255,0.3)',
-        background: checked ? '#0078D4' : partial ? 'rgba(0,120,212,0.35)' : 'transparent',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
-    >
+    <span style={{
+      width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      border: `1.5px solid ${checked || partial ? '#0078D4' : 'rgba(255,255,255,0.25)'}`,
+      background: checked ? '#0078D4' : partial ? 'rgba(0,120,212,0.35)' : 'transparent',
+    }}>
       {checked && (
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-          <path d="M2 5.2L4.2 7.4L8 2.8" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M2 5.2L4.2 7.5L8 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
-      {partial && !checked && <span style={{ width: 7, height: 1.6, background: '#fff', borderRadius: 1 }} />}
+      {!checked && partial && (
+        <span style={{ width: 8, height: 1.5, background: '#fff', borderRadius: 1 }} />
+      )}
     </span>
   );
 }
@@ -498,8 +494,8 @@ function CheckBox({ checked, partial = false }: { checked: boolean; partial?: bo
 function CountPill({ count }: { count: number }) {
   return (
     <span style={{
-      fontSize: 10, fontWeight: 700, borderRadius: 99, padding: '1px 7px', flexShrink: 0,
-      background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.5)',
+      fontSize: 10, fontWeight: 700, borderRadius: 99, padding: '1px 6px', flexShrink: 0,
+      background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.45)',
     }}>
       {count}
     </span>

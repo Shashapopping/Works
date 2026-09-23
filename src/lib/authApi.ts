@@ -134,13 +134,38 @@ export async function fetchAuthMode(): Promise<'jwt' | 'session'> {
   return data.mode;
 }
 
+const OAUTH_PROVIDERS_CACHE_KEY = 'hbm_oauth_providers';
+
 export async function fetchOAuthProviders(): Promise<{
   google: boolean;
   microsoft: boolean;
   publicUrl: string | null;
 }> {
   const res = await fetch('/api/auth/oauth/providers');
-  return parseJson(res) as Promise<{ google: boolean; microsoft: boolean; publicUrl: string | null }>;
+  const data = await parseJson(res) as { google: boolean; microsoft: boolean; publicUrl: string | null };
+  try {
+    localStorage.setItem(OAUTH_PROVIDERS_CACHE_KEY, JSON.stringify({
+      google: !!data.google,
+      microsoft: !!data.microsoft,
+      publicUrl: data.publicUrl ?? null,
+      at: Date.now(),
+    }));
+  } catch { /* ignore */ }
+  return data;
+}
+
+/** Instant hint for login UI — last known provider flags (may be stale until refreshed). */
+export function peekOAuthProviders(): { google: boolean; microsoft: boolean } | null {
+  try {
+    const raw = localStorage.getItem(OAUTH_PROVIDERS_CACHE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as { google?: boolean; microsoft?: boolean; at?: number };
+    // Keep cache for 7 days — env rarely changes without a deploy
+    if (data.at && Date.now() - data.at > 7 * 24 * 60 * 60 * 1000) return null;
+    return { google: !!data.google, microsoft: !!data.microsoft };
+  } catch {
+    return null;
+  }
 }
 
 export function startGoogleOAuth(opts?: { portal?: 'admin' | 'transporter' }) {

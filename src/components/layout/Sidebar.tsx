@@ -96,17 +96,19 @@ export default function Sidebar({ mobileOpen, onCloseMobile }: Props) {
     >
       <div className="bpl-sidebar-logo">
         <div className="bpl-sidebar-brand-header">
-          {brandLogoMarkSrc() ? (
-            <div className="bpl-sidebar-logo-badge">
-              <img src={brandLogoMarkSrc()!} alt={brandLogoAlt()} />
-            </div>
-          ) : (
-            <div className="bpl-sidebar-logo-badge" style={{
-              background: '#0078D4', borderRadius: 12, color: '#fff',
-              fontWeight: 700, fontSize: 22,
-            }}>
-              H
-            </div>
+          {user?.roleId !== 'transporter' && (
+            brandLogoMarkSrc() ? (
+              <div className="bpl-sidebar-logo-badge">
+                <img src={brandLogoMarkSrc()!} alt={brandLogoAlt()} />
+              </div>
+            ) : (
+              <div className="bpl-sidebar-logo-badge" style={{
+                background: '#0078D4', borderRadius: 12, color: '#fff',
+                fontWeight: 700, fontSize: 22,
+              }}>
+                H
+              </div>
+            )
           )}
           <div className="bpl-sidebar-brand-block">
             <div className="bpl-sidebar-brand-name">{user?.fleetName || clientName()}</div>

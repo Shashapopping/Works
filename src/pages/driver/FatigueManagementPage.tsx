@@ -69,7 +69,7 @@ const COL_TIPS: Record<string, string> = {
   '4h continuous': 'Max 4 hours continuous driving. A parked gap of ≥20 minutes resets the block.',
   'Daily rest': 'Driver needs at least 8 hours continuous rest inside each rolling 24-hour cycle.',
   'Weekly rest': 'At least 24 hours continuous off-duty rest required in every rolling 7-day week.',
-  'Drive time today': 'Total minutes driven today, clipped to the current Lagos calendar day.',
+  'Drive time today': 'Credited drive minutes today (MiX driving time / movement), clipped to the Lagos day — not parked trip clock time.',
   'Trip time': 'Sum of each trip’s clock time inside the selected day (clipped at midnight). Gaps between trips are not counted — so an overnight open trip cannot stretch Trip time to ~23h.',
   'Violation value': 'Extra driving minutes past the 4-hour continuous limit.',
   'Violation trip': 'Clock time from when they hit 4 hours until that driving block ended.',

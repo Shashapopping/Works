@@ -1731,6 +1731,11 @@ function analyzeDriverTripBlocks(trips, { isToday, nowMs, driveLimitMin, restGap
   return { maxContinuousMin, currentBlockMin, breaches, violationDriveMinutes, violationTripMinutes, violationHistory };
 }
 
+/** Drop parked/open pulses with no credited drive — they must not break rest gaps. */
+function tripsWithCreditedDrive(trips) {
+  return (trips || []).filter(t => (t.driveSec || 0) > 0);
+}
+
 /** Longest off-duty gap (minutes) inside [windowStart, windowEnd], from trip end→start gaps. */
 function longestRestGapMinutes(trips, windowStart, windowEnd) {
   const end = Math.max(windowStart, windowEnd);
@@ -2065,24 +2070,25 @@ function computeHosRecords(dayStr) {
     const maxContinuous24h = Math.max(cycleAnalysis.maxContinuousMin, cycleAnalysis.currentBlockMin);
     const cycle8hBreaches = cycleAnalysis.breaches;
     const cycle8hViolation = maxContinuous24h >= CYCLE_8H_LIMIT_MIN || cycle8hBreaches > 0;
+    const restTrips = tripsWithCreditedDrive(weekTrips);
     const minutesSinceDailyRest = minutesSinceQualifyingRest(
-      weekTrips, weekStart, windowEnd, DAILY_REST_MIN,
+      restTrips, weekStart, windowEnd, DAILY_REST_MIN,
     );
     const dailyRestElapsedMinutes = minutesSinceDailyRest ?? Math.round((windowEnd - weekStart) / 60000);
     const dailyRestViolation = minutesSinceDailyRest == null || minutesSinceDailyRest >= DAILY_REST_WINDOW_MIN;
     const dailyRestWarning = !dailyRestViolation && minutesSinceDailyRest >= DAILY_REST_WARN_MIN;
 
-    const longestRestWeekMinutes = longestRestGapMinutes(weekTrips, weekStart, windowEnd);
+    const longestRestWeekMinutes = longestRestGapMinutes(restTrips, weekStart, windowEnd);
     const weeklyRestOk = longestRestWeekMinutes >= WEEKLY_REST_MIN;
     const minutesSinceWeeklyRest = minutesSinceQualifyingRest(
-      weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
+      restTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
     );
     const weeklyRestWindow = qualifyingRestWindow(
-      weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
+      restTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
     );
     const weeklyRestElapsedMinutes = minutesSinceWeeklyRest ?? WEEKLY_REST_WINDOW_MIN;
     const daysSinceWeeklyRest = daysSinceQualifyingRest(
-      weekTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
+      restTrips, weekStart, windowEnd, WEEKLY_REST_MIN,
     );
 
     const rulesBreached = [];
@@ -2090,8 +2096,8 @@ function computeHosRecords(dayStr) {
     if (dailyRestViolation) rulesBreached.push('8h_24h');
     if (!weeklyRestOk) rulesBreached.push('weekly_rest');
 
-    // Skip drivers with no day activity and no extended-rule breach (keeps table focused).
-    if (!dayTrips.length && rulesBreached.length === 0) continue;
+    // Credited drive today, or a real HOS breach — not parked-only zero-drive pulses.
+    if (driveMinutesToday <= 0 && rulesBreached.length === 0) continue;
 
     let status = 'compliant';
     if (rulesBreached.length > 0) status = 'violation';

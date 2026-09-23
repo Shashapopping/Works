@@ -229,7 +229,7 @@ export default function ReportAutomate({
   onSelectedAutomationChange,
 }: ReportAutomateProps = {}) {
   const { user } = useAuth();
-  const { siteOptions, siteNameOptions, vehicles, events: fleetEvents } = useFleet();
+  const { siteOptions, siteNameOptions, allVehicles, vehicles, events: fleetEvents } = useFleet();
   const [open, setOpen] = useState(defaultOpen || embedded);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -294,19 +294,30 @@ export default function ReportAutomate({
     void scheduleTick;
     const isNoRecent = config.eventType === NO_RECENT_COMMUNICATION;
     const eventLabel = isNoRecent ? NO_RECENT_COMMUNICATION_DISPLAY_LABEL : config.eventType || 'All event types';
-    const base = buildCadenceScheduleSummary({
+    if (!isNoRecent) {
+      return buildCadenceScheduleSummary({
+        frequency,
+        sendHour,
+        dayOfWeek,
+        dayOfMonth,
+        nightBatch: frequency === 'hourly' ? nightBatch : false,
+        eventLabel,
+        trackingWindowPhrase: trackingWindowLabel(config),
+        reportTypeLabel: reportTypeLabel(config.reportType),
+        assetCount: connectivityAssetCount,
+      });
+    }
+    return buildCadenceScheduleSummary({
       frequency,
       sendHour,
       dayOfWeek,
       dayOfMonth,
       nightBatch: frequency === 'hourly' ? nightBatch : false,
-      eventLabel,
-      trackingWindowPhrase: trackingWindowLabel(config),
+      eventLabel: `${NO_RECENT_COMMUNICATION_DISPLAY_LABEL} (queued when silence hits 2 hours)`,
+      trackingWindowPhrase: 'the period since the last send',
       reportTypeLabel: reportTypeLabel(config.reportType),
-      assetCount: connectivityAssetCount,
+      assetCount: null,
     });
-    if (!isNoRecent) return base;
-    return `${NO_RECENT_COMMUNICATION_DISPLAY_LABEL} is stored once when a vehicle reaches 2 hours without GPS. New arrivals are sent hourly.${nightBatch ? ' Events from 7:00 PM to 6:00 AM Lagos are batched and delivered at 6:00 AM.' : ''}`;
   }, [
     scheduleTick,
     frequency,
@@ -342,9 +353,6 @@ export default function ReportAutomate({
         lookbackUnit: 'hours',
       };
     });
-    if (normalized === NO_RECENT_COMMUNICATION) {
-      setFrequency('hourly');
-    }
   };
 
   const setConfigSiteKeys = (siteKeys: string[]) => {
@@ -452,7 +460,6 @@ export default function ReportAutomate({
     setMessage(null);
     setError(null);
     const isNoRecent = config.eventType === NO_RECENT_COMMUNICATION;
-    const effectiveFrequency = isNoRecent ? 'hourly' : frequency;
     const effectiveConfig = isNoRecent
       ? {
         ...config,
@@ -463,12 +470,12 @@ export default function ReportAutomate({
         lookbackUnit: 'hours' as const,
         eventType: NO_RECENT_COMMUNICATION,
         format: config.format,
-        nightBatch,
+        nightBatch: frequency === 'hourly' ? nightBatch : false,
       }
       : { ...config, format: config.format, nightBatch: frequency === 'hourly' ? nightBatch : false };
     const payload = {
       title: reportTitle,
-      frequency: effectiveFrequency,
+      frequency,
       reportConfig: effectiveConfig,
       format: config.format,
       recipients: recipientList,
@@ -677,6 +684,7 @@ export default function ReportAutomate({
                     toggleSite={toggleConfigSite}
                     siteOptions={siteOptions}
                     siteNameOptions={siteNameOptions}
+                    vehicles={allVehicles}
                   />
                 </div>
                 <div className="bpl-automate-section" style={{ flex: 1 }}>
@@ -743,12 +751,7 @@ export default function ReportAutomate({
 
               <div className="bpl-automate-section">
                 <div className="bpl-automate-label">Cadence</div>
-                {config.eventType === NO_RECENT_COMMUNICATION ? (
-                  <div className="bpl-automate-schedule-preview" role="status">
-                    Hourly. New {NO_RECENT_COMMUNICATION_DISPLAY_LABEL} arrivals are emailed on the next hourly run.
-                  </div>
-                ) : (
-                  <div className="bpl-automate-seg">
+                <div className="bpl-automate-seg">
                   {(['hourly', 'daily', 'weekly', 'monthly'] as const).map(key => (
                     <button
                       key={key}
@@ -762,11 +765,15 @@ export default function ReportAutomate({
                       {key[0].toUpperCase() + key.slice(1)}
                     </button>
                   ))}
+                </div>
+                {config.eventType === NO_RECENT_COMMUNICATION && (
+                  <div className="bpl-automate-hint">
+                    New {NO_RECENT_COMMUNICATION_DISPLAY_LABEL} arrivals are queued as they hit 2 hours, then emailed on this cadence.
                   </div>
                 )}
               </div>
 
-              {config.eventType !== NO_RECENT_COMMUNICATION && frequency === 'weekly' && (
+              {frequency === 'weekly' && (
                 <div className="bpl-automate-section">
                   <div className="bpl-automate-label">Day</div>
                   <div className="bpl-automate-seg bpl-automate-seg--wrap">
@@ -779,7 +786,7 @@ export default function ReportAutomate({
                 </div>
               )}
 
-              {config.eventType !== NO_RECENT_COMMUNICATION && frequency === 'monthly' && (
+              {frequency === 'monthly' && (
                 <div className="bpl-automate-section">
                   <div className="bpl-automate-label">Monthly window</div>
                   <div className="bpl-automate-seg bpl-automate-seg--wrap">
@@ -799,7 +806,7 @@ export default function ReportAutomate({
                 </div>
               )}
 
-              {config.eventType !== NO_RECENT_COMMUNICATION && frequency !== 'hourly' && (
+              {frequency !== 'hourly' && (
                 <div className="bpl-automate-section">
                   <div className="bpl-automate-label">Send hour (Lagos)</div>
                   <select className="bpl-automate-input" value={sendHour} onChange={e => setSendHour(Number(e.target.value))}>
@@ -810,7 +817,7 @@ export default function ReportAutomate({
                 </div>
               )}
 
-              {(config.eventType === NO_RECENT_COMMUNICATION || frequency === 'hourly') && (
+              {frequency === 'hourly' && (
                 <label className="bpl-automate-night-batch">
                   <input
                     type="checkbox"
@@ -922,7 +929,7 @@ export default function ReportAutomate({
                     </div>
                     <div className="bpl-automate-confirm-summary">
                       <div><span>Report</span><strong>{reportTitle}</strong></div>
-                      <div><span>Cadence</span><strong>{config.eventType === NO_RECENT_COMMUNICATION ? 'Hourly' : frequency}</strong></div>
+                      <div><span>Cadence</span><strong>{frequency[0].toUpperCase() + frequency.slice(1)}</strong></div>
                       <div><span>Window</span><strong>{trackingWindowLabel(config)}</strong></div>
                       <div><span>Site</span><strong>{selectedSiteLabel}</strong></div>
                       <div><span>Recipients</span><strong>{recipientList.length ? recipientList.join(', ') : (defaultRecipient || 'Account email')}</strong></div>

@@ -136,8 +136,13 @@ export async function handleAuthRequest(req, res) {
   const method = (req.method || 'GET').toUpperCase();
 
   try {
-    // Ensure bootstrap once on first auth hit
-    if (!handleAuthRequest._bootstrapped) {
+    // Lightweight OAuth endpoints only need env vars — don't block on DB bootstrap
+    const skipBootstrap =
+      (path === '/api/auth/oauth/providers' && method === 'GET')
+      || (path === '/api/auth/oauth/google' && method === 'GET')
+      || (path === '/api/auth/oauth/microsoft' && method === 'GET');
+
+    if (!skipBootstrap && !handleAuthRequest._bootstrapped) {
       await bootstrapAdminIfNeeded();
       handleAuthRequest._bootstrapped = true;
     }

@@ -428,6 +428,7 @@ export default function ReportsPage() {
     vehicles,
     siteOptions,
     siteNameOptions,
+    allVehicles,
     selectedSites,
     setSelectedSites,
     toggleSite,
@@ -1221,6 +1222,7 @@ export default function ReportsPage() {
                 toggleSite={toggleSite}
                 siteOptions={siteOptions}
                 siteNameOptions={siteNameOptions}
+                vehicles={allVehicles}
               />
 
               <MultiSelectDropdown

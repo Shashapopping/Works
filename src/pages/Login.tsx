@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { fetchOAuthProviders, startGoogleOAuth, startMicrosoftOAuth } from '../lib/authApi';
+import { fetchOAuthProviders, peekOAuthProviders, startGoogleOAuth, startMicrosoftOAuth } from '../lib/authApi';
 import { brandLogoAlt, brandLogoSrc, productName } from '../lib/branding';
 import { Lock, Check, Building2, Truck, ChevronLeft } from 'lucide-react';
 
@@ -24,8 +24,9 @@ export default function Login() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [googleEnabled, setGoogleEnabled] = useState(false);
-  const [microsoftEnabled, setMicrosoftEnabled] = useState(false);
+  const cachedProviders = peekOAuthProviders();
+  const [googleEnabled, setGoogleEnabled] = useState(() => !!cachedProviders?.google);
+  const [microsoftEnabled, setMicrosoftEnabled] = useState(() => !!cachedProviders?.microsoft);
 
   useEffect(() => {
     fetchOAuthProviders()
@@ -42,7 +43,8 @@ export default function Login() {
     }
   }, [location.state]);
 
-  if (loading) {
+  // Only block with a spinner when validating an existing cached session
+  if (loading && user) {
     return (
       <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--cd-bg)' }}>
         <div style={{ color: 'var(--cd-text-muted)', fontSize: 13 }}>Loading…</div>
@@ -334,7 +336,7 @@ export default function Login() {
                   </button>
                 )}
                 <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', lineHeight: 1.45, textAlign: 'center' }}>
-                  Existing accounts: use the same email as your invite — Google/Microsoft link automatically and password still works.
+                  Use "Sign in with Google or Microsoft" using the email Best Practices assigned to your account for easy access.
                 </div>
               </>
             )}

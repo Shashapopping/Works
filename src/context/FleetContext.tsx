@@ -42,7 +42,7 @@ import { buildHosUrl, type HosRecord } from '../lib/hos';
 import { startJitteredInterval } from '../lib/pollSchedule';
 import { SAFEIQ_ENABLED, SAFEIQ_SPEED_LIMIT_KMH, safeIqTrendFromCounts } from '../config/safeIq';
 import { filterOverspeedEvents, isOverspeedLabel, qualifiesAsOverspeed } from '../lib/overspeedFilter';
-import { appendUrlScope, filterDistanceAssetsByVehicles, filterTripDriversByAssignedSite, fleetScopeOpts, fleetSiteScopeOpts, scopedAssetIdList, eventMatchesAssignedSite, lookupDriverSiteId, makeScopedVehicleSiteIdSet } from '../lib/siteScope';
+import { appendUrlScope, filterDistanceAssetsByVehicles, filterTripDriversByAssignedSite, fleetScopeOpts, fleetSiteScopeOpts, scopedAssetIdList, eventMatchesAssignedSite, lookupDriverSiteId, makeScopedVehicleSiteIdSet, vehicleMatchesSiteKeys } from '../lib/siteScope';
 import { isExcludedFleetPlacement } from '../lib/fleetExclusions';
 import { defaultPageCustomRange, buildDriverDistanceUrl } from '../lib/pagePeriod';
 import { readHomeSnapshot, slimHomeVehicle, writeHomeSnapshot } from '../lib/homeSnapshot';
@@ -242,6 +242,11 @@ interface FleetContextType {
   siteOptions: { key: string; label: string; count: number }[];
   /** Distinct `site` values (transporter/depot names within a zone) derived from live data, with asset counts. */
   siteNameOptions: { key: string; label: string; count: number }[];
+  /**
+   * Full operational fleet before the header site filter (exclusions already applied).
+   * Used by the Sites dropdown so badge counts stay unique and stable while filtered.
+   */
+  allVehicles: FleetVehicle[];
   /** True when the signed-in user is scoped to one or more transporter organizations. */
   siteLock: boolean;
   lockedTransporters: string[];
@@ -1308,13 +1313,11 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const filteredVehicles = useMemo(() => {
     if (!siteFilterActive) return vehicles;
     const allowed = new Set(selectedSites.map(s => s.trim().toLowerCase()).filter(Boolean));
-    return vehicles.filter(v => {
-      const zone = ((v.zone || '').trim() || 'Unknown').toLowerCase();
-      const site = (v.site || '').trim().toLowerCase();
-      const transporter = (v.transporter || '').trim().toLowerCase();
-      return allowed.has(zone) || allowed.has(site) || allowed.has(transporter);
-    });
+    return vehicles.filter(v => vehicleMatchesSiteKeys(v, allowed));
   }, [vehicles, selectedSites, siteFilterActive]);
+
+  /** Unfiltered fleet for site-selector unique counts (same list siteOptions is built from). */
+  const allVehicles = vehicles;
 
   const scopedAssetIds = useMemo(
     () => (siteFilterActive ? scopedAssetIdList(filteredVehicles) : []),
@@ -1496,6 +1499,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       theme, setTheme, isMobile, reloadEvents,
       scoreConfig, updateScoreConfig,
       selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
+      allVehicles,
       siteLock, lockedTransporters, siteFilterActive, scopedAssetIds,
     }}>
       {children}

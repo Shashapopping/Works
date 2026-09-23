@@ -10,6 +10,8 @@
  *  - Pure branch nodes (no `match`) exist only for collapsible grouping
  */
 
+import { countUniqueVehiclesForKeys } from './siteScope';
+
 export type SiteMatchField = 'zone' | 'site';
 
 export interface SiteTreeNode {
@@ -631,36 +633,19 @@ export function selectedSiteScopeLabel(
   return 'Multiple sites';
 }
 
-function collectFieldKeys(
+/**
+ * Unique vehicle count for a tree node — same OR match as the global site filter
+ * (zone / site / transporter). Requires the live fleet list; no zone+site sum.
+ */
+export function nodeCount(
   node: SiteTreeNode,
   zoneOptions: SiteOption[],
   siteOptions: SiteOption[],
-): { zoneKeys: Set<string>; siteKeys: Set<string> } {
-  const zoneKeys = new Set<string>();
-  const siteKeys = new Set<string>();
-  const walk = (n: SiteTreeNode) => {
-    if (n.match) {
-      const keys = directMatchKeys(n, zoneOptions, siteOptions);
-      if (n.field === 'site') keys.forEach(k => siteKeys.add(k));
-      else keys.forEach(k => zoneKeys.add(k));
-    }
-    for (const c of n.children || []) walk(c);
-  };
-  walk(node);
-  return { zoneKeys, siteKeys };
-}
-
-/**
- * Vehicle count for a node. Prefer unique zone totals (each vehicle has one zone)
- * so parent rows never exceed the org total by also summing site leaves.
- * Site-only branches (no zone match in the subtree) use site counts.
- */
-export function nodeCount(node: SiteTreeNode, zoneOptions: SiteOption[], siteOptions: SiteOption[]): number {
-  const { zoneKeys, siteKeys } = collectFieldKeys(node, zoneOptions, siteOptions);
-  if (zoneKeys.size > 0) {
-    return zoneOptions.filter(o => zoneKeys.has(o.key)).reduce((s, o) => s + o.count, 0);
-  }
-  return siteOptions.filter(o => siteKeys.has(o.key)).reduce((s, o) => s + o.count, 0);
+  vehicles: Array<{ zone?: string; site?: string; transporter?: string }>,
+): number {
+  const keys = allMatchKeys(node, zoneOptions, siteOptions);
+  if (!keys.length) return 0;
+  return countUniqueVehiclesForKeys(keys, vehicles);
 }
 
 /** True if the node label or any descendant label matches the search query. */

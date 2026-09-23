@@ -6,7 +6,7 @@ export default function SiteSelector() {
   const { user } = useAuth();
   const {
     selectedSites, setSelectedSites, toggleSite, siteOptions, siteNameOptions,
-    siteLock, lockedTransporters,
+    allVehicles, siteLock, lockedTransporters,
   } = useFleet();
   return (
     <SiteScopeDropdown
@@ -15,6 +15,7 @@ export default function SiteSelector() {
       toggleSite={toggleSite}
       siteOptions={siteOptions}
       siteNameOptions={siteNameOptions}
+      vehicles={allVehicles}
       allowedSiteKeys={siteLock ? lockedTransporters : undefined}
       scopeLabel={user?.fleetName || undefined}
     />
