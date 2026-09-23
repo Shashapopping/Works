@@ -177,14 +177,15 @@ export default function StatusStatsRow({
     hosRecords,
     hosLoading,
     vehicles,
-    scopedAssetIds,
+    selectedSites,
     siteFilterActive,
   } = useFleet();
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(
     metricPeriod,
     metricCustom,
-    siteFilterActive ? scopedAssetIds : [],
-    showFuelConsumption && (!siteFilterActive || scopedAssetIds.length > 0),
+    [],
+    showFuelConsumption,
+    siteFilterActive ? selectedSites : [],
   );
   const scopedHosRecords = useMemo(
     () => filterHosRecordsByAssignedSite(hosRecords, vehicles, siteFilterActive),

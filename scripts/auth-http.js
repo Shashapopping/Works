@@ -33,6 +33,10 @@ import {
   handleGoogleOAuthCallback,
   startGoogleOAuth,
 } from './oauth-google.js';
+import {
+  handleMicrosoftOAuthCallback,
+  startMicrosoftOAuth,
+} from './oauth-microsoft.js';
 import { isEmailConfigured, sendReportExportEmail } from './email.js';
 import {
   createAutomation,
@@ -155,6 +159,16 @@ export async function handleAuthRequest(req, res) {
 
     if (path === '/api/auth/oauth/google/callback' && method === 'GET') {
       await handleGoogleOAuthCallback(req, res);
+      return true;
+    }
+
+    if (path === '/api/auth/oauth/microsoft' && method === 'GET') {
+      startMicrosoftOAuth(req, res);
+      return true;
+    }
+
+    if (path === '/api/auth/oauth/microsoft/callback' && method === 'GET') {
+      await handleMicrosoftOAuthCallback(req, res);
       return true;
     }
 

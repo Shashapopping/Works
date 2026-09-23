@@ -111,7 +111,10 @@ function parseScopeKeyList(raw) {
 function scopedAssetIdsFromVehicles(vehicles, siteScope, assetIds) {
   const explicit = parseAssetIdList(assetIds);
   const siteKeys = parseScopeKeyList(siteScope);
-  if (!explicit && !siteKeys) return null;
+  if (!explicit && !siteKeys) {
+    // Unscoped → live fleet only (vehicles map is already data.json).
+    return [...vehicles.keys()];
+  }
   let ids = explicit;
   if (siteKeys) {
     const allowed = new Set(siteKeys.map(k => String(k).trim().toLowerCase()));

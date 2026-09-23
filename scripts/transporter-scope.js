@@ -4,6 +4,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getRequestUser } from './auth-jwt.js';
+import { liveFleetAssetIds, restrictToLiveFleet } from './fleet-exclusions.js';
 
 export function parseAssetIdList(value) {
   if (value == null || value === '') return null;
@@ -62,10 +63,16 @@ export function assetIdsForSiteScope(siteScope) {
   }
 }
 
+/**
+ * Resolve request scope to asset IDs.
+ * Unscoped (null/empty) → live fleet only (drops XN Decommissioned + Non Operational).
+ */
 export function resolveAssetScope(assetIds = null, siteScope = null) {
   const explicit = parseAssetIdList(assetIds);
-  if (explicit) return explicit;
-  return assetIdsForSiteScope(siteScope);
+  if (explicit) return restrictToLiveFleet(explicit);
+  const fromSites = assetIdsForSiteScope(siteScope);
+  if (fromSites) return fromSites;
+  return liveFleetAssetIds();
 }
 
 /** Asset ids locked to the signed-in transporter account (null = not locked). */

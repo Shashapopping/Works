@@ -120,6 +120,13 @@ function mergeAssetScopes(explicitIds, siteIds) {
   return explicitIds.filter(id => selected.has(String(id)));
 }
 
+/** Unscoped → live fleet ids only (data.json excludes XN / Non Operational). */
+function resolveQueryAssetIds(explicitAssetIds, siteAssetIds, lookup) {
+  const merged = mergeAssetScopes(explicitAssetIds, siteAssetIds);
+  if (merged) return merged;
+  return [...lookup.keys()].map(String);
+}
+
 /** Resolve Event Explorer q against live fleet lookup (reg / name / id). */
 function matchedAssetIdsForSearch(q, lookup) {
   const s = String(q || '').trim().toLowerCase();
@@ -187,7 +194,7 @@ export function handleEventsLogQuery(query = {}) {
   const q = (query.q || query.search || '').trim();
   const explicitAssetIds = parseAssetIds(query.assetIds, query.assetId);
   const siteAssetIds = assetIdsForSiteScope(query.siteScope || query.sites, lookup);
-  const assetIds = mergeAssetScopes(explicitAssetIds, siteAssetIds);
+  const assetIds = resolveQueryAssetIds(explicitAssetIds, siteAssetIds, lookup);
   const format = String(query.format || '').toLowerCase();
   const excludeHidden = query.excludeHidden === true || query.excludeHidden === '1' || query.excludeHidden === 'true';
   const searchAssetIds = q ? matchedAssetIdsForSearch(q, lookup) : null;

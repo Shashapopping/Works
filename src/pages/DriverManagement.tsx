@@ -27,7 +27,7 @@ import PageControls from '../components/PageControls';
 import { brandLabel } from '../lib/branding';
 import { DEMO_BRANDING, demoPhoneLabel } from '../config/demoBranding';
 import { SkelValue, SkelTable } from '../components/data/DataBusy';
-import { filterTripDriversByAssignedSite, filterRiskDriversByAssignedSite } from '../lib/siteScope';
+import { filterTripDriversByAssignedSite, filterRiskDriversByAssignedSite, filterHosRecordsByAssignedSite } from '../lib/siteScope';
 import InfoTip from '../components/InfoTip';
 import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 import { fetchDriverWarnings, type DriverWarning } from '../lib/coachingWarningsApi';
@@ -357,6 +357,10 @@ export default function DriverManagement() {
   const [riskLoading, setRiskLoading] = useState(() => !cachePeek(riskUrl));
   const seedBusy = riskLoading && riskRows.length === 0;
   const siteFiltered = selectedSites.length > 0;
+  const hosLive = useMemo(
+    () => filterHosRecordsByAssignedSite(hosRaw, vehicles, siteFiltered),
+    [hosRaw, vehicles, siteFiltered],
+  );
 
   const scopeLabel = useMemo(() => {
     if (siteLock && user?.fleetName) return user.fleetName;
@@ -419,7 +423,7 @@ export default function DriverManagement() {
         heldMinutes,
       });
     };
-    const source = Array.isArray(hosRaw) ? hosRaw : [];
+    const source = Array.isArray(hosLive) ? hosLive : [];
     source.forEach(record => {
       const heldMinutes = hosHeldMinutesFromRecord(record);
       if (heldMinutes <= 0) return;
@@ -427,7 +431,7 @@ export default function DriverManagement() {
       add(record.driverName, heldMinutes);
     });
     return map;
-  }, [hosRaw, scoreConfig]);
+  }, [hosLive, scoreConfig]);
   const finalOutcomeByDriverKey = useMemo(() => {
     const map = new Map<string, {
       category: ConsequenceCategory;

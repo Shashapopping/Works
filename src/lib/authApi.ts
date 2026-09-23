@@ -13,6 +13,8 @@ export interface AuthUser {
   /** Custom display name for a transporter account — shown as the sidebar title instead of the default client name. */
   fleetName?: string | null;
   permissions: string[];
+  /** Linked SSO providers (e.g. google, microsoft) — password login still works when present. */
+  linkedProviders?: string[];
   lastLoginAt: string | null;
   createdAt: string;
 }
@@ -141,8 +143,14 @@ export async function fetchOAuthProviders(): Promise<{
   return parseJson(res) as Promise<{ google: boolean; microsoft: boolean; publicUrl: string | null }>;
 }
 
-export function startGoogleOAuth() {
-  window.location.href = '/api/auth/oauth/google';
+export function startGoogleOAuth(opts?: { portal?: 'admin' | 'transporter' }) {
+  const portal = opts?.portal === 'transporter' ? 'transporter' : 'admin';
+  window.location.href = `/api/auth/oauth/google?portal=${portal}`;
+}
+
+export function startMicrosoftOAuth(opts?: { portal?: 'admin' | 'transporter' }) {
+  const portal = opts?.portal === 'transporter' ? 'transporter' : 'admin';
+  window.location.href = `/api/auth/oauth/microsoft?portal=${portal}`;
 }
 
 /** Decode JWT payload (no signature check — display only). */

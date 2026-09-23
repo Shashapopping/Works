@@ -425,7 +425,8 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const safetyExposureRef = useRef<FleetSafetyExposure | null>(safetyExposure);
   const hosRecordsRef = useRef<HosRecord[]>(hosRecords);
   const homeAlertsRef = useRef<AlertItem[] | null>(homeAlerts);
-  const bootTasksStartedRef = useRef(false);
+  /** Last safety summary scope query (`&siteScope=…` or `''`) currently painted / in flight. */
+  const safetyScopeKeyRef = useRef<string | null>(null);
 
   const scheduleIdle = useCallback((fn: () => void, timeoutMs: number) => {
     const w = window as Window & typeof globalThis;
@@ -1060,11 +1061,20 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     const prevKey = safetySummaryUrl('prev30d') + scopedQuery;
     const cachedCur = force ? null : cachePeek<FleetSafetyExposure>(curKey);
     const cachedPrev = force ? null : cachePeek<FleetSafetyExposure>(prevKey);
-    // Paint cache for this scope immediately; otherwise clear so we never keep
-    // another site's census (which made the gauge look stuck / wrong).
-    setSafetyExposure(cachedCur);
-    setSafetyExposurePrev(cachedPrev);
-    setSafetyExposureLoading(!cachedCur);
+    const scopeChanged = safetyScopeKeyRef.current !== scopedQuery;
+    safetyScopeKeyRef.current = scopedQuery;
+
+    if (cachedCur) {
+      setSafetyExposure(cachedCur);
+      if (cachedPrev) setSafetyExposurePrev(cachedPrev);
+      setSafetyExposureLoading(false);
+    } else if (scopeChanged || force) {
+      // Different site (or forced) — never keep another scope's census on the gauge.
+      setSafetyExposure(null);
+      setSafetyExposurePrev(null);
+      setSafetyExposureLoading(true);
+    }
+    // Same scope, cache miss: keep the painted score while a background refresh runs.
     try {
       const [cur, prev] = await Promise.all([
         cachedFetchJson<FleetSafetyExposure>(
@@ -1088,11 +1098,13 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
           { force },
         ),
       ]);
+      // Ignore stale responses if the user switched sites mid-flight.
+      if (safetyScopeKeyRef.current !== scopedQuery) return;
       if (cur) setSafetyExposure(cur);
       if (prev) setSafetyExposurePrev(prev);
     } catch { /* keep current-scope paint */ }
     finally {
-      setSafetyExposureLoading(false);
+      if (safetyScopeKeyRef.current === scopedQuery) setSafetyExposureLoading(false);
     }
   }, [selectedSites]);
 
@@ -1150,62 +1162,72 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     finally { setHosLoading(false); }
   }, []);
 
+  // Keep poll/boot effects on stable refs so changing distanceRange does not
+  // tear down intervals or re-fetch safety / events / fuel.
+  const loadMetadataRef = useRef(loadMetadata);
+  const loadVehiclesRef = useRef(loadVehicles);
+  const loadEventsRef = useRef(loadEvents);
+  const loadHomeAlertsRef = useRef(loadHomeAlerts);
+  const loadDriverDistanceRef = useRef(loadDriverDistance);
+  const loadSafetyExposureRef = useRef(loadSafetyExposure);
+  const loadFuelSummaryRef = useRef(loadFuelSummary);
+  const loadEnvironmentRef = useRef(loadEnvironment);
+  const loadHosRef = useRef(loadHos);
+  loadMetadataRef.current = loadMetadata;
+  loadVehiclesRef.current = loadVehicles;
+  loadEventsRef.current = loadEvents;
+  loadHomeAlertsRef.current = loadHomeAlerts;
+  loadDriverDistanceRef.current = loadDriverDistance;
+  loadSafetyExposureRef.current = loadSafetyExposure;
+  loadFuelSummaryRef.current = loadFuelSummary;
+  loadEnvironmentRef.current = loadEnvironment;
+  loadHosRef.current = loadHos;
+
   useEffect(() => {
-    loadMetadata();
-    loadVehicles();
-    loadEnvironment();
-    void loadHomeAlerts();
+    void loadMetadataRef.current();
+    void loadVehiclesRef.current();
+    void loadEnvironmentRef.current();
+    void loadHomeAlertsRef.current();
     // Paint live fleet first; defer heavy SQLite rollups so first paint stays snappy.
     const bootCancels: Array<() => void> = [];
     bootCancels.push(scheduleIdle(() => {
-      void loadHos(false);
-      void loadDriverDistance();
+      void loadHosRef.current(false);
+      void loadDriverDistanceRef.current();
     }, 400));
-    if (!bootTasksStartedRef.current) {
-      bootTasksStartedRef.current = true;
-      bootCancels.push(() => { bootTasksStartedRef.current = false; });
-      bootCancels.push(scheduleIdle(() => {
-        void loadEvents();
-        void loadSafetyExposure();
-        void loadFuelSummary();
-      }, 900));
-    } else {
-      bootCancels.push(scheduleIdle(() => {
-        void loadEvents();
-        void loadSafetyExposure();
-        void loadFuelSummary();
-      }, 900));
-    }
+    bootCancels.push(scheduleIdle(() => {
+      void loadEventsRef.current();
+      void loadSafetyExposureRef.current();
+      void loadFuelSummaryRef.current();
+    }, 900));
     const metaInterval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void loadMetadata();
+      void loadMetadataRef.current();
     }, 20_000);
     const vehicleInterval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void loadVehicles();
+      void loadVehiclesRef.current();
     }, 20_000);
     const hosInterval = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      // TTL cache handles freshness — avoid force-busting HOS every 30s.
-      void loadHos(false);
+      void loadHosRef.current(false);
     }, 60_000);
     // Heavy rollups: ~60s + jitter so pages don't all hit SQLite together
     const stopEvents = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void loadEvents();
-      void loadHomeAlerts();
+      void loadEventsRef.current();
+      void loadHomeAlertsRef.current();
     });
     const stopDistance = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void loadDriverDistance();
+      void loadDriverDistanceRef.current();
     });
     const stopExposure = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void loadSafetyExposure();
+      void loadSafetyExposureRef.current();
     });
     const stopFuel = startJitteredInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      void loadFuelSummary();
+      void loadFuelSummaryRef.current();
     });
     return () => {
       bootCancels.forEach(cancel => cancel());
@@ -1217,7 +1239,12 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       stopExposure();
       stopFuel();
     };
-  }, [loadMetadata, loadVehicles, loadEvents, loadHomeAlerts, loadDriverDistance, loadSafetyExposure, loadFuelSummary, loadEnvironment, loadHos, scheduleIdle]);
+  }, [scheduleIdle]);
+
+  // Fleet distance period — distance only (never safety / events / fuel).
+  useEffect(() => {
+    void loadDriverDistance();
+  }, [distanceRange, distanceCustom, loadDriverDistance]);
 
   const selectedSitesKey = useMemo(
     () => [...selectedSites].map(s => s.trim().toLowerCase()).filter(Boolean).sort().join('|'),
@@ -1241,12 +1268,15 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
       setNotifications([]);
       setSelectedNotification(null);
     }
-    void loadHomeAlerts();
-    void loadEvents();
-    void loadDriverDistance();
-    void loadSafetyExposure();
-    void loadFuelSummary();
-  }, [selectedSitesKey, vehicles.length, siteFilterActive, loadHomeAlerts, loadEvents, loadDriverDistance, loadSafetyExposure, loadFuelSummary]);
+    // Only refetch site-scoped rollups when the site set (or first vehicle paint) changes —
+    // not when distanceRange recreates loadDriverDistance.
+    if (!sitesChanged && !vehiclesBecameReady) return;
+    void loadHomeAlertsRef.current();
+    void loadEventsRef.current();
+    void loadDriverDistanceRef.current();
+    void loadSafetyExposureRef.current();
+    void loadFuelSummaryRef.current();
+  }, [selectedSitesKey, vehicles.length, siteFilterActive]);
 
   // -- Global site/location filter ──────────────────────────────────────────
   // Site options are always derived from the FULL fleet so the selector stays

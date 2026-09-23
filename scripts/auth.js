@@ -104,6 +104,9 @@ function newId() {
 
 export function publicUser(row, permissions) {
   if (!row) return null;
+  const linkedProviders = typeof row.linked_providers !== 'undefined'
+    ? row.linked_providers
+    : listLinkedProviders(row.id);
   return {
     id: row.id,
     email: row.email,
@@ -116,9 +119,78 @@ export function publicUser(row, permissions) {
     transporters: parseTransporterList(row.transporter),
     fleetName: row.fleet_name ? String(row.fleet_name).trim() || null : null,
     permissions: permissions || [],
+    linkedProviders,
     lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at,
   };
+}
+
+/** Providers linked to this user (e.g. google, microsoft). */
+export function listLinkedProviders(userId) {
+  if (!userId) return [];
+  try {
+    const rows = getDb().prepare(
+      'SELECT DISTINCT provider FROM user_oauth_identities WHERE user_id = ? ORDER BY provider',
+    ).all(userId);
+    return rows.map(r => r.provider);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Attach (or refresh) an OAuth identity on an existing user.
+ * Password accounts stay password-capable — this only adds a sign-in method.
+ */
+export function linkOAuthIdentity(userId, { provider, providerSubject, email }) {
+  const db = getDb();
+  const prov = String(provider || '').trim().toLowerCase();
+  const sub = String(providerSubject || '').trim();
+  if (!userId || !prov || !sub) return false;
+
+  const existing = db.prepare(
+    'SELECT id, user_id FROM user_oauth_identities WHERE provider = ? AND provider_subject = ?',
+  ).get(prov, sub);
+
+  if (existing) {
+    if (existing.user_id !== userId) {
+      throw Object.assign(
+        new Error('This Google account is already linked to another HBM user'),
+        { status: 409, code: 'oauth_identity_taken' },
+      );
+    }
+    db.prepare(
+      'UPDATE user_oauth_identities SET email = ?, linked_at = ? WHERE id = ?',
+    ).run(email || null, nowIso(), existing.id);
+    return true;
+  }
+
+  // One Google / Microsoft identity row per user+provider (re-link overwrites subject)
+  const prior = db.prepare(
+    'SELECT id FROM user_oauth_identities WHERE user_id = ? AND provider = ?',
+  ).get(userId, prov);
+  if (prior) {
+    db.prepare(
+      'UPDATE user_oauth_identities SET provider_subject = ?, email = ?, linked_at = ? WHERE id = ?',
+    ).run(sub, email || null, nowIso(), prior.id);
+  } else {
+    db.prepare(`
+      INSERT INTO user_oauth_identities (id, user_id, provider, provider_subject, email, linked_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(newId(), userId, prov, sub, email || null, nowIso());
+  }
+  return true;
+}
+
+function findUserByOAuthIdentity(provider, providerSubject) {
+  const row = getDb().prepare(`
+    SELECT u.*, r.name AS role_name
+    FROM user_oauth_identities oi
+    JOIN users u ON u.id = oi.user_id
+    LEFT JOIN roles r ON r.id = u.role_id
+    WHERE oi.provider = ? AND oi.provider_subject = ?
+  `).get(String(provider || '').trim().toLowerCase(), String(providerSubject || '').trim());
+  return row || null;
 }
 
 export const CLIENT_SEAT_LIMIT = Math.max(
@@ -690,25 +762,57 @@ export async function login(email, password, { createSession = true, viaTranspor
   };
 }
 
-/** OAuth sign-in — user must already exist in SQLite (admin-provisioned). */
-export async function loginWithEmail(email, { displayName = null, provider = 'oauth' } = {}) {
+/**
+ * OAuth sign-in — matches an existing admin-provisioned user by email (or prior OAuth link).
+ * Password accounts can also sign in with Google/Microsoft; the identity is linked and kept.
+ * Pass viaTransporterPortal when the OAuth flow was started from the Transporter login portal.
+ */
+export async function loginWithEmail(email, {
+  displayName = null,
+  provider = 'oauth',
+  providerSubject = null,
+  viaTransporterPortal = false,
+} = {}) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const db = getDb();
-  const user = db.prepare(`
-    SELECT u.*, r.name AS role_name FROM users u
-    LEFT JOIN roles r ON r.id = u.role_id
-    WHERE u.email = ?
-  `).get(normalizedEmail);
+
+  let user = null;
+  if (providerSubject && provider) {
+    user = findUserByOAuthIdentity(provider, providerSubject);
+  }
+  if (!user && normalizedEmail) {
+    user = db.prepare(`
+      SELECT u.*, r.name AS role_name FROM users u
+      LEFT JOIN roles r ON r.id = u.role_id
+      WHERE u.email = ?
+    `).get(normalizedEmail);
+  }
 
   if (!user || user.status !== 'active') {
     throw Object.assign(new Error('No active account for this email'), { status: 403 });
   }
 
-  if (user.role_id === 'transporter') {
+  const isTransporterAccount = user.role_id === 'transporter';
+  if (viaTransporterPortal && !isTransporterAccount) {
+    throw Object.assign(
+      new Error('Use the HBM Admin login for this account'),
+      { status: 403, code: 'admin_portal_required' },
+    );
+  }
+  if (!viaTransporterPortal && isTransporterAccount) {
     throw Object.assign(
       new Error('Use the Transporter login for this account'),
       { status: 403, code: 'transporter_portal_required' },
     );
+  }
+
+  // Link / refresh OAuth identity (password hash is left intact)
+  if (provider && providerSubject) {
+    linkOAuthIdentity(user.id, {
+      provider,
+      providerSubject,
+      email: normalizedEmail || user.email,
+    });
   }
 
   if (displayName && displayName !== user.name) {
@@ -716,8 +820,18 @@ export async function loginWithEmail(email, { displayName = null, provider = 'oa
     user.name = displayName;
   }
 
+  // Verified SSO email ownership — don't force a temp-password change on this path
+  if (user.must_change_password && provider && providerSubject) {
+    db.prepare('UPDATE users SET must_change_password = 0 WHERE id = ?').run(user.id);
+    user.must_change_password = 0;
+  }
+
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(nowIso(), user.id);
-  writeAudit(user.id, 'auth.oauth_login', user.id, JSON.stringify({ provider }));
+  writeAudit(user.id, 'auth.oauth_login', user.id, JSON.stringify({
+    provider,
+    linked: !!(provider && providerSubject),
+    portal: viaTransporterPortal ? 'transporter' : 'admin',
+  }));
 
   const permissions = getRolePermissions(user.role_id);
   const publicUserRow = publicUser({ ...user, last_login_at: nowIso() }, permissions);
@@ -732,6 +846,15 @@ export async function loginWithEmail(email, { displayName = null, provider = 'oa
     expiresAt: expires,
     user: publicUserRow,
   };
+}
+
+/** True when an active non-transporter user already exists for this email. */
+export function findActiveUserByEmail(email) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail) return null;
+  return getDb().prepare(`
+    SELECT u.id, u.email, u.status, u.role_id FROM users u WHERE u.email = ?
+  `).get(normalizedEmail) || null;
 }
 
 export function logout(sessionId) {

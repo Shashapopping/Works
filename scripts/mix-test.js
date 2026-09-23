@@ -34,7 +34,7 @@ import { querySafetyEventAggregates, queryRiskAggregates, queryEventTrendBuckets
 import { memoApiResponse, apiCacheKey } from "./api-response-cache.js";
 import { fuelEventTypeFromId } from "./fuel-constants.js";
 import { queueConnectivityTriggersForPoll } from "./connectivity-triggers.js";
-import { isExcludedFleetPlacement } from "./fleet-exclusions.js";
+import { isExcludedFleetPlacement, liveFleetAssetIds, restrictToLiveFleet } from "./fleet-exclusions.js";
 
 const IDENTITY_URL = "https://identity.za.mixtelematics.com/core/connect/token";
 const API_BASE = "https://integrate.za.mixtelematics.com/api";
@@ -2009,11 +2009,13 @@ function computeHosRecords(dayStr) {
   } catch { /* ignore */ }
 
   const records = [];
+  // Live fleet only — never count trips on XN Decommissioned / Non Operational assets.
+  const hosAssetIds = liveFleetAssetIds();
   // Stream by driver (ordered) — same HOS rules, peak RAM ≈ one driver's week of trips.
   forEachDriverTripGroupInRange(
     new Date(weekStart).toISOString(),
     new Date(windowEnd).toISOString(),
-    null,
+    hosAssetIds,
     (_driverId, slimRows) => {
       const byDriver = new Map();
       for (const raw of slimRows) {
@@ -2117,6 +2119,13 @@ function computeHosRecords(dayStr) {
     const site = siteInfo?.name
       || (lastTrip.assetId && liveZoneByAsset.get(lastTrip.assetId))
       || 'HBM';
+
+    // Drop drivers rostered (or last labelled) on excluded placements.
+    if (isExcludedFleetPlacement({
+      site: siteInfo?.name || site,
+      zone: siteInfo?.zoneName,
+      userState: vehicle?.UserState,
+    })) continue;
 
     records.push({
       id: String(key),
@@ -2271,8 +2280,11 @@ function assetIdsForSiteScope(siteScope) {
 
 function resolveAssetScope(assetIds = null, siteScope = null) {
   const explicit = parseAssetIdList(assetIds);
-  if (explicit && explicit.length) return explicit;
-  return assetIdsForSiteScope(siteScope);
+  if (explicit && explicit.length) return restrictToLiveFleet(explicit);
+  const fromSites = assetIdsForSiteScope(siteScope);
+  if (fromSites) return fromSites;
+  // Unscoped must still drop XN Decommissioned + Non Operational (live fleet only).
+  return liveFleetAssetIds();
 }
 
 function assetScopeCacheKey(ids) {
@@ -2292,8 +2304,9 @@ export function getHosHeldMinutesInRange(fromIso, toIso, assetIds = null) {
     breakdown: { continuous4hMinutes: 0, weeklyRestMinutes: 0 },
   };
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return empty;
-  const ids = parseAssetIdList(assetIds);
-  if (ids && ids.length === 0) return empty;
+  const parsed = parseAssetIdList(assetIds);
+  const ids = parsed ? restrictToLiveFleet(parsed) : liveFleetAssetIds();
+  if (ids.length === 0) return empty;
 
   let continuous4hMinutes = 0;
   const nowMs = Date.now();

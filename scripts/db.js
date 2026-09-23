@@ -185,6 +185,19 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
+    CREATE TABLE IF NOT EXISTS user_oauth_identities (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_subject TEXT NOT NULL,
+      email TEXT,
+      linked_at TEXT NOT NULL,
+      UNIQUE (provider, provider_subject),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_oauth_identities_user ON user_oauth_identities(user_id);
+    CREATE INDEX IF NOT EXISTS idx_oauth_identities_provider ON user_oauth_identities(provider, provider_subject);
+
     CREATE TABLE IF NOT EXISTS report_automations (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,

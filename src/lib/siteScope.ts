@@ -1,5 +1,6 @@
 import type { FleetVehicle, LogEntry, TripDriver } from '../context/FleetContext';
 import { assessmentDriverKey } from './driverAssessment';
+import { isExcludedFleetPlacement } from './fleetExclusions';
 
 export function makeScopedVehicleRegSet(vehicles: FleetVehicle[]) {
   return new Set(
@@ -217,8 +218,9 @@ export function filterDistanceAssetsByVehicles<T extends { regNo?: string | null
   });
 }
 
-/** HOS rows: prefer driver roster siteId (same as Fatigue page), then assetId, then reg. */
+/** HOS rows: always drop XN / Non Operational; when site filter on, prefer roster siteId. */
 export function filterHosRecordsByAssignedSite<T extends {
+  site?: string | null;
   siteId?: string | null;
   assetId?: string | null;
   vehicleReg?: string | null;
@@ -227,12 +229,25 @@ export function filterHosRecordsByAssignedSite<T extends {
   vehicles: FleetVehicle[],
   siteFilterActive: boolean,
 ) {
-  if (!siteFilterActive) return records;
+  const liveIds = makeScopedVehicleIdSet(vehicles);
+  const liveRegs = makeScopedVehicleRegSet(vehicles);
+
+  const withoutExcluded = records.filter(record => {
+    if (isExcludedFleetPlacement({ site: record.site, zone: record.site })) return false;
+    const assetId = (record.assetId || '').toString().trim();
+    if (assetId && liveIds.size > 0 && !liveIds.has(assetId)) return false;
+    const reg = (record.vehicleReg || '').trim().toLowerCase();
+    if (!assetId && reg && reg !== 'n/a' && liveRegs.size > 0 && !liveRegs.has(reg)) return false;
+    return true;
+  });
+
+  if (!siteFilterActive) return withoutExcluded;
+
   const allowedSiteIds = makeScopedVehicleSiteIdSet(vehicles);
-  const allowedIds = makeScopedVehicleIdSet(vehicles);
-  const allowedRegs = makeScopedVehicleRegSet(vehicles);
+  const allowedIds = liveIds;
+  const allowedRegs = liveRegs;
   if (allowedSiteIds.size === 0 && allowedIds.size === 0 && allowedRegs.size === 0) return [];
-  return records.filter(record => {
+  return withoutExcluded.filter(record => {
     const siteId = (record.siteId || '').toString().trim();
     // Site column / scope follows the driver's roster site, not the trip vehicle.
     if (siteId) return allowedSiteIds.has(siteId);

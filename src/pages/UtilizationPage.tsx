@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, Info } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { authFetch, useFleet } from '../context/FleetContext';
 import CustomDateTimeRange, { ensureCustomRangeDefaults } from '../components/CustomDateTimeRange';
+import InfoTip from '../components/InfoTip';
 import TablePaginationBar from '../components/TablePaginationBar';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -9,6 +10,7 @@ import { useTableSort } from '../hooks/useTableSort';
 import { buildUtilUrl, type KpiAssetRow, type KpiData, type KpiPeriodMode } from '../lib/operationalKpi';
 import { cachedFetchJson, cachePeek, CACHE_KEYS, CACHE_TTL } from '../lib/apiCache';
 import { SkelTable, SkelValue } from '../components/data/DataBusy';
+import { KPI_DEFINITIONS } from '../lib/metricDefinitions';
 
 type PeriodMode = KpiPeriodMode;
 
@@ -179,34 +181,23 @@ export default function UtilizationPage() {
             {
               label: 'Avg utilization',
               value: summary?.avgUtilizationPct != null ? `${fmt(summary.avgUtilizationPct, 0)}%` : '—',
-              tip: 'Average loaded utilization across assets.',
+              tip: KPI_DEFINITIONS.utilization,
               color: '#0d9488',
             },
             {
               label: 'Engine hours',
               value: summary ? `${fmt(summary.totalEngineHours, 0)} h` : '—',
-              tip: 'Total engine-on hours.',
+              tip: KPI_DEFINITIONS.engineRuntime,
               color: '#7c3aed',
             },
           ].map(k => (
             <div key={k.label} style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--cd-surface)', border: '1px solid var(--cd-border)', borderTop: `3px solid ${k.color}` }}>
-              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--cd-text-muted)', marginBottom: 4, display: 'flex', alignItems: 'center' }}>
                 {k.label}
+                <InfoTip text={k.tip} label={k.label} />
               </div>
               <div style={{ fontSize: 20, fontWeight: 700, color: k.color }}>
                 {showKpiSkeleton ? <SkelValue /> : k.value}
-              </div>
-              <div style={{
-                fontSize: 10,
-                color: 'var(--cd-text-muted)',
-                marginTop: 6,
-                display: 'inline-flex',
-                alignItems: 'flex-start',
-                gap: 5,
-                lineHeight: 1.35,
-              }}>
-                <Info size={11} strokeWidth={2.25} style={{ flexShrink: 0, marginTop: 1, opacity: 0.75 }} aria-hidden />
-                <span>{k.tip}</span>
               </div>
             </div>
           ))}
@@ -218,38 +209,23 @@ export default function UtilizationPage() {
           <thead>
             <tr>
               {([
-                { key: 'regNo' as const, label: 'Asset', tip: null },
-                { key: 'zone' as const, label: 'Zone', tip: null },
-                { key: 'utilizationPct' as const, label: 'Util %', tip: 'Loaded utilization' },
-                { key: 'availabilityPct' as const, label: 'Avail %', tip: 'Availability' },
-                { key: 'distanceKm' as const, label: 'Distance', tip: 'Trip distance' },
-                { key: 'engineHours' as const, label: 'Engine h', tip: 'Engine hours' },
-              ] as const).map(col => (
+                { key: 'regNo' as const, label: 'Asset', tip: null as string | null },
+                { key: 'zone' as const, label: 'Zone', tip: null as string | null },
+                { key: 'utilizationPct' as const, label: 'Util %', tip: KPI_DEFINITIONS.utilization },
+                { key: 'availabilityPct' as const, label: 'Avail %', tip: KPI_DEFINITIONS.availability },
+                { key: 'distanceKm' as const, label: 'Distance', tip: 'Total trip distance for the selected period.' },
+                { key: 'engineHours' as const, label: 'Engine h', tip: KPI_DEFINITIONS.engineRuntime },
+              ]).map(col => (
                 <th
                   key={col.key}
                   aria-sort={ariaSort(col.key)}
                   onClick={() => toggle(col.key)}
                   style={{ cursor: 'pointer', userSelect: 'none' }}
                 >
-                  <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap' }}>
-                      {col.label}{indicator(col.key)}
-                    </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap' }}>
+                    {col.label}{indicator(col.key)}
                     {col.tip && (
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 4,
-                        fontSize: 10,
-                        fontWeight: 500,
-                        color: 'var(--cd-text-muted)',
-                        textTransform: 'none',
-                        letterSpacing: 0,
-                        whiteSpace: 'nowrap',
-                      }}>
-                        <Info size={10} strokeWidth={2.25} style={{ flexShrink: 0, opacity: 0.75 }} aria-hidden />
-                        {col.tip}
-                      </span>
+                      <InfoTip text={col.tip} label={col.label} style={{ marginLeft: 4 }} />
                     )}
                   </span>
                 </th>

@@ -3,15 +3,20 @@
  * Register BOTH redirect URIs on the same Google OAuth client:
  *   http://localhost:5173/api/auth/oauth/google/callback
  *   https://hbm.bestpracticesltd.com.ng/api/auth/oauth/google/callback
+ *
+ * Existing password users can link Google on first successful Google sign-in
+ * (same email). Domain allowlist is skipped for emails that already have an HBM account.
  */
 import crypto from 'crypto';
 import {
   loginWithEmail,
+  findActiveUserByEmail,
   sessionCookieHeader,
   shouldUseSecureCookie,
 } from './auth.js';
 
 const OAUTH_STATE_COOKIE = 'bpl_oauth_state';
+const OAUTH_PORTAL_COOKIE = 'bpl_oauth_portal';
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
@@ -36,12 +41,32 @@ function googleRedirectUri(baseUrl) {
   return `${baseUrl}/api/auth/oauth/google/callback`;
 }
 
+function cookieSecureFlag(req) {
+  return shouldUseSecureCookie(req) ? '; Secure' : '';
+}
+
 function oauthStateCookieHeader(state, { clear = false, req = null } = {}) {
-  const secure = shouldUseSecureCookie(req);
   if (clear) {
-    return `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`;
+    return `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecureFlag(req)}`;
   }
-  return `${OAUTH_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`;
+  return `${OAUTH_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${cookieSecureFlag(req)}`;
+}
+
+function oauthPortalCookieHeader(portal, { clear = false, req = null } = {}) {
+  if (clear) {
+    return `${OAUTH_PORTAL_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecureFlag(req)}`;
+  }
+  const value = portal === 'transporter' ? 'transporter' : 'admin';
+  return `${OAUTH_PORTAL_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${cookieSecureFlag(req)}`;
+}
+
+function parseOAuthPortal(req) {
+  try {
+    const url = new URL(req.url || '/', 'http://localhost');
+    return url.searchParams.get('portal') === 'transporter' ? 'transporter' : 'admin';
+  } catch {
+    return 'admin';
+  }
 }
 
 function parseCookies(header) {
@@ -68,6 +93,16 @@ function emailDomainAllowed(email) {
   return !!domain && domains.has(domain);
 }
 
+/**
+ * Domain allowlist applies to unknown emails only.
+ * Existing HBM users (incl. @gmail.com password accounts) may always link / sign in with Google.
+ */
+function oauthEmailPermitted(email) {
+  const existing = findActiveUserByEmail(email);
+  if (existing && existing.status === 'active') return true;
+  return emailDomainAllowed(email);
+}
+
 function loginErrorRedirect(baseUrl, code, message) {
   const qs = new URLSearchParams({ oauth: code, msg: message });
   return `${baseUrl}/#/login?${qs.toString()}`;
@@ -82,6 +117,7 @@ export function startGoogleOAuth(req, res) {
   }
 
   const baseUrl = getAppPublicUrl(req);
+  const portal = parseOAuthPortal(req);
   const state = crypto.randomBytes(24).toString('hex');
   const params = new URLSearchParams({
     client_id: process.env.OAUTH_GOOGLE_CLIENT_ID,
@@ -94,7 +130,10 @@ export function startGoogleOAuth(req, res) {
   });
 
   res.statusCode = 302;
-  res.setHeader('Set-Cookie', oauthStateCookieHeader(state, { req }));
+  res.setHeader('Set-Cookie', [
+    oauthStateCookieHeader(state, { req }),
+    oauthPortalCookieHeader(portal, { req }),
+  ]);
   res.setHeader('Location', `${GOOGLE_AUTH_URL}?${params.toString()}`);
   res.end();
 }
@@ -142,13 +181,17 @@ export async function handleGoogleOAuthCallback(req, res) {
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
 
-  const clearState = oauthStateCookieHeader('', { clear: true, req });
+  const clearCookies = [
+    oauthStateCookieHeader('', { clear: true, req }),
+    oauthPortalCookieHeader('', { clear: true, req }),
+  ];
   const cookies = parseCookies(req.headers?.cookie);
   const expectedState = cookies[OAUTH_STATE_COOKIE];
+  const viaTransporterPortal = cookies[OAUTH_PORTAL_COOKIE] === 'transporter';
 
   if (error) {
     res.statusCode = 302;
-    res.setHeader('Set-Cookie', clearState);
+    res.setHeader('Set-Cookie', clearCookies);
     res.setHeader('Location', loginErrorRedirect(baseUrl, 'denied', 'Google sign-in was cancelled'));
     res.end();
     return;
@@ -156,7 +199,7 @@ export async function handleGoogleOAuthCallback(req, res) {
 
   if (!code || !state || !expectedState || state !== expectedState) {
     res.statusCode = 302;
-    res.setHeader('Set-Cookie', clearState);
+    res.setHeader('Set-Cookie', clearCookies);
     res.setHeader('Location', loginErrorRedirect(baseUrl, 'invalid', 'Invalid OAuth state — try again'));
     res.end();
     return;
@@ -168,18 +211,27 @@ export async function handleGoogleOAuthCallback(req, res) {
     const profile = await fetchGoogleProfile(tokens.access_token);
     const email = String(profile.email || '').trim().toLowerCase();
     const emailVerified = profile.email_verified !== false;
+    const providerSubject = String(profile.sub || '').trim();
 
     if (!email || !emailVerified) {
       res.statusCode = 302;
-      res.setHeader('Set-Cookie', clearState);
+      res.setHeader('Set-Cookie', clearCookies);
       res.setHeader('Location', loginErrorRedirect(baseUrl, 'email', 'Google did not return a verified email'));
       res.end();
       return;
     }
 
-    if (!emailDomainAllowed(email)) {
+    if (!providerSubject) {
       res.statusCode = 302;
-      res.setHeader('Set-Cookie', clearState);
+      res.setHeader('Set-Cookie', clearCookies);
+      res.setHeader('Location', loginErrorRedirect(baseUrl, 'email', 'Google did not return a stable account id'));
+      res.end();
+      return;
+    }
+
+    if (!oauthEmailPermitted(email)) {
+      res.statusCode = 302;
+      res.setHeader('Set-Cookie', clearCookies);
       res.setHeader('Location', loginErrorRedirect(baseUrl, 'domain', 'This email domain is not allowed for HBM'));
       res.end();
       return;
@@ -188,19 +240,30 @@ export async function handleGoogleOAuthCallback(req, res) {
     const result = await loginWithEmail(email, {
       displayName: profile.name || profile.given_name || email,
       provider: 'google',
+      providerSubject,
+      viaTransporterPortal,
     });
 
     res.statusCode = 302;
-    res.setHeader('Set-Cookie', clearState);
+    res.setHeader('Set-Cookie', clearCookies);
     res.appendHeader('Set-Cookie', sessionCookieHeader(result.sessionId, { req }));
     res.setHeader('Location', `${baseUrl}/#/`);
     res.end();
   } catch (e) {
-    const msg = e?.status === 403
-      ? 'No HBM account for this Google email — ask an admin to invite you'
-      : (e?.message || 'Google sign-in failed');
+    let msg = e?.message || 'Google sign-in failed';
+    if (e?.status === 403) {
+      if (e.code === 'transporter_portal_required') {
+        msg = 'Use the Transporter login for this account';
+      } else if (e.code === 'admin_portal_required') {
+        msg = 'Use the HBM Admin login for this account';
+      } else {
+        msg = 'No HBM account for this Google email — ask an admin to invite you first, then use Google to link it';
+      }
+    } else if (e?.status === 409) {
+      msg = e.message || 'This Google account is already linked elsewhere';
+    }
     res.statusCode = 302;
-    res.setHeader('Set-Cookie', clearState);
+    res.setHeader('Set-Cookie', clearCookies);
     res.setHeader('Location', loginErrorRedirect(baseUrl, 'failed', msg));
     res.end();
   }
