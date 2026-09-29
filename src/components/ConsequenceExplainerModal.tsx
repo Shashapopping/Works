@@ -86,6 +86,11 @@ export default function ConsequenceExplainerModal({
   const km = Math.round(distanceKm ?? 0);
   const drop = SCORE_DROP_PER_IVMS_UNIT;
   const goodAt = Math.round((100 - scoreConfig.bandGood) / drop);
+  const deduction = (actualWeightedRate ?? 0) * drop;
+  const rawScore = FLEET_SCORE_SCALE - deduction;
+  const rawScoreClamped = rawScore < 0 || rawScore > FLEET_SCORE_SCALE;
+  const deductionLabel = deduction.toFixed(2);
+  const rawScoreLabel = rawScore.toFixed(2);
   const activeHosSlices = hosSlices ?? hosSlicesFromMinutes(hosHeldMinutes, scoreConfig);
   const hosPoints = hosPointsFromHeldMinutes(hosHeldMinutes, scoreConfig);
   const hosWeightLabel = `+${scoreConfig.hosPointsPer10Min} / ${scoreConfig.hosSliceMinutes} min`;
@@ -304,9 +309,23 @@ export default function ConsequenceExplainerModal({
               <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: 0, lineHeight: 1.4 }}>
                 Every 1 weighted IVMS point per 100 km takes <strong style={{ color: 'var(--cd-text)' }}>{drop}</strong> off the score. Clamped 0–{FLEET_SCORE_SCALE}.
               </p>
-              <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '10px 0 0', lineHeight: 1.4 }}>
-                Zero IVMS points → 100. ~{goodAt} pts / 100 km → {scoreConfig.bandGood} ({fleetBands[0].label}).
-              </p>
+              {actualWeightedRate != null ? (
+                <div style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '10px 0 0', lineHeight: 1.6 }}>
+                  <div>
+                    <strong style={{ color: 'var(--cd-text)' }}>{rateLabel}</strong> pts/100 km × <strong style={{ color: 'var(--cd-text)' }}>{drop}</strong> = <strong style={{ color: 'var(--cd-text)' }}>{deductionLabel}</strong>
+                  </div>
+                  <div>
+                    100 − <strong style={{ color: 'var(--cd-text)' }}>{deductionLabel}</strong> = <strong style={{ color: 'var(--cd-text)' }}>{rawScoreLabel}</strong>
+                    {' → '}
+                    <strong style={{ color }}>{fleetScore}</strong>
+                    {rawScoreClamped ? ` (clamped to 0–${FLEET_SCORE_SCALE})` : ' (rounded)'}
+                  </div>
+                </div>
+              ) : (
+                <p style={{ fontSize: 12, color: 'var(--cd-text-muted)', margin: '10px 0 0', lineHeight: 1.4 }}>
+                  Zero IVMS points → 100. ~{goodAt} pts / 100 km → {scoreConfig.bandGood} ({fleetBands[0].label}).
+                </p>
+              )}
             </div>
           </div>
 

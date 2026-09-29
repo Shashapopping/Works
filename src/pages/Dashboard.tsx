@@ -12,14 +12,14 @@ import AiInsightsWidget from '../components/home/AiInsightsWidget';
 import { EnvironmentStrip } from '../components/home/EnvironmentStrip';
 import { clientName } from '../lib/branding';
 import { FATIGUE_ENABLED } from '../config/fatigue';
-import { isFeatureLocked } from '../config/lockedFeatures';
 import { defaultPageCustomRange } from '../lib/pagePeriod';
 import FuelChartWidget from '../components/home/FuelChartWidget';
 
 export default function Dashboard() {
-  const { setDistanceRange } = useFleet();
+  const { setDistanceRange, siteLock } = useFleet();
   const { hasPermission } = useAuth();
-  const showFuelConsumption = hasPermission('fuel-consumption') && !isFeatureLocked('fuel-consumption');
+  // Transporter logins (siteLock) also hold 'fuel-consumption', so the permission alone can't hide it.
+  const showFuelConsumption = hasPermission('fuel-consumption') && !siteLock;
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [metricPeriod, setMetricPeriod] = useState<DistanceRange>('week');
   const [metricCustom, setMetricCustom] = useState(defaultPageCustomRange);

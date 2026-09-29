@@ -5,7 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getAllEvents } from './db.js';
-import { countMatchingEvents } from './event-aggregates.js';
+import { countMatchingEvents, countMatchingEventsByLabel } from './event-aggregates.js';
 
 let vehicleLookupCache = { map: new Map(), mtimeMs: 0 };
 
@@ -182,7 +182,7 @@ function normalizeDateBound(value, endOfDay = false) {
 }
 
 /**
- * @param {{ from?: string|null, to?: string|null, range?: string|null, types?: string|null, limit?: string|null, offset?: string|null, format?: string|null, driver?: string|null, driverName?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null, sites?: string|null, siteScope?: string|null, excludeHidden?: string|null }} query
+ * @param {{ from?: string|null, to?: string|null, range?: string|null, types?: string|null, limit?: string|null, offset?: string|null, total?: string|null, format?: string|null, driver?: string|null, driverName?: string|null, q?: string|null, search?: string|null, assetId?: string|null, assetIds?: string|null, sites?: string|null, siteScope?: string|null, excludeHidden?: string|null }} query
  */
 export function handleEventsLogQuery(query = {}) {
   const lookup = vehicleLookup();
@@ -219,6 +219,8 @@ export function handleEventsLogQuery(query = {}) {
       ...searchOpts,
     }).map(e => enrichEvent(e, lookup));
 
+    if (offset > 0 && String(query.total) === '0') return { entries };
+
     const total = countMatchingEvents({
       from,
       to,
@@ -228,7 +230,16 @@ export function handleEventsLogQuery(query = {}) {
       excludeHidden,
       ...searchOpts,
     });
-    return { entries, total };
+    if (offset > 0) return { entries, total };
+    const byLabel = countMatchingEventsByLabel({
+      from,
+      to,
+      driver,
+      assetIds,
+      excludeHidden,
+      ...searchOpts,
+    });
+    return { entries, total, byLabel };
   }
 
   const limitRaw = query.limit;

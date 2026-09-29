@@ -177,6 +177,7 @@ export default defineConfig({
               types: params.get('types'),
               limit: params.get('limit'),
               offset: params.get('offset'),
+              total: params.get('total'),
               format: params.get('format'),
               driver: params.get('driver'),
               driverName: params.get('driverName'),

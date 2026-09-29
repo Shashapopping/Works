@@ -1949,7 +1949,7 @@ export function getHosRecords(dayStr) {
   return memoApiResponse('hos', 30_000, day, () => computeHosRecords(dayStr));
 }
 
-function computeHosRecords(dayStr) {
+export function computeHosRecords(dayStr) {
   // HOS can be called from the API without a poll cycle having run yet (or after HMR).
   if (driverLookup.size === 0) loadDriverLookup();
   if (vehicleLookup.size === 0) loadVehicleLookup();
@@ -2380,14 +2380,18 @@ export function getFleetSafetyExposure({ range = '30d', from = null, to = null, 
   return value;
 }
 
+/** Uncached census (60-90s on the droplet) — production runs this in scripts/stats-worker.js. */
+export function computeSafetySummary({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
+  const ids = resolveAssetScope(assetIds, siteScope);
+  const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
+  const agg = querySafetyEventAggregates({ from: exposure.start, to: exposure.end, assetIds: ids });
+  return { ...exposure, ...agg };
+}
+
 export function getSafetySummary({ range = '30d', from = null, to = null, assetIds = null, siteScope = null } = {}) {
   const key = apiCacheKey({ range, from, to, assetIds, siteScope });
-  return memoApiResponse('safety-summary', SAFETY_SUMMARY_TTL_MS, key, () => {
-    const ids = resolveAssetScope(assetIds, siteScope);
-    const exposure = getFleetSafetyExposure({ range, from, to, assetIds: ids });
-    const agg = querySafetyEventAggregates({ from: exposure.start, to: exposure.end, assetIds: ids });
-    return { ...exposure, ...agg };
-  });
+  return memoApiResponse('safety-summary', SAFETY_SUMMARY_TTL_MS, key, () =>
+    computeSafetySummary({ range, from, to, assetIds, siteScope }));
 }
 
 export function getEventTrends({ from = null, to = null, assetIds = null, siteScope = null, types = null } = {}) {

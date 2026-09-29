@@ -274,6 +274,38 @@ function siteKeyFor(zone?: string | null) {
 function safetyScopeQuery(selectedSites: string[]) {
   return appendUrlScope('', fleetSiteScopeOpts(selectedSites)).replace(/^\?/, '&');
 }
+
+const SAFETY_LAST_KEY = 'bpl_safety_last:';
+
+type SafetyExposurePair = { cur: FleetSafetyExposure; prev: FleetSafetyExposure | null };
+
+/** Last good census per scope — survives new tabs / reloads so the score paints instantly. */
+function readLastSafety(scopedQuery: string): SafetyExposurePair | null {
+  try {
+    const raw = localStorage.getItem(SAFETY_LAST_KEY + scopedQuery);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SafetyExposurePair;
+    return parsed?.cur ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastSafety(scopedQuery: string, pair: SafetyExposurePair) {
+  try {
+    localStorage.setItem(SAFETY_LAST_KEY + scopedQuery, JSON.stringify(pair));
+  } catch { /* quota — session cache still works */ }
+}
+
+function initialSafetyExposure(): SafetyExposurePair | null {
+  const scopedQuery = safetyScopeQuery(loadSelectedSites());
+  const cur = cachePeek<FleetSafetyExposure>(safetySummaryUrl('30d') + scopedQuery)
+    ?? (scopedQuery ? null : peekSafetySummary<FleetSafetyExposure>('30d'));
+  const prev = cachePeek<FleetSafetyExposure>(safetySummaryUrl('prev30d') + scopedQuery)
+    ?? (scopedQuery ? null : peekSafetySummary<FleetSafetyExposure>('prev30d'));
+  if (cur) return { cur, prev };
+  return readLastSafety(scopedQuery);
+}
 function loadSelectedSites(): string[] {
   try {
     const raw = localStorage.getItem(SELECTED_SITES_KEY);
@@ -384,25 +416,10 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
   const [hosRecords, setHosRecords] = useState<HosRecord[]>(() => peekHos(hosTodayUrl)?.records ?? []);
   const [hosLastTripDay, setHosLastTripDay] = useState<string | null>(() => peekHos(hosTodayUrl)?.lastTripDay ?? null);
   const [hosLoading, setHosLoading] = useState(() => !peekHos(hosTodayUrl));
-  const [safetyExposure, setSafetyExposure] = useState<FleetSafetyExposure | null>(() => {
-    const sites = loadSelectedSites();
-    const key = safetySummaryUrl('30d') + safetyScopeQuery(sites);
-    return cachePeek<FleetSafetyExposure>(key)
-      ?? (sites.length ? null : peekSafetySummary<FleetSafetyExposure>('30d'));
-  });
-  const [safetyExposurePrev, setSafetyExposurePrev] = useState<FleetSafetyExposure | null>(() => {
-    const sites = loadSelectedSites();
-    const key = safetySummaryUrl('prev30d') + safetyScopeQuery(sites);
-    return cachePeek<FleetSafetyExposure>(key)
-      ?? (sites.length ? null : peekSafetySummary<FleetSafetyExposure>('prev30d'));
-  });
-  const [safetyExposureLoading, setSafetyExposureLoading] = useState(() => {
-    const sites = loadSelectedSites();
-    const key = safetySummaryUrl('30d') + safetyScopeQuery(sites);
-    if (cachePeek(key)) return false;
-    if (sites.length) return true;
-    return !peekSafetySummary('30d');
-  });
+  const [initialSafety] = useState(initialSafetyExposure);
+  const [safetyExposure, setSafetyExposure] = useState<FleetSafetyExposure | null>(initialSafety?.cur ?? null);
+  const [safetyExposurePrev, setSafetyExposurePrev] = useState<FleetSafetyExposure | null>(initialSafety?.prev ?? null);
+  const [safetyExposureLoading, setSafetyExposureLoading] = useState(!initialSafety);
   const [distanceRange, setDistanceRangeState] = useState<DistanceRange>('week');
   const [distanceCustom, setDistanceCustom] = useState(defaultPageCustomRange);
   const setDistanceRange = useCallback((range: DistanceRange, custom?: { from: string; to: string }) => {
@@ -870,7 +887,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
               );
               const tankerAsset = /tanker/i.test(`${vehicleRecord?.site ?? ''} ${vehicleRecord?.zone ?? ''}`);
               const fallbackEnv = {
-                weather: 'Unavailable',
+                weather: 'Loading…',
                 traffic_density: 'moderate' as const,
                 road_type: 'highway' as const,
               };
@@ -924,7 +941,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
                   },
                   hos: findHosForEvent(hosRecordsRef.current, e),
                 }),
-                analysisLoading: false,
+                analysisLoading: true,
               };
             });
 
@@ -1064,52 +1081,61 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
     const scopedQuery = safetyScopeQuery(selectedSites);
     const curKey = safetySummaryUrl('30d') + scopedQuery;
     const prevKey = safetySummaryUrl('prev30d') + scopedQuery;
-    const cachedCur = force ? null : cachePeek<FleetSafetyExposure>(curKey);
-    const cachedPrev = force ? null : cachePeek<FleetSafetyExposure>(prevKey);
     const scopeChanged = safetyScopeKeyRef.current !== scopedQuery;
     safetyScopeKeyRef.current = scopedQuery;
 
-    if (cachedCur) {
-      setSafetyExposure(cachedCur);
-      if (cachedPrev) setSafetyExposurePrev(cachedPrev);
-      setSafetyExposureLoading(false);
-    } else if (scopeChanged || force) {
-      // Different site (or forced) — never keep another scope's census on the gauge.
-      setSafetyExposure(null);
-      setSafetyExposurePrev(null);
-      setSafetyExposureLoading(true);
+    // Never blank the score: paint the best known value for this scope and let
+    // fresh data replace it when it arrives. Failed / slow requests keep what's shown.
+    if (scopeChanged && !force) {
+      const cachedCur = cachePeek<FleetSafetyExposure>(curKey);
+      const known = cachedCur
+        ? { cur: cachedCur, prev: cachePeek<FleetSafetyExposure>(prevKey) }
+        : readLastSafety(scopedQuery);
+      if (known) {
+        setSafetyExposure(known.cur);
+        if (known.prev) setSafetyExposurePrev(known.prev);
+      }
     }
-    // Same scope, cache miss: keep the painted score while a background refresh runs.
+
+    const fetchExposure = (url: string) => cachedFetchJson<FleetSafetyExposure>(
+      url,
+      CACHE_TTL.safetySummary,
+      async () => {
+        const res = await authFetch(url);
+        if (!res.ok) return null;
+        return res.json();
+      },
+      { force },
+    );
+    const isCurrentScope = () => safetyScopeKeyRef.current === scopedQuery;
+
+    let latestCur: FleetSafetyExposure | null = null;
+    let latestPrev: FleetSafetyExposure | null = null;
+    const persist = () => {
+      if (!latestCur) return;
+      const prev = latestPrev ?? readLastSafety(scopedQuery)?.prev ?? null;
+      writeLastSafety(scopedQuery, { cur: latestCur, prev });
+    };
+
     try {
-      const [cur, prev] = await Promise.all([
-        cachedFetchJson<FleetSafetyExposure>(
-          curKey,
-          CACHE_TTL.safetySummary,
-          async () => {
-            const res = await authFetch(curKey);
-            if (!res.ok) return null;
-            return res.json();
-          },
-          { force },
-        ),
-        cachedFetchJson<FleetSafetyExposure>(
-          prevKey,
-          CACHE_TTL.safetySummary,
-          async () => {
-            const res = await authFetch(prevKey);
-            if (!res.ok) return null;
-            return res.json();
-          },
-          { force },
-        ),
+      // Apply each window as soon as it lands — the score shouldn't wait on the delta.
+      await Promise.all([
+        fetchExposure(curKey).then(cur => {
+          if (!cur || !isCurrentScope()) return;
+          latestCur = cur;
+          setSafetyExposure(cur);
+          persist();
+        }),
+        fetchExposure(prevKey).then(prev => {
+          if (!prev || !isCurrentScope()) return;
+          latestPrev = prev;
+          setSafetyExposurePrev(prev);
+          persist();
+        }),
       ]);
-      // Ignore stale responses if the user switched sites mid-flight.
-      if (safetyScopeKeyRef.current !== scopedQuery) return;
-      if (cur) setSafetyExposure(cur);
-      if (prev) setSafetyExposurePrev(prev);
-    } catch { /* keep current-scope paint */ }
+    } catch { /* keep current paint */ }
     finally {
-      if (safetyScopeKeyRef.current === scopedQuery) setSafetyExposureLoading(false);
+      if (isCurrentScope()) setSafetyExposureLoading(false);
     }
   }, [selectedSites]);
 

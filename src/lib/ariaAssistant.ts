@@ -2,7 +2,7 @@ import type { AiInsight } from './homeWidgetData';
 import { displayDriverName, isKnownDriver } from './driverUtils';
 import { COACHING_EVENT_COUNT, COACHING_WINDOW_DAYS } from '../config/interventionRules';
 import { SAFEIQ_ENABLED } from '../config/safeIq';
-import type { Metadata, VaultRecord } from '../context/FleetContext';
+import type { DriverDistanceSummary, Metadata, VaultRecord } from '../context/FleetContext';
 import type { SafetyNotification } from '../hooks/useSafeIQ';
 
 export interface AriaEventLite {
@@ -28,12 +28,14 @@ export interface AriaSnapshot {
   notifications: SafetyNotification[];
   vaultRecords: VaultRecord[];
   insights: AiInsight[];
+  driverDistance?: DriverDistanceSummary | null;
 }
 
 export type AriaIntent =
   | 'greeting'
   | 'help'
   | 'driver_attention'
+  | 'best_driver'
   | 'weekly_risks'
   | 'fleet_status'
   | 'actions_today'
@@ -130,7 +132,11 @@ export function matchAriaIntent(question: string, snap: AriaSnapshot): AriaInten
   if (SUGGESTED[q]) return SUGGESTED[q];
   if (/^(hi|hello|hey|good morning|good afternoon|good evening)\b/.test(q)) return 'greeting';
   if (/^(help|what can you do|how do you work|what do you do)\b/.test(q)) return 'help';
-  if (/which driver|who needs attention|most urgent|priority driver|worst driver|who is worst|who should i (call|see|coach)/.test(q)) {
+  const aboutDriver = /\bdrivers?\b|\bwho\b/.test(q);
+  if (aboutDriver && /\b(best|safest|cleanest|good|cool|top performer|model|commend|praise|reward|least risky|fewest)\b/.test(q)) {
+    return 'best_driver';
+  }
+  if (/needs? attention|watch (out )?for|most urgent|priority driver|worst|riskiest|most (risky|incidents|events)|who should i (call|see|coach)|concern(ed|ing)? (about )?driver/.test(q)) {
     return 'driver_attention';
   }
   if (/\btop safety risks\b|\bsafety risks this week\b|\brisks this week\b|this week's risks|event breakdown|what happened this week/.test(q)) {
@@ -184,6 +190,64 @@ function answerAttention(snap: AriaSnapshot): string {
     : '';
   const rest = others ? ` Next in line: ${others}.` : '';
   return `**${name}** has the highest 30-day incident count in the current view: **${row.incidents}** (${breakdown}). Last event ${last}.${redLine}${rest}`;
+}
+
+interface DriverRate {
+  name: string;
+  km: number;
+  journeys: number;
+  incidents: number;
+  per100: number;
+}
+
+const BEST_DRIVER_MIN_KM = 100;
+
+/** Events per 100 km over the same window as the driver-distance summary. */
+function driverRates(snap: AriaSnapshot): { rows: DriverRate[]; start: string; end: string } | null {
+  const dist = snap.driverDistance;
+  if (!dist?.drivers?.length) return null;
+  const from = new Date(dist.start).getTime();
+  const to = new Date(dist.end).getTime();
+  const counts = new Map<string, number>();
+  for (const e of snap.events) {
+    if (!isKnownDriver(e.driverName)) continue;
+    const t = eventTime(e);
+    if (Number.isFinite(from) && t < from) continue;
+    if (Number.isFinite(to) && t > to) continue;
+    const k = e.driverName!.trim().toLowerCase();
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const rows = dist.drivers
+    .filter(d => isKnownDriver(d.driverName) && d.totalDistanceKm >= BEST_DRIVER_MIN_KM)
+    .map(d => {
+      const incidents = counts.get(d.driverName.trim().toLowerCase()) || 0;
+      return {
+        name: d.driverName.trim(),
+        km: d.totalDistanceKm,
+        journeys: d.journeyCount,
+        incidents,
+        per100: (incidents / d.totalDistanceKm) * 100,
+      };
+    });
+  return { rows, start: dist.start, end: dist.end };
+}
+
+function fmtDay(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-GB', { timeZone: 'Africa/Lagos' });
+}
+
+function answerBest(snap: AriaSnapshot): string | null {
+  const rated = driverRates(snap);
+  if (!rated || rated.rows.length === 0) return null;
+  const ranked = [...rated.rows].sort((a, b) => a.per100 - b.per100 || b.km - a.km);
+  const [top, ...rest] = ranked;
+  const km = (v: number) => Math.round(v).toLocaleString('en-GB');
+  const rate = (r: DriverRate) => (r.incidents === 0 ? 'zero events' : `${r.per100.toFixed(2)} events/100 km`);
+  const clean = ranked.filter(r => r.incidents === 0).length;
+  const next = rest.slice(0, 2).map(r => `${r.name} (${km(r.km)} km, ${rate(r)})`).join(', ');
+  const window = `${fmtDay(rated.start)}–${fmtDay(rated.end)}`;
+  return `**${top.name}** is the strongest driver in the current view: **${km(top.km)} km** over ${top.journeys} journeys with **${rate(top)}** (${window}).${next ? ` Next: ${next}.` : ''} ${clean} of ${ranked.length} drivers with ≥${BEST_DRIVER_MIN_KM} km had no events.`;
 }
 
 function answerWeekly(snap: AriaSnapshot): string {
@@ -266,6 +330,8 @@ export function answerAriaLocal(question: string, snap: AriaSnapshot): string | 
       return answerHelp();
     case 'driver_attention':
       return answerAttention(snap);
+    case 'best_driver':
+      return answerBest(snap);
     case 'weekly_risks':
       return answerWeekly(snap);
     case 'fleet_status':
@@ -355,8 +421,17 @@ export function buildAriaRemoteContext(question: string, snap: AriaSnapshot): st
   if (!named && !wantsSpeed && !wantsHarsh) {
     const top = topDrivers(snap.events, 3).map(([name, d]) => formatDriverLine(name, d));
     const week = weekBreakdown(snap.events).slice(0, 5).map(([l, c]) => `  ${l}: ${c}`);
-    sections.push('=== TOP DRIVERS (30d) ===');
+    sections.push('=== MOST INCIDENTS (30d) — highest risk, not best ===');
     sections.push(top.join('\n') || '  None');
+    const rated = driverRates(snap);
+    if (rated?.rows.length) {
+      const low = [...rated.rows]
+        .sort((a, b) => a.per100 - b.per100 || b.km - a.km)
+        .slice(0, 3)
+        .map(r => `  ${r.name}: ${Math.round(r.km)} km, ${r.incidents} events (${r.per100.toFixed(2)}/100 km)`);
+      sections.push(`=== LOWEST EVENT RATE (${fmtDay(rated.start)}–${fmtDay(rated.end)}, ≥${BEST_DRIVER_MIN_KM} km) — best ===`);
+      sections.push(low.join('\n'));
+    }
     sections.push('=== WEEK BREAKDOWN ===');
     sections.push(week.join('\n') || '  None');
   }

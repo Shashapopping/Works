@@ -116,6 +116,12 @@ const PAGE_LABELS: Record<string, string> = {
   '/settings': 'Settings',
 };
 
+const LOCAL_THINK_MS_MIN = 600;
+const LOCAL_THINK_MS_MAX = 1100;
+const LOCAL_STREAM_TICK_MS = 30;
+/** Caps stream length so long local answers still finish in ~2s. */
+const LOCAL_STREAM_MAX_TICKS = 60;
+
 const SUGGESTED_PROMPTS = [
   'Which driver needs attention most urgently right now?',
   'What are the top safety risks this week?',
@@ -132,7 +138,7 @@ export default function ARIAChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const location = useLocation();
-  const { fleetSafetyScore, fleetScoreDelta, redAlertCount, vaultRecords, metadata, events, notifications, insights } = useFleet();
+  const { fleetSafetyScore, fleetScoreDelta, redAlertCount, vaultRecords, metadata, events, notifications, insights, driverDistance } = useFleet();
 
   const currentPage = PAGE_LABELS[location.pathname] || location.pathname;
   const watTime = new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos', hour12: false });
@@ -148,11 +154,29 @@ export default function ARIAChat() {
     notifications,
     vaultRecords,
     insights,
+    driverDistance,
   });
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
+
+  /** Local answers get the same thinking + streaming feel as model replies. */
+  const playLocalAnswer = async (content: string) => {
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    await sleep(LOCAL_THINK_MS_MIN + Math.random() * (LOCAL_THINK_MS_MAX - LOCAL_THINK_MS_MIN));
+    const tokens = content.match(/\S+\s*|\s+/g) ?? [content];
+    const perTick = Math.max(1, Math.ceil(tokens.length / LOCAL_STREAM_MAX_TICKS));
+    let shown = '';
+    for (let i = 0; i < tokens.length; i += perTick) {
+      shown += tokens.slice(i, i + perTick).join('');
+      setStreamingContent(shown);
+      await sleep(LOCAL_STREAM_TICK_MS);
+    }
+    setMessages(prev => [...prev, { role: 'assistant', content }]);
+    setStreamingContent('');
+    setLoading(false);
+  };
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || loading) return;
@@ -166,12 +190,11 @@ export default function ARIAChat() {
     const snap = snapshot();
     const local = answerAriaLocal(text, snap);
     if (local) {
-      setMessages(prev => [...prev, { role: 'assistant', content: local }]);
-      setLoading(false);
+      await playLocalAnswer(local);
       return;
     }
 
-    const history = messages.slice(-4).map(m => ({ role: m.role, content: m.content }));
+    const history = messages.slice(-2).map(m => ({ role: m.role, content: m.content }));
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -354,11 +377,11 @@ export default function ARIAChat() {
           )}
 
           {messages.map((msg, i) => (
-            <div key={i} className={`bpl-aria-msg bpl-aria-msg-${msg.role}`}>
+            <div key={i} className={`bpl-aria-msg bpl-aria-msg-${msg.role === 'assistant' ? 'aria' : 'user'}`}>
               {msg.role === 'assistant' && (
                 <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginBottom: 3, fontWeight: 600 }}>BPL Analyst</div>
               )}
-              <div className={`bpl-aria-bubble bpl-aria-bubble-${msg.role}`}>
+              <div className={`bpl-aria-bubble bpl-aria-bubble-${msg.role === 'assistant' ? 'aria' : 'user'}`}>
                 {msg.role === 'assistant' ? renderMessage(msg.content) : msg.content}
               </div>
             </div>
@@ -366,7 +389,7 @@ export default function ARIAChat() {
 
           {loading && streamingContent && (
             <div className="bpl-aria-msg bpl-aria-msg-aria">
-              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginBottom: 3, fontWeight: 600 }}>ARIA</div>
+              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginBottom: 3, fontWeight: 600 }}>BPL Analyst</div>
               <div className="bpl-aria-bubble bpl-aria-bubble-aria">
                 {renderMessage(streamingContent)}
                 <span style={{ display: 'inline-block', width: 7, height: 13, background: 'var(--bpl-blue)', borderRadius: 2, marginLeft: 2, verticalAlign: 'text-bottom', animation: 'aria-typing 0.8s ease infinite' }} />
@@ -376,7 +399,7 @@ export default function ARIAChat() {
 
           {loading && !streamingContent && (
             <div className="bpl-aria-msg bpl-aria-msg-aria">
-              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginBottom: 3, fontWeight: 600 }}>ARIA</div>
+              <div style={{ fontSize: 10, color: 'var(--cd-text-muted)', marginBottom: 3, fontWeight: 600 }}>BPL Analyst</div>
               <div className="bpl-aria-bubble bpl-aria-bubble-aria bpl-aria-bubble-typing">
                 <div className="bpl-aria-typing-dot" />
                 <div className="bpl-aria-typing-dot" />

@@ -14,8 +14,6 @@ import { SkelValue } from '../data/DataBusy';
 import { STATUS_DEFINITIONS } from '../../lib/metricDefinitions';
 import { useFuelConsumptionByDistanceRange } from '../../hooks/useFuelConsumption';
 import { filterHosRecordsByAssignedSite } from '../../lib/siteScope';
-import { isFeatureLocked } from '../../config/lockedFeatures';
-
 export type MetricPeriod = DistanceRange;
 
 type StatusCard = {
@@ -168,7 +166,6 @@ export default function StatusStatsRow({
 }: Props) {
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
-  const showFuelConsumption = hasPermission('fuel-consumption') && !isFeatureLocked('fuel-consumption');
   const {
     metadata,
     totalDistanceKm,
@@ -179,7 +176,10 @@ export default function StatusStatsRow({
     vehicles,
     selectedSites,
     siteFilterActive,
+    siteLock,
   } = useFleet();
+  // Transporter logins (siteLock) also hold 'fuel-consumption', so the permission alone can't hide it.
+  const showFuelConsumption = hasPermission('fuel-consumption') && !siteLock;
   const { data: fuelData, totalLiters: tripFuelLiters, loading: fuelLoading } = useFuelConsumptionByDistanceRange(
     metricPeriod,
     metricCustom,

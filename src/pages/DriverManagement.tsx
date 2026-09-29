@@ -37,7 +37,7 @@ import { driverExpandEventsUrl, parseEventsLogPayload } from '../lib/riskExpandE
 import ExpandedEventsList from '../components/risk/ExpandedEventsList';
 import { useHosRecords } from '../hooks/useHosRecords';
 import { fmtHosMinutes, hosHeldMinutesFromRecord } from '../lib/hos';
-import { hosPointsFromHeldMinutes } from '../lib/fleetSafetyScore';
+import { hosPointsFromHeldMinutes, scoreBandColor, type FleetScoreConfig } from '../lib/fleetSafetyScore';
 import { useAuth } from '../context/AuthContext';
 
 type DateRange = DriverPeriod;
@@ -70,19 +70,11 @@ function hosImpactPer100Km(hosPoints: number, distanceKm: number) {
   return hosPoints > 0 ? Math.abs(normalizeDriverScore(-hosPoints, distanceKm)) : 0;
 }
 
-function scoreBarColor(category: ConsequenceCategory) {
-  if (category === 'Green') return '#16a34a';
-  if (category === 'Amber') return '#f59e0b';
-  if (category === 'Yellow') return '#d97706';
-  return '#CC0000';
-}
-
-function ScoreBar({ score, category, hosImpact }: {
+function ScoreBar({ score, color, hosImpact }: {
   score: number;
-  category: ConsequenceCategory;
+  color: string;
   hosImpact: number;
 }) {
-  const color = scoreBarColor(category);
   const barWidth = Math.max(0, Math.min(100, score));
   return (
     <div className="dm-score">
@@ -171,6 +163,7 @@ function DriverCard({
   hosImpact,
   displayScore,
   category,
+  scoreConfig,
 }: {
   driver: DriverProfile;
   expanded: boolean;
@@ -184,9 +177,11 @@ function DriverCard({
   hosImpact: number;
   displayScore: number;
   category: ConsequenceCategory;
+  scoreConfig: FleetScoreConfig;
 }) {
   const { consequence } = driver;
-  const color = scoreBarColor(category);
+  // Colour follows the score; the consequence band only drives labels / actions.
+  const color = scoreBandColor(displayScore, scoreConfig);
   const officialStatus = driverOfficialStatus(category, latestWarning);
   const infractions = stats.eventCount;
   const distanceLabel = fmtDistanceKm(stats.km);
@@ -241,7 +236,7 @@ function DriverCard({
           <div className="dm-stat-lbl">HOS</div>
         </div>
 
-        <ScoreBar score={displayScore} category={category} hosImpact={hosImpact} />
+        <ScoreBar score={displayScore} color={color} hosImpact={hosImpact} />
 
         <div className="dm-tail">
           <span className="dm-band">{officialStatus.label}</span>
@@ -672,6 +667,7 @@ export default function DriverManagement() {
                 hosImpact={outcome?.hosImpact ?? 0}
                 displayScore={outcome?.displayScore ?? d.consequence.displayScore}
                 category={outcome?.category ?? d.consequence.category}
+                scoreConfig={scoreConfig}
               />
             );
           })}

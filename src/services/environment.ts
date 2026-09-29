@@ -10,6 +10,7 @@ export interface ResolvedEnvironment extends EnvironmentContext {
   humidity_pct?: number;
   precipitation_mm?: number;
   environment_source?: { weather: string; traffic: string };
+  weather_error?: string;
 }
 
 function inferRoadType(address = ''): EnvironmentContext['road_type'] {
@@ -20,14 +21,28 @@ function inferRoadType(address = ''): EnvironmentContext['road_type'] {
   return 'highway';
 }
 
-function defaultEnvironment(address?: string): ResolvedEnvironment {
+function defaultEnvironment(address: string | undefined, reason: string): ResolvedEnvironment {
+  console.warn(`[environment] weather unavailable${address ? ` for "${address}"` : ''}: ${reason}`);
   return {
     weather: 'Unavailable',
     weather_condition: 'Unknown',
     traffic_density: 'moderate',
     road_type: inferRoadType(address),
     environment_source: { weather: 'unavailable', traffic: 'heuristic' },
+    weather_error: reason,
   };
+}
+
+async function requestEnvironment(params: URLSearchParams, address?: string): Promise<ResolvedEnvironment> {
+  try {
+    const res = await authFetch(`/api/environment?${params}`);
+    if (!res.ok) return defaultEnvironment(address, `/api/environment returned ${res.status}`);
+    const env: ResolvedEnvironment = await res.json();
+    if (env.weather_error) console.warn(`[environment] weather unavailable: ${env.weather_error}`);
+    return env;
+  } catch (err) {
+    return defaultEnvironment(address, `request failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export async function fetchIncidentEnvironment(opts: {
@@ -42,31 +57,17 @@ export async function fetchIncidentEnvironment(opts: {
 
   // No coords yet — server will try geocoding from address
   if (isNaN(lat) || isNaN(lng)) {
-    if (!address) return defaultEnvironment(address);
-    try {
-      const params = new URLSearchParams({
-        address,
-        timestamp: timestamp || new Date().toISOString(),
-      });
-      const res = await authFetch(`/api/environment?${params}`);
-      if (!res.ok) return defaultEnvironment(address);
-      return await res.json();
-    } catch {
-      return defaultEnvironment(address);
-    }
+    if (!address) return defaultEnvironment(address, 'no coordinates or address');
+    return requestEnvironment(new URLSearchParams({
+      address,
+      timestamp: timestamp || new Date().toISOString(),
+    }), address);
   }
 
-  try {
-    const params = new URLSearchParams({
-      lat: String(lat),
-      lng: String(lng),
-      address: address || '',
-      timestamp: timestamp || new Date().toISOString(),
-    });
-    const res = await authFetch(`/api/environment?${params}`);
-    if (!res.ok) return defaultEnvironment(address);
-    return await res.json();
-  } catch {
-    return defaultEnvironment(address);
-  }
+  return requestEnvironment(new URLSearchParams({
+    lat: String(lat),
+    lng: String(lng),
+    address: address || '',
+    timestamp: timestamp || new Date().toISOString(),
+  }), address);
 }

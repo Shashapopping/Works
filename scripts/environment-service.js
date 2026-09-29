@@ -7,6 +7,44 @@ const WMO_LABELS = {
   95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Severe Thunderstorm',
 };
 
+// Open-Meteo rejects bursts with 429 "Too many concurrent requests"; the dashboard
+// fires one call per hub + per SafeIQ card at once, so cap in-flight calls and retry.
+const WEATHER_MAX_CONCURRENT = 3;
+const WEATHER_RETRY_DELAYS_MS = [400, 1200, 2500];
+const WEATHER_TIMEOUT_MS = 8000;
+const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000;
+const GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+const weatherCache = new Map();
+const weatherInFlight = new Map();
+const geocodeCache = new Map();
+
+let weatherActive = 0;
+const weatherQueue = [];
+
+function acquireWeatherSlot() {
+  if (weatherActive < WEATHER_MAX_CONCURRENT) {
+    weatherActive++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => weatherQueue.push(resolve));
+}
+
+function releaseWeatherSlot() {
+  const next = weatherQueue.shift();
+  if (next) next();
+  else weatherActive--;
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function cacheGet(map, key) {
+  const hit = map.get(key);
+  if (!hit) return undefined;
+  if (hit.expires < Date.now()) { map.delete(key); return undefined; }
+  return hit.value;
+}
+
 function inferRoadType(address = '') {
   const a = address.toLowerCase();
   if (/expressway|highway|motorway|interstate|km\s*\d/i.test(a)) return 'highway';
@@ -74,32 +112,82 @@ async function geocodeWithNominatim(term) {
 
 export async function geocodeAddress(address) {
   if (!address || address === 'Unknown location') return null;
+  const key = address.trim().toLowerCase();
+  const cached = cacheGet(geocodeCache, key);
+  if (cached !== undefined) return cached;
   try {
+    let hit = null;
     for (const term of addressSearchTerms(address)) {
-      const meteo = await geocodeWithOpenMeteo(term);
-      if (meteo) return meteo;
+      hit = await geocodeWithOpenMeteo(term);
+      if (hit) break;
     }
-    for (const term of addressSearchTerms(address)) {
-      const nominatim = await geocodeWithNominatim(term);
-      if (nominatim) return nominatim;
+    if (!hit) {
+      for (const term of addressSearchTerms(address)) {
+        hit = await geocodeWithNominatim(term);
+        if (hit) break;
+      }
     }
-    return null;
-  } catch {
+    if (hit) geocodeCache.set(key, { value: hit, expires: Date.now() + GEOCODE_CACHE_TTL_MS });
+    else console.warn(`[environment] geocode found no match for "${address}"`);
+    return hit;
+  } catch (err) {
+    console.warn(`[environment] geocode failed for "${address}": ${err?.message || err}`);
     return null;
   }
 }
 
-export async function fetchWeather(lat, lng) {
+async function requestOpenMeteo(lat, lng) {
   const url = new URL('https://api.open-meteo.com/v1/forecast');
   url.searchParams.set('latitude', String(lat));
   url.searchParams.set('longitude', String(lng));
   url.searchParams.set('current', 'temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m');
   url.searchParams.set('timezone', 'Africa/Lagos');
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
-  const data = await res.json();
-  const c = data.current;
+  let lastError;
+  for (let attempt = 0; attempt <= WEATHER_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(WEATHER_RETRY_DELAYS_MS[attempt - 1]);
+    await acquireWeatherSlot();
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(WEATHER_TIMEOUT_MS) });
+      if (res.ok) {
+        const data = await res.json();
+        if (!data?.current) throw new Error('Open-Meteo response missing "current"');
+        return data.current;
+      }
+      const body = await res.text().catch(() => '');
+      let reason = '';
+      try { reason = JSON.parse(body)?.reason || ''; } catch { /* non-JSON body */ }
+      const httpError = new Error(`Open-Meteo ${res.status}${reason ? ` (${reason})` : ''}`);
+      httpError.retryable = res.status === 429 || res.status >= 500;
+      throw httpError;
+    } catch (err) {
+      lastError = err;
+      if (err?.retryable === false) throw err;
+    } finally {
+      releaseWeatherSlot();
+    }
+  }
+  throw lastError;
+}
+
+export async function fetchWeather(lat, lng) {
+  const key = `${Number(lat).toFixed(2)},${Number(lng).toFixed(2)}`;
+  const cached = cacheGet(weatherCache, key);
+  if (cached) return cached;
+  if (weatherInFlight.has(key)) return weatherInFlight.get(key);
+
+  const pending = requestOpenMeteo(lat, lng)
+    .then(current => {
+      const weather = summarizeWeather(current);
+      weatherCache.set(key, { value: weather, expires: Date.now() + WEATHER_CACHE_TTL_MS });
+      return weather;
+    })
+    .finally(() => weatherInFlight.delete(key));
+  weatherInFlight.set(key, pending);
+  return pending;
+}
+
+function summarizeWeather(c) {
   const condition = WMO_LABELS[c.weather_code] || 'Unknown';
   const temp = Math.round(c.temperature_2m);
   const humidity = Math.round(c.relative_humidity_2m);
@@ -242,7 +330,9 @@ export async function resolveEnvironment({ lat, lng, address, timestamp, googleA
   };
 
   if (resolvedLat == null || resolvedLng == null || isNaN(resolvedLat) || isNaN(resolvedLng)) {
-    return fallback;
+    const reason = address ? 'no coordinates; address could not be geocoded' : 'no coordinates or address';
+    console.warn(`[environment] weather unavailable: ${reason}`);
+    return { ...fallback, weather_error: reason };
   }
 
   const [weatherResult, trafficResult] = await Promise.allSettled([
@@ -252,6 +342,12 @@ export async function resolveEnvironment({ lat, lng, address, timestamp, googleA
 
   const weather = weatherResult.status === 'fulfilled' ? weatherResult.value : null;
   const traffic = trafficResult.status === 'fulfilled' ? trafficResult.value : null;
+  const weatherError = weatherResult.status === 'rejected'
+    ? (weatherResult.reason?.name === 'TimeoutError' ? 'Open-Meteo timed out' : weatherResult.reason?.message || String(weatherResult.reason))
+    : undefined;
+  if (weatherError) {
+    console.warn(`[environment] weather unavailable at ${resolvedLat.toFixed(3)},${resolvedLng.toFixed(3)}: ${weatherError}`);
+  }
 
   return {
     weather: weather?.summary ?? 'Unavailable',
@@ -269,5 +365,6 @@ export async function resolveEnvironment({ lat, lng, address, timestamp, googleA
       weather: weather ? 'open-meteo' : 'unavailable',
       traffic: traffic?.source ?? 'heuristic',
     },
+    ...(weatherError ? { weather_error: weatherError } : {}),
   };
 }

@@ -212,32 +212,6 @@ function TrendTooltip({ active, payload, label }: {
   );
 }
 
-function mapDemoEntries(
-  events: ReturnType<typeof useFleet>['events'],
-  vehicles: ReturnType<typeof useFleet>['vehicles'],
-): LogEntry[] {
-  const eventRows = Array.isArray(events) ? events : [];
-  const vehicleRows = Array.isArray(vehicles) ? vehicles : [];
-  return eventRows.map(e => {
-    const vehicle = vehicleRows.find(v => v.id === e.assetId || v.regNo === e.regNo);
-    return {
-      eventId: e.eventId,
-      label: e.label,
-      type: e.type === 'panic' ? 'panic' : 'warning',
-      timestamp: e.eventTime,
-      eventTime: e.eventTime,
-      assetId: e.assetId || e.regNo || 'unknown',
-      regNo: e.regNo,
-      assetName: vehicle?.assetName,
-      site: vehicle?.site,
-      transporter: vehicle?.transporter,
-      driverName: e.driverName || vehicle?.driverName,
-      driverPhone: e.driverPhone || vehicle?.driverPhone,
-      address: e.address || vehicle?.address,
-    };
-  });
-}
-
 function eventRowsFromPayload(data: any): Record<string, unknown>[] {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.entries)) return data.entries;
@@ -259,6 +233,7 @@ async function fetchAllIvmsEventRows(
     params.set('format', 'page');
     params.set('limit', String(pageSize));
     params.set('offset', String(offset));
+    if (offset > 0) params.set('total', '0');
     const url = appendUrlScope(`/api/events/log?${params}`, {
       assetIds: scopeAssetIds,
     });
@@ -266,7 +241,8 @@ async function fetchAllIvmsEventRows(
     if (!res.ok) throw new Error('Failed to fetch events for export');
     const data = await res.json();
     const rows = eventRowsFromPayload(data);
-    total = typeof data?.total === 'number' ? data.total : offset + rows.length;
+    if (typeof data?.total === 'number') total = data.total;
+    else if (offset === 0) total = rows.length;
     if (!rows.length) break;
     all.push(...rows);
     offset += rows.length;
@@ -424,7 +400,6 @@ function MultiSelectDropdown({
 export default function ReportsPage() {
   const { user } = useAuth();
   const {
-    events: fleetEvents,
     vehicles,
     siteOptions,
     siteNameOptions,
@@ -436,9 +411,7 @@ export default function ReportsPage() {
     siteFilterActive,
   } = useFleet();
   const vehiclesRef = useRef(vehicles);
-  const fleetEventsRef = useRef(fleetEvents);
   vehiclesRef.current = vehicles;
-  fleetEventsRef.current = fleetEvents;
 
   const [entries, setEntries] = useState<LogEntry[]>(() => {
     const { from, to } = getDateBounds('7days', '', '');
@@ -462,8 +435,7 @@ export default function ReportsPage() {
     params.set('limit', String(EVENT_PREVIEW_LIMIT));
     const url = `/api/events/log?${params}`;
     const cached = cachePeek<any>(url);
-    if (cached && typeof cached.total === 'number') return cached.total;
-    return Array.isArray(cached) ? cached.length : (cached?.entries?.length ?? 0);
+    return cached && typeof cached.total === 'number' ? cached.total : 0;
   });
   const [loading, setLoading] = useState(() => {
     const { from, to } = getDateBounds('7days', '', '');
@@ -493,6 +465,13 @@ export default function ReportsPage() {
   const [tabularPreview, setTabularPreview] = useState<TabularReport | null>(null);
   const [tabularPreviewLoading, setTabularPreviewLoading] = useState(false);
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchTerm);
+  const [ivmsLabelTotals, setIvmsLabelTotals] = useState<Record<string, number> | null>(null);
+  const [eventsLoadFailed, setEventsLoadFailed] = useState(false);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [searchTerm]);
 
   const reportTitle = brandReportTitle();
   const defaultEmailTo = useMemo(() => {
@@ -513,6 +492,7 @@ export default function ReportsPage() {
         if (!silent) {
           setEntries([]);
           setEventCensusTotal(0);
+          setIvmsLabelTotals({});
           setLoading(false);
         }
         return;
@@ -527,6 +507,7 @@ export default function ReportsPage() {
         const ivmsTypes = selectedIvmsEventTypes(selectedEventTypes);
         if (ivmsTypes.length > 0) params.set('types', ivmsTypes.join(','));
       }
+      if (debouncedSearchTerm) params.set('q', debouncedSearchTerm);
       const url = appendUrlScope(`/api/events/log?${params}`, {
         assetIds: siteFilterActive ? scopedAssetIds : [],
       });
@@ -534,7 +515,9 @@ export default function ReportsPage() {
         const veh = vehiclesRef.current;
         const rows = eventRowsFromPayload(data);
         setEntries(rows.map((e: Record<string, unknown>) => mapApiEntry(e, veh)));
-        setEventCensusTotal(typeof data?.total === 'number' ? data.total : rows.length);
+        setEventCensusTotal(typeof data?.total === 'number' ? data.total : 0);
+        setIvmsLabelTotals(data?.byLabel && typeof data.byLabel === 'object' ? data.byLabel : null);
+        setEventsLoadFailed(false);
       };
       if (!silent) {
         const cached = cachePeek<any>(url);
@@ -544,6 +527,7 @@ export default function ReportsPage() {
         } else {
           setEntries([]);
           setEventCensusTotal(0);
+          setIvmsLabelTotals(null);
           setLoading(true);
         }
       }
@@ -552,17 +536,11 @@ export default function ReportsPage() {
         if (cancelled) return;
         if (data !== null) {
           applyData(data);
-        } else {
-          const demo = mapDemoEntries(fleetEventsRef.current, vehiclesRef.current);
-          setEntries(demo);
-          setEventCensusTotal(demo.length);
+        } else if (!silent) {
+          setEventsLoadFailed(true);
         }
       } catch (e) {
-        if (!cancelled) {
-          const demo = mapDemoEntries(fleetEventsRef.current, vehiclesRef.current);
-          setEntries(demo);
-          setEventCensusTotal(demo.length);
-        }
+        if (!cancelled && !silent) setEventsLoadFailed(true);
       } finally {
         if (!cancelled && !silent) setLoading(false);
       }
@@ -576,7 +554,7 @@ export default function ReportsPage() {
       cancelled = true;
       stop();
     };
-  }, [dateRange, fromDate, toDate, selectedEventTypes, selectedSites, scopedAssetIds.join(','), siteFilterActive]);
+  }, [dateRange, fromDate, toDate, selectedEventTypes, debouncedSearchTerm, selectedSites, scopedAssetIds.join(','), siteFilterActive]);
 
   const selectedSiteLabel = useMemo(
     () => selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions, 'All sites') ?? 'All sites',
@@ -632,14 +610,21 @@ export default function ReportsPage() {
 
   const eventTypeCounts = useMemo(() => {
     const ivms: Record<string, number> = {};
-    for (const e of entries) {
-      if (e.type === 'panic') continue;
-      const label = eventLabel(e);
-      if (HIDDEN_LABELS.includes(label)) continue;
-      ivms[label] = (ivms[label] || 0) + 1;
+    if (ivmsLabelTotals) {
+      for (const [label, n] of Object.entries(ivmsLabelTotals)) {
+        if (HIDDEN_LABELS.includes(label)) continue;
+        ivms[label] = n;
+      }
+    } else {
+      for (const e of entries) {
+        if (e.type === 'panic') continue;
+        const label = eventLabel(e);
+        if (HIDDEN_LABELS.includes(label)) continue;
+        ivms[label] = (ivms[label] || 0) + 1;
+      }
     }
     return buildEventTypeCounts(ivms, vehicles, trackingWindowHours);
-  }, [entries, vehicles, trackingWindowHours]);
+  }, [ivmsLabelTotals, entries, vehicles, trackingWindowHours]);
 
   const eventMatchesSearch = (event: LogEntry) =>
     matchesEventReportSearch(
@@ -1132,9 +1117,11 @@ export default function ReportsPage() {
         <span className="bpl-badge-blue">
           {reportType === 'events'
             ? (viewMode === 'events'
-              ? (filtered.length > EVENT_PREVIEW_LIMIT
-                ? `Showing ${EVENT_PREVIEW_LIMIT} of ${filtered.length.toLocaleString()}`
-                : `${filtered.length.toLocaleString()} event${filtered.length !== 1 ? 's' : ''}`)
+              ? (eventsLoadFailed
+                ? 'Event count unavailable — retrying'
+                : estimatedEmailRows > previewRows.length
+                ? `Showing ${previewRows.length} of ${estimatedEmailRows.toLocaleString()}`
+                : `${estimatedEmailRows.toLocaleString()} event${estimatedEmailRows !== 1 ? 's' : ''}`)
               : `${trendData.length} day${trendData.length !== 1 ? 's' : ''} of trends`)
             : tabularPreviewLoading
               ? 'Loading preview…'
@@ -1444,9 +1431,9 @@ export default function ReportsPage() {
                       })}
                     </tbody>
                   </table>
-                  {filtered.length > EVENT_PREVIEW_LIMIT && (
+                  {estimatedEmailRows > previewRows.length && (
                     <div className="bpl-reports-preview-note">
-                      Showing {EVENT_PREVIEW_LIMIT} of {filtered.length.toLocaleString()} events — download or email for the full set
+                      Showing {previewRows.length} of {estimatedEmailRows.toLocaleString()} events — download or email for the full set
                     </div>
                   )}
                 </>

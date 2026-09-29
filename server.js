@@ -3,7 +3,8 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import * as dotenv from 'dotenv'
-import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getHosRecords, getFleetSafetyExposure, getSafetySummary, getRiskDrivers, getEventTrends } from './scripts/mix-test.js'
+import { startPolling, pollOnce, clearTriggeredEvent, resetState, getWarningEvents, getSessionTrips, getDriverDistanceSummary, getFleetSafetyExposure, getRiskDrivers, getEventTrends } from './scripts/mix-test.js'
+import { getServedStat, startStatsScheduler } from './scripts/stats-store.js'
 import { getAcknowledged, addAcknowledged, clearAcknowledged } from './scripts/db.js'
 import { handleEventsLogQuery } from './scripts/events-log-api.js'
 import { getFuelHistoryResponse, getFuelSeriesResponse } from './scripts/fuel-history-api.js'
@@ -60,6 +61,19 @@ function isAuthorized(req) {
 
 function unauthorized(res) {
   res.status(401).end('Unauthorized')
+}
+
+function sendStoredStat(res, json) {
+  res.type('application/json').send(json)
+}
+
+function storedStatFailed(res, err, label) {
+  if (err?.code === 'STATS_WARMING') {
+    res.set('Retry-After', '30')
+    return res.status(503).json({ error: 'Stats are being prepared, retry shortly' })
+  }
+  console.error(`${label} failed`, err?.message || err)
+  res.status(500).json({ error: `Failed to compute ${label}` })
 }
 
 // Block direct access to sensitive JSON files
@@ -163,6 +177,7 @@ app.get('/api/events/log', (req, res) => {
       types: req.query.types,
       limit: req.query.limit,
       offset: req.query.offset,
+      total: req.query.total,
       format: req.query.format,
       driver: req.query.driver,
       driverName: req.query.driverName,
@@ -236,13 +251,12 @@ app.get('/api/driver-distance', (req, res) => {
 })
 
 // Hours-of-Service — continuous-driving-time records for the day
-app.get('/api/hos', (req, res) => {
+app.get('/api/hos', async (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
-    res.json(getHosRecords(req.query.date?.toString() || undefined))
+    sendStoredStat(res, await getServedStat('hos', { date: req.query.date?.toString() || null }))
   } catch (err) {
-    console.error('hos records failed', err)
-    res.status(500).json({ error: 'Failed to compute HOS records' })
+    storedStatFailed(res, err, 'HOS records')
   }
 })
 
@@ -268,7 +282,7 @@ app.get('/api/safety-exposure', (req, res) => {
   }
 })
 
-app.get('/api/safety/summary', (req, res) => {
+app.get('/api/safety/summary', async (req, res) => {
   if (!isAuthorized(req)) return unauthorized(res)
   try {
     const assetIds = assetIdsQueryValue(applySignedInTransporterScope(
@@ -276,16 +290,14 @@ app.get('/api/safety/summary', (req, res) => {
       req.query.assetIds?.toString() || null,
       req.query.siteScope?.toString() || null,
     ))
-    res.json(getSafetySummary({
+    sendStoredStat(res, await getServedStat('safety-summary', {
       range: req.query.range?.toString() || '30d',
       from: req.query.from?.toString() || null,
       to: req.query.to?.toString() || null,
       assetIds,
-      siteScope: null,
     }))
   } catch (err) {
-    console.error('safety summary failed', err)
-    res.status(500).json({ error: 'Failed to compute safety summary' })
+    storedStatFailed(res, err, 'safety summary')
   }
 })
 
@@ -464,4 +476,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 JMG Dashboard server running on port ${PORT}`)
   console.log(`📡 Starting MiX polling...`)
   startPolling({ maxRuns: null })
+  startStatsScheduler()
 })

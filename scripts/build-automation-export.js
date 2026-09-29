@@ -272,12 +272,24 @@ function collectEventEntries(reportConfig, { now, previousSnapshot } = {}) {
     const types = eventType && !wantsAllIvms && !wantsConnectivity
       ? eventType
       : undefined;
-    const rows = handleEventsLogQuery({
-      from,
-      to,
-      types,
-      limit: 'all',
-    });
+    const rows = [];
+    let total = 0;
+    for (let offset = 0; ; ) {
+      const page = handleEventsLogQuery({
+        from,
+        to,
+        types,
+        format: 'page',
+        limit: '1000',
+        offset: String(offset),
+        total: offset > 0 ? '0' : null,
+      });
+      if (typeof page?.total === 'number') total = page.total;
+      const batch = page?.entries ?? [];
+      rows.push(...batch);
+      offset += batch.length;
+      if (!batch.length || offset >= total) break;
+    }
     ivmsEntries = rows
       .filter(e => e.type !== 'panic')
       .filter(e => !HIDDEN_LABELS.has(String(e.label || '').trim()))

@@ -20,7 +20,6 @@ export default function FleetSafetyScore() {
     metadata,
     scoreConfig,
     safetyExposure: activeExposure,
-    safetyExposureLoading,
     vehicles,
     selectedSites,
   } = useFleet();
@@ -29,8 +28,7 @@ export default function FleetSafetyScore() {
 
   const color = scoreBandColor(activeScore, scoreConfig);
   const label = scoreBandLabel(activeScore, scoreConfig);
-  const awaiting = !activeExposure;
-  const refreshing = awaiting && safetyExposureLoading;
+  const hasData = !!activeExposure;
 
   const distanceKm = activeExposure?.distanceKm ?? 0;
   const points = totalSafetyPointsFromCensus(activeExposure ?? { distanceKm: 0, hosHeldMinutes: 0 }, scoreConfig);
@@ -68,24 +66,24 @@ export default function FleetSafetyScore() {
               <circle cx="30" cy="30" r="24" fill="none" stroke="var(--cd-border)" strokeWidth="5" />
               <circle
                 cx="30" cy="30" r="24" fill="none"
-                stroke={awaiting ? 'var(--cd-border)' : color} strokeWidth="5"
+                stroke={color} strokeWidth="5"
                 strokeDasharray={`${2 * Math.PI * 24}`}
-                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (awaiting ? 0 : activeScore) / FLEET_SCORE_SCALE)}`}
+                strokeDashoffset={`${2 * Math.PI * 24 * (1 - (hasData ? activeScore : 0) / FLEET_SCORE_SCALE)}`}
                 strokeLinecap="round"
               />
             </svg>
             <div className="bpl-safety-gauge-center">
-              <span className="bpl-safety-gauge-score" style={{ color: awaiting ? 'var(--cd-text-muted)' : color }}>
-                {awaiting ? '—' : activeScore}
+              <span className="bpl-safety-gauge-score" style={{ color }}>
+                {hasData ? activeScore : '—'}
               </span>
-              {!awaiting && <span className="bpl-safety-gauge-denom">/{FLEET_SCORE_SCALE}</span>}
+              <span className="bpl-safety-gauge-denom">/{FLEET_SCORE_SCALE}</span>
             </div>
           </div>
-          <div className="bpl-safety-score-home-meta">
-            <div className="bpl-safety-score-home-status" style={{ color: awaiting ? 'var(--cd-text-muted)' : color }}>
-              {awaiting ? (refreshing ? 'Loading…' : 'No data') : label}
-            </div>
-            {!awaiting && (
+          {hasData && (
+            <div className="bpl-safety-score-home-meta">
+              <div className="bpl-safety-score-home-status" style={{ color }}>
+                {label}
+              </div>
               <div className="bpl-safety-score-home-delta">
                 {activeDelta > 0 ? (
                   <><TrendingUp size={13} color="#16a34a" /><span className="bpl-kpi-delta-up">+{activeDelta} pts</span></>
@@ -95,21 +93,15 @@ export default function FleetSafetyScore() {
                   <><Minus size={13} color="var(--cd-text-muted)" /><span className="bpl-safety-score-home-nochange">No change</span></>
                 )}
               </div>
-            )}
-            <div className="bpl-safety-score-home-stats">
-              {awaiting ? (
-                <span>{refreshing ? 'Refreshing site score…' : 'Safety census unavailable'}</span>
-              ) : (
-                <>
-                  <span><strong>{weightedRate.toFixed(1)}</strong> IVMS pts / 100 km</span>
-                  <span className="bpl-safety-score-home-dot" />
-                  <span>−{scoreDeduction} from 100</span>
-                  <span className="bpl-safety-score-home-dot" />
-                  <span>{Math.round(distanceKm).toLocaleString()} km tracked</span>
-                </>
-              )}
+              <div className="bpl-safety-score-home-stats">
+                <span><strong>{weightedRate.toFixed(1)}</strong> IVMS pts / 100 km</span>
+                <span className="bpl-safety-score-home-dot" />
+                <span>−{scoreDeduction} from 100</span>
+                <span className="bpl-safety-score-home-dot" />
+                <span>{Math.round(distanceKm).toLocaleString()} km tracked</span>
+              </div>
             </div>
-          </div>
+          )}
         </button>
       </div>
 

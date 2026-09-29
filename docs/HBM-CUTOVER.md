@@ -45,6 +45,27 @@ ln -sfn /var/www/hbm-dashboard /var/www/larfarge-dashboard
 - `certbot --nginx -d hbm.bestpracticesltd.com.ng`
 - `nginx -t && systemctl reload nginx`
 
+Timeouts and the friendly "busy, please refresh" page (`public/hbm-busy.html`, deployed to `dist/`). Served by nginx straight from disk, so it still shows while Node is stuck. Inside the `server { ... }` block for `hbm.bestpracticesltd.com.ng` (443):
+
+```nginx
+    location / {
+        proxy_pass http://127.0.0.1:3003;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+        # ... existing proxy_set_header lines ...
+    }
+
+    error_page 502 503 504 /hbm-busy.html;
+    location = /hbm-busy.html {
+        root /var/www/hbm-dashboard/dist;
+        internal;
+        add_header Cache-Control "no-store" always;
+    }
+```
+
+The original status code (502/504) is kept, so API calls still see a failed response. The app's own 503s (stats warming) pass through unchanged, because `proxy_intercept_errors` is off.
+
 ### 3. GitHub workflow paths
 
 In `.github/workflows/deploy.yml`, replace:

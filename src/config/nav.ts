@@ -69,6 +69,7 @@ export const SIDEBAR_NAV: NavGroup[] = [
   { path: '/cement', icon: Package, label: 'Cement', accent: '#94a3b8' },
   { path: '/ready-mix', icon: Droplets, label: 'Ready Mix', accent: '#22d3ee' },
   { path: '/safety', icon: Shield, label: 'Safety' },
+  { path: '/aria', icon: Brain, label: 'AI Insights' },
   { path: '/maintenance', icon: Wrench, label: 'Maintenance' },
   {
     path: '/fuel',
@@ -98,7 +99,6 @@ export const SIDEBAR_NAV: NavGroup[] = [
       { path: '/trips/dispatch', label: 'Dispatch', icon: Navigation, locked: true },
     ],
   },
-  { path: '/aria', icon: Brain, label: 'AI Insights' },
 ];
 
 /** Warm page APIs on hover (Chevron-style). */

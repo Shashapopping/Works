@@ -153,3 +153,52 @@ Pages that need period truth no longer read `FleetContext` boot events:
 | ARIA Intelligence | risk drivers + safety summary + paginated recent rows |
 
 Boot `limit=500` remains for first paint / live widgets only.
+
+## Server 504s (2026-09-28)
+
+### What was happening
+
+- The droplet (1 vCPU, 2 GB RAM, 1.5 GB `fleet.db`) runs one Node process. better-sqlite3 is synchronous, so a heavy query freezes every request — pages, map, notifications, even `/` and images — until nginx gives up with a 504.
+- 504 bursts lasted ~10 minutes at a time (e.g. 11:37–11:46 and 12:00–12:09 UTC); the first request to time out in each burst was `/api/safety/summary` (30d / prev30d).
+- Measured on the droplet, one 30d safety summary:
+  - distance totals: 16s (1.19M trips in 30 days)
+  - HOS held minutes (replays every driver's trips): 41s
+  - scoring event counts (3 passes over 330k events): 35s
+- In production the summary had a 90s in-memory cache per filter key. Any request after 90s, and every new site filter (e.g. `siteScope=JOZA,...`), recomputed it inside the request.
+- `/api/hos` took ~20s and also shows up in the 504 lists.
+
+### Applied
+
+- nginx `hbm-dashboard`: `proxy_read_timeout 120s` / `proxy_send_timeout 120s` / `proxy_connect_timeout 10s`; stray `.bak` configs moved out of `sites-enabled` to `/root/nginx-backups/` (they caused "conflicting server name" warnings).
+- Stored stats (`scripts/stats-store.js` + `scripts/stats-worker.js`):
+  - `/api/safety/summary` and `/api/hos` never compute on a request; they return the stored copy (RAM + `stats_cache` table, so restarts serve instantly).
+  - Calculation runs in a separate Node process at lowest priority (`ionice -c3 nice -n 19` on Linux), one job at a time with a 2s pause, so the API process keeps the CPU.
+  - Refresh: 30d summaries (every filter used in the last 24h) and today's HOS every 10 minutes; prev30d and past-day HOS once after local midnight; custom `from/to` windows on request when older than 10 minutes (bucketed to 10-minute boundaries so "now"-based windows share one key).
+  - First request for a never-seen key waits for the worker up to 100s (other users unaffected), else 503 + `Retry-After: 30`.
+
+### Next: one 10-minute stats job for every aggregate
+
+The safety summary, risk lists, distance totals, trends and HOS are all the same underlying data (trips + events) at different levels of detail, but each endpoint re-scans 1–2M raw rows on its own.
+
+- Build per-truck, per-day totals once and store them in SQLite (+ RAM):
+  - `safety_distance_daily(day, asset_id, driver_id, distance_km, trip_count)` — same bucketing as `tripRangeWhere`
+  - `safety_event_daily(day, asset_id, driver_id, label, n)` — `SCORING_LABELS` + overspeed filter
+  - `safety_hos_daily(day, driver_id, asset_id, violation_minutes)` — 24h lookback across midnight; over-limit minutes attributed to the day and truck being driven
+  - `safety_rollup_days(day, built_at)`
+- Closed days are built once (nightly rebuild of the last 3 days for late MiX syncs); only today is rebuilt every 10 minutes (a few seconds of work). Boot backfills missing days one per tick. CLI `scripts/rebuild-safety-rollups.js --from --to` after `backfill-week.js`.
+- Every stats endpoint (safety summary, `/api/risk/drivers`, `/api/driver-distance` summaries, `/api/events/trends`, HOS) becomes a sum over stored rows for the scope — milliseconds, any site filter.
+- Live feed stays on the 30s poll: positions/map (`/api/data`), live alerts, notifications, trips sync.
+- ~3,200 trucks × 60 days ≈ a few hundred thousand small rows (20–40 MB). With this the stats worker may no longer be needed.
+- Expected differences: distance and event counts identical; site-filtered HOS may move slightly (counts the driver's full continuous driving, no artificial reset at the window start).
+
+### Still freezing the main process (not yet moved)
+
+- `/api/events/log` over 7–14 days (thousands of `assetIds` in the query string).
+- `/api/driver-distance` 30d, `/api/fuel/consumption`, `/api/utilization`.
+
+### Other findings to action
+
+- HOS memory: with >900 live assets, `forEachDriverTripGroupInRange` buffers all ~1.2M trip rows before processing; stream per driver (temp-table scope + `ORDER BY driver_id`) instead.
+- Serve `dist/` static files straight from nginx so the login page never waits on Node.
+- CNL / JMG nginx proxy to `localhost:3000/3001` resolves to IPv6 `[::1]` and gets connection refused; point them at `127.0.0.1`.
+- MiX upstream: intermittent "Trips endpoint 403" (HTML page), "Authentication server returned HTML, not JSON", and empty position responses — investigate throttling.

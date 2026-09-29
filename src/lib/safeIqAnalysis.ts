@@ -191,6 +191,7 @@ function roadPhrase(road?: EnvironmentContext['road_type']): string {
 
 function weatherLabel(env: EnvironmentContext): string {
   if (env.weather_condition && env.weather_condition !== 'Unknown') return env.weather_condition;
+  if (env.weather === 'Loading…') return 'weather loading';
   return env.weather || 'unrecorded weather';
 }
 

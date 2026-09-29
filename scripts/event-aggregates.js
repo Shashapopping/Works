@@ -93,6 +93,37 @@ export function countMatchingEvents(filters = {}) {
   return eventsN + panicN;
 }
 
+/** Per-label counts with the same filters as countMatchingEvents (ignores `types`). */
+export function countMatchingEventsByLabel(filters = {}) {
+  const database = getDb();
+  const { from, to, driver } = filters;
+  const excludeHidden = filters.excludeHidden === true || filters.excludeHidden === '1' || filters.excludeHidden === 'true';
+  const hiddenIds = excludeHidden ? getAcknowledged() : [];
+  const { conditions, params } = rangeConditions(from, to);
+  const assetFilter = pushAssetIdFilter(conditions, params, filters.assetIds);
+  if (assetFilter.empty) return {};
+  if (driver) {
+    conditions.push('driver_name = ?');
+    params.push(driver);
+  }
+  pushEventTextSearch(conditions, params, {
+    q: filters.searchQ || filters.q || null,
+    matchedAssetIds: filters.searchAssetIds || null,
+  });
+  if (hiddenIds.length) {
+    conditions.push(`event_id NOT IN (${hiddenIds.map(() => '?').join(',')})`);
+    params.push(...hiddenIds);
+  }
+  const osKeep = overspeedKeepSql();
+  conditions.push(osKeep.sql);
+  params.push(...osKeep.params);
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = database.prepare(`SELECT label, COUNT(*) n FROM events ${where} GROUP BY label`).all(...params);
+  const byLabel = {};
+  for (const r of rows) byLabel[r.label] = r.n;
+  return byLabel;
+}
+
 function pushAssetIdFilter(conditions, params, assetIds, col = 'asset_id') {
   return pushAssetIdScope(conditions, params, assetIds, col);
 }
