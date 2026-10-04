@@ -15,9 +15,17 @@ const WEATHER_TIMEOUT_MS = 8000;
 const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000;
 const GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Home strip asks for ~6 hubs per page load; cache keeps paid traffic lookups inside free tiers.
+const TRAFFIC_CACHE_TTL_MS = 10 * 60 * 1000;
+const TRAFFIC_TIMEOUT_MS = 8000;
+const LIVE_TRAFFIC_MAX_AGE_MS = 30 * 60 * 1000;
+const TRAFFIC_CACHE_MAX = 1000;
+
 const weatherCache = new Map();
 const weatherInFlight = new Map();
 const geocodeCache = new Map();
+const trafficCache = new Map();
+const trafficInFlight = new Map();
 
 let weatherActive = 0;
 const weatherQueue = [];
@@ -209,6 +217,66 @@ function summarizeWeather(c) {
   };
 }
 
+const MAPBOX_CONGESTION = { low: 'light', moderate: 'moderate', heavy: 'heavy', severe: 'heavy' };
+// The probe destination can land across water/barriers and produce long detours; judge only the road near the point.
+const MAPBOX_PROBE_WINDOW_M = 1500;
+
+/**
+ * Mapbox driving-traffic over a ~1 km probe route. Unlike TomTom, Mapbox has live traffic for Nigeria.
+ * Congestion is weighted by segment length; all-"unknown" segments mean no data, so fall through.
+ */
+async function fetchMapboxTrafficDensity(lat, lng, token, roadType) {
+  const coords = `${lng},${lat};${lng + 0.008},${lat + 0.008}`;
+  const url = new URL(`https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${coords}`);
+  url.searchParams.set('annotations', 'congestion,distance,duration');
+  url.searchParams.set('overview', 'full');
+  url.searchParams.set('access_token', token);
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(TRAFFIC_TIMEOUT_MS) });
+  if (!res.ok) {
+    console.warn(`[environment] Mapbox traffic ${res.status}`);
+    return null;
+  }
+  const route = (await res.json()).routes?.[0];
+  const leg = route?.legs?.[0];
+  const levels = leg?.annotation?.congestion ?? [];
+  const lengths = leg?.annotation?.distance ?? [];
+  const durations = leg?.annotation?.duration ?? [];
+  const weight = { light: 0, moderate: 0, heavy: 0 };
+  let meters = 0;
+  let seconds = 0;
+  for (let i = 0; i < levels.length && meters < MAPBOX_PROBE_WINDOW_M; i++) {
+    const len = lengths[i] || 0;
+    meters += len;
+    seconds += durations[i] || 0;
+    const density = MAPBOX_CONGESTION[levels[i]];
+    if (density) weight[density] += len || 1;
+  }
+  const known = weight.light + weight.moderate + weight.heavy;
+  if (!known || !(seconds > 0)) return null;
+
+  const density = weight.heavy / known >= 0.3 ? 'heavy'
+    : (weight.heavy + weight.moderate) / known >= 0.3 ? 'moderate'
+    : 'light';
+  const speed = Math.round((meters / seconds) * 3.6);
+  const typical = route.duration_typical > 0 ? route.duration_typical : null;
+  const delayPct = typical && route.duration > 0 ? Math.max(0, Math.round((route.duration / typical - 1) * 100)) : undefined;
+  const description = density === 'heavy'
+    ? `Severe congestion (${speed} km/h)`
+    : density === 'moderate'
+      ? `Slow-moving traffic (${speed} km/h)`
+      : `Free-flowing traffic (${speed} km/h)`;
+
+  return {
+    density,
+    road_type: roadType,
+    source: 'mapbox',
+    description,
+    current_speed_kmh: speed,
+    ...(delayPct != null ? { delay_pct: delayPct } : {}),
+  };
+}
+
 async function fetchTomTomTrafficDensity(lat, lng, apiKey, roadType) {
   const url = new URL('https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json');
   url.searchParams.set('point', `${lat},${lng}`);
@@ -241,7 +309,47 @@ async function fetchTomTomTrafficDensity(lat, lng, apiKey, roadType) {
   };
 }
 
+function googleTrafficResult(ratio, roadType) {
+  const density = ratio >= 1.35 ? 'heavy' : ratio >= 1.1 ? 'moderate' : 'light';
+  const delayPct = Math.max(0, Math.round((ratio - 1) * 100));
+  const description = density === 'heavy'
+    ? `Severe congestion (${delayPct}% slower than normal)`
+    : density === 'moderate'
+      ? `Slow-moving traffic (${delayPct}% slower than normal)`
+      : 'Free-flowing traffic';
+  return { density, road_type: roadType, source: 'google', description, delay_pct: delayPct };
+}
+
+/** Routes API (current Google product); the legacy Directions API is often not enabled on new projects. */
+async function fetchGoogleRoutesTrafficDensity(lat, lng, apiKey, roadType) {
+  const res = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': 'routes.duration,routes.staticDuration',
+    },
+    body: JSON.stringify({
+      origin: { location: { latLng: { latitude: lat, longitude: lng } } },
+      destination: { location: { latLng: { latitude: lat + 0.008, longitude: lng + 0.008 } } },
+      travelMode: 'DRIVE',
+      routingPreference: 'TRAFFIC_AWARE',
+    }),
+  });
+  if (!res.ok) return null;
+  const route = (await res.json()).routes?.[0];
+  const withTraffic = parseFloat(route?.duration);
+  const baseline = parseFloat(route?.staticDuration);
+  if (!(withTraffic > 0) || !(baseline > 0)) return null;
+  return googleTrafficResult(withTraffic / baseline, roadType);
+}
+
 async function fetchGoogleTrafficDensity(lat, lng, apiKey, roadType) {
+  try {
+    const routes = await fetchGoogleRoutesTrafficDensity(lat, lng, apiKey, roadType);
+    if (routes) return routes;
+  } catch { /* fall back to legacy Directions */ }
+
   const destLat = lat + 0.008;
   const destLng = lng + 0.008;
   const url = new URL('https://maps.googleapis.com/maps/api/directions/json');
@@ -257,28 +365,24 @@ async function fetchGoogleTrafficDensity(lat, lng, apiKey, roadType) {
   const leg = data.routes?.[0]?.legs?.[0];
   if (!leg?.duration_in_traffic || !leg?.duration) return null;
 
-  const ratio = leg.duration_in_traffic.value / leg.duration.value;
-  const density = ratio >= 1.35 ? 'heavy' : ratio >= 1.1 ? 'moderate' : 'light';
-  const delayPct = Math.max(0, Math.round((ratio - 1) * 100));
-  const description = density === 'heavy'
-    ? `Severe congestion (${delayPct}% slower than normal)`
-    : density === 'moderate'
-      ? `Slow-moving traffic (${delayPct}% slower than normal)`
-      : 'Free-flowing traffic';
-
-  return {
-    density,
-    road_type: roadType,
-    source: 'google',
-    description,
-    delay_pct: delayPct,
-  };
+  return googleTrafficResult(leg.duration_in_traffic.value / leg.duration.value, roadType);
 }
 
-export async function fetchTrafficDensity(lat, lng, { address, timestamp, googleApiKey, tomTomApiKey } = {}) {
-  const roadType = inferRoadType(address);
+/** TomTom flow returns "Point too far from nearest existing segment" everywhere in Nigeria (no coverage). */
+function isInNigeria(lat, lng) {
+  return lat >= 4 && lat <= 14 && lng >= 2.6 && lng <= 14.7;
+}
 
-  if (tomTomApiKey) {
+async function fetchLiveTraffic(lat, lng, roadType, { googleApiKey, tomTomApiKey }) {
+  const mapboxToken = process.env.MAPBOX_TOKEN || process.env.MAPBOX_ACCESS_TOKEN;
+  if (mapboxToken) {
+    try {
+      const traffic = await fetchMapboxTrafficDensity(lat, lng, mapboxToken, roadType);
+      if (traffic) return traffic;
+    } catch { /* fall through to TomTom/Google/heuristic */ }
+  }
+
+  if (tomTomApiKey && !isInNigeria(lat, lng)) {
     try {
       const traffic = await fetchTomTomTrafficDensity(lat, lng, tomTomApiKey, roadType);
       if (traffic) return traffic;
@@ -291,6 +395,38 @@ export async function fetchTrafficDensity(lat, lng, { address, timestamp, google
       if (traffic) return traffic;
     } catch { /* fall through to heuristic */ }
   }
+
+  return null;
+}
+
+/** Live provider results (and misses) are cached per ~1 km cell; the heuristic depends on timestamp so it isn't. */
+function cachedLiveTraffic(lat, lng, roadType, keys) {
+  const key = `${lat.toFixed(2)},${lng.toFixed(2)},${roadType}`;
+  const hit = trafficCache.get(key);
+  if (hit && hit.expires > Date.now()) return Promise.resolve(hit.value);
+  if (trafficInFlight.has(key)) return trafficInFlight.get(key);
+  const pending = fetchLiveTraffic(lat, lng, roadType, keys)
+    .then(value => {
+      if (trafficCache.size >= TRAFFIC_CACHE_MAX) {
+        const now = Date.now();
+        for (const [k, v] of trafficCache) if (v.expires <= now) trafficCache.delete(k);
+        if (trafficCache.size >= TRAFFIC_CACHE_MAX) trafficCache.delete(trafficCache.keys().next().value);
+      }
+      trafficCache.set(key, { value, expires: Date.now() + TRAFFIC_CACHE_TTL_MS });
+      return value;
+    })
+    .finally(() => trafficInFlight.delete(key));
+  trafficInFlight.set(key, pending);
+  return pending;
+}
+
+export async function fetchTrafficDensity(lat, lng, { address, timestamp, googleApiKey, tomTomApiKey } = {}) {
+  const roadType = inferRoadType(address);
+  // Live providers only know traffic now — don't stamp current traffic onto an older incident.
+  const at = timestamp ? Date.parse(timestamp) : Date.now();
+  const isRecent = !Number.isFinite(at) || Math.abs(Date.now() - at) <= LIVE_TRAFFIC_MAX_AGE_MS;
+  const live = isRecent ? await cachedLiveTraffic(lat, lng, roadType, { googleApiKey, tomTomApiKey }) : null;
+  if (live) return live;
 
   const density = inferTrafficHeuristic(lat, lng, roadType, timestamp);
   const description = density === 'heavy'
@@ -342,6 +478,9 @@ export async function resolveEnvironment({ lat, lng, address, timestamp, googleA
 
   const weather = weatherResult.status === 'fulfilled' ? weatherResult.value : null;
   const traffic = trafficResult.status === 'fulfilled' ? trafficResult.value : null;
+  if (trafficResult.status === 'rejected') {
+    console.warn(`[environment] traffic lookup failed: ${trafficResult.reason?.message || trafficResult.reason}`);
+  }
   const weatherError = weatherResult.status === 'rejected'
     ? (weatherResult.reason?.name === 'TimeoutError' ? 'Open-Meteo timed out' : weatherResult.reason?.message || String(weatherResult.reason))
     : undefined;

@@ -152,7 +152,8 @@ export default defineConfig({
 
         // GET /api/events — in-memory warning events
         server.middlewares.use('/api/events', (req, res, next) => {
-          if ((req.url || '').startsWith('/log')) { next(); return }
+          const subPath = (req.url || '').split('?')[0]
+          if (subPath !== '' && subPath !== '/') { next(); return }
           if (!isAuthorized(req)) { res.statusCode = 401; res.end('Unauthorized'); return }
           if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return }
           res.setHeader('Content-Type', 'application/json')

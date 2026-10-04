@@ -1,8 +1,12 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Brain, X, Send, ChevronDown } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useFleet } from '../context/FleetContext';
-import { answerAriaLocal, buildAriaRemoteContext, type AriaSnapshot } from '../lib/ariaAssistant';
+import { answerAriaLocal, buildAriaRemoteContext, matchAriaIntent, type AriaSnapshot } from '../lib/ariaAssistant';
+import { detectAriaTopics, loadAriaExtras, warmAriaDrivers } from '../lib/ariaData';
+import { mentionedVehicle } from '../lib/ariaTopics';
+import { filterHosRecordsByAssignedSite } from '../lib/siteScope';
+import { selectedSiteScopeLabel } from '../lib/cementSiteTree';
 
 const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
 
@@ -138,7 +142,20 @@ export default function ARIAChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const location = useLocation();
-  const { fleetSafetyScore, fleetScoreDelta, redAlertCount, vaultRecords, metadata, events, notifications, insights, driverDistance } = useFleet();
+  const {
+    fleetSafetyScore, fleetScoreDelta, redAlertCount, vaultRecords, metadata, events, notifications, insights, driverDistance,
+    safetyExposure, scoreConfig, hosRecords, hosLastTripDay, vehicles, siteFilterActive,
+    authFetch, selectedSites, siteOptions, siteNameOptions, siteLock, lockedTransporters,
+  } = useFleet();
+  const scopedHos = useMemo(
+    () => filterHosRecordsByAssignedSite(hosRecords, vehicles, siteFilterActive),
+    [hosRecords, vehicles, siteFilterActive],
+  );
+  const siteLabel = useMemo(() => {
+    if (siteLock && lockedTransporters.length) return lockedTransporters.join(', ');
+    if (!siteFilterActive) return null;
+    return selectedSiteScopeLabel(selectedSites, siteOptions, siteNameOptions);
+  }, [siteLock, lockedTransporters, siteFilterActive, selectedSites, siteOptions, siteNameOptions]);
 
   const currentPage = PAGE_LABELS[location.pathname] || location.pathname;
   const watTime = new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos', hour12: false });
@@ -155,16 +172,27 @@ export default function ARIAChat() {
     vaultRecords,
     insights,
     driverDistance,
+    safetyExposure,
+    scoreConfig,
+    hosRecords: scopedHos,
+    hosDay: hosLastTripDay,
+    vehicles,
+    siteLabel,
   });
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
 
+  useEffect(() => {
+    if (open) warmAriaDrivers(authFetch);
+  }, [open, authFetch]);
+
   /** Local answers get the same thinking + streaming feel as model replies. */
-  const playLocalAnswer = async (content: string) => {
+  const playLocalAnswer = async (content: string, startedAt: number) => {
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-    await sleep(LOCAL_THINK_MS_MIN + Math.random() * (LOCAL_THINK_MS_MAX - LOCAL_THINK_MS_MIN));
+    const think = LOCAL_THINK_MS_MIN + Math.random() * (LOCAL_THINK_MS_MAX - LOCAL_THINK_MS_MIN);
+    await sleep(Math.max(0, think - (Date.now() - startedAt)));
     const tokens = content.match(/\S+\s*|\s+/g) ?? [content];
     const perTick = Math.max(1, Math.ceil(tokens.length / LOCAL_STREAM_MAX_TICKS));
     let shown = '';
@@ -187,10 +215,19 @@ export default function ARIAChat() {
     setLoading(true);
     setStreamingContent('');
 
-    const snap = snapshot();
+    const startedAt = Date.now();
+    const base = snapshot();
+    const topics = detectAriaTopics(text, matchAriaIntent(text, base));
+    const extras = topics.length
+      ? await loadAriaExtras(topics, {
+        authFetch, selectedSites, vehicles, siteFilterActive,
+        focusVehicle: mentionedVehicle(text, vehicles),
+      })
+      : undefined;
+    const snap: AriaSnapshot = { ...base, extras };
     const local = answerAriaLocal(text, snap);
     if (local) {
-      await playLocalAnswer(local);
+      await playLocalAnswer(local, startedAt);
       return;
     }
 
